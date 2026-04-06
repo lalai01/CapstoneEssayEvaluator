@@ -1,7 +1,7 @@
 import os
 import tempfile
 import shutil
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
@@ -9,8 +9,24 @@ import ocr_utils
 import evaluator
 from supabase_client import supabase
 from ai_models import test_prompt
-from rag import get_similar_essay_context   # not directly used here, but evaluator uses it
+from ocr_jobs import get_job_status
 
+# ---------- Google Cloud Vision Credentials (for Render) ----------
+# If the environment variable contains the JSON content, write it to a temporary file
+google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+if google_creds_json:
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(google_creds_json)
+            creds_file = f.name
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = creds_file
+        print(f"✅ Google Cloud credentials loaded from environment variable. Temp file: {creds_file}")
+    except Exception as e:
+        print(f"❌ Failed to set Google credentials: {e}")
+else:
+    print("⚠️ GOOGLE_APPLICATION_CREDENTIALS_JSON not set. Vision API will use default credentials if available.")
+
+# ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
 # CORS - allow all origins for production (you can restrict later)
@@ -64,7 +80,7 @@ class PromptTestRequest(BaseModel):
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
 
-# ---------- OCR Endpoint ----------
+# ---------- OCR Endpoint (supports both sync and async) ----------
 @app.post("/ocr", response_model=OCRResponse)
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -75,22 +91,38 @@ async def ocr_from_file(file: UploadFile = File(...)):
         tmp_path = tmp.name
     try:
         if suffix == '.pdf':
-            if not ocr_utils.tesseract_found:
-                raise HTTPException(500, "Tesseract OCR not installed")
-            text, page_count = ocr_utils.process_pdf_document(tmp_path)
-            confidence = 75.0
-            method = f"Tesseract OCR (PDF, {page_count} pages)"
-            return OCRResponse(text=text, confidence=confidence, method=method, page_count=page_count)
+            result = ocr_utils.extract_text_from_pdf(tmp_path)
+            # If result is a tuple (text, page_count) -> synchronous
+            if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], str):
+                text, page_count = result
+                confidence = 75.0
+                method = "Tesseract OCR (PDF)"
+                return OCRResponse(text=text, confidence=confidence, method=method, page_count=page_count)
+            else:
+                # Async job – result is job_id
+                job_id = result
+                return {"job_id": job_id, "status": "processing", "message": "OCR job submitted. Poll /ocr/status/{job_id}"}
         else:
-            if not ocr_utils.tesseract_found:
-                raise HTTPException(500, "Tesseract OCR not installed")
-            text, confidence = ocr_utils.extract_text_from_image(tmp_path, preprocessing=True)
-            method = "Tesseract OCR (Image)"
+            text, confidence = ocr_utils.extract_text_from_image(tmp_path)
+            method = "Auto-selected OCR"
             return OCRResponse(text=text, confidence=confidence, method=method)
     except Exception as e:
         raise HTTPException(500, str(e))
     finally:
         os.unlink(tmp_path)
+
+@app.get("/ocr/status/{job_id}")
+def get_ocr_status(job_id: str):
+    """Poll for async PDF OCR job status."""
+    status = get_job_status(job_id)
+    if not status:
+        raise HTTPException(404, "Job not found")
+    if status['status'] == 'completed':
+        return {"status": "completed", "text": status['result'], "confidence": 90.0}
+    elif status['status'] == 'failed':
+        return {"status": "failed", "error": status['error']}
+    else:
+        return {"status": "processing"}
 
 # ---------- Evaluation Endpoints ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
