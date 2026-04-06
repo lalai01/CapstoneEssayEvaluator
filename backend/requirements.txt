@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+pytesseract
+pillow
+pymupdf
+pydantic
+supabase==2.5.1
+python-dotenv
+httpx
