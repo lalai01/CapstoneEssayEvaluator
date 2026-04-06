@@ -1,0 +1,49 @@
+# ===============================
+# Python (Backend)
+# ===============================
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/.env.local
+backend/.env.*.local
+backend/*.egg-info/
+backend/dist/
+backend/build/
+
+# ===============================
+# Node.js / React (Frontend)
+# ===============================
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.production.local
+frontend/.env.development.local
+frontend/build/
+frontend/.vite/
+
+# ===============================
+# OS & Editor files
+# ===============================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.log
+
+# ===============================
+# Miscellaneous
+# ===============================
+*.bak
+*.tmp
+*.temp
+
+venv/
+__pycache__/
+*.pyc
+.env
