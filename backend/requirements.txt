@@ -10,3 +10,4 @@ python-dotenv
 httpx
 openai 
 requests 
+scikit-learn==1.3.2  
