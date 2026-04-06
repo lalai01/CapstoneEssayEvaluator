@@ -4,14 +4,15 @@ import shutil
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 import ocr_utils
 import evaluator
 from supabase_client import supabase
+from ai_models import test_prompt
 
 app = FastAPI(title="AI Essay Evaluator API")
 
-# Allow all origins for production (you can restrict later)
+# Allow all origins for production (restrict later if needed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,6 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------- Request/Response Models ----------
 class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
@@ -45,6 +47,23 @@ class KnowledgeEntry(BaseModel):
     satisfaction: int = 5
     teacher_feedback: Optional[str] = None
 
+class OverrideRequest(BaseModel):
+    original_essay: str
+    original_scores: Dict[str, int]
+    teacher_feedback: str
+    suggested_changes: Optional[str] = None
+    accepted: bool
+
+class PromptTestRequest(BaseModel):
+    ai_provider: str   # "openai", "deepseek", "gemma"
+    system_prompt: str
+    user_prompt: str
+    model: Optional[str] = None   # optional specific model name
+
+class PromptTestResponse(BaseModel):
+    result: Dict[str, Any]
+
+# ---------- OCR Endpoint ----------
 @app.post("/ocr", response_model=OCRResponse)
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -72,6 +91,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
     finally:
         os.unlink(tmp_path)
 
+# ---------- Evaluation Endpoint ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
@@ -80,6 +100,7 @@ def evaluate_essay(req: EvaluationRequest):
     except Exception as e:
         raise HTTPException(500, str(e))
 
+# ---------- Knowledge Base Endpoints (Supabase) ----------
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry):
     try:
@@ -104,6 +125,43 @@ def get_knowledge(id: int):
         return result.data[0]
     raise HTTPException(404, "Not found")
 
+# ---------- Teacher Override & Learning Knowledge Base ----------
+@app.post("/override")
+def save_override(override: OverrideRequest):
+    """Save teacher override to learning knowledge base."""
+    try:
+        data = override.dict()
+        result = supabase.table("learning_feedback").insert(data).execute()
+        return {"id": result.data[0]["id"]}
+    except Exception as e:
+        raise HTTPException(500, f"Supabase error: {str(e)}")
+
+@app.get("/learning-kb")
+def list_learning_feedback(limit: int = 50):
+    """Retrieve all teacher overrides for learning."""
+    try:
+        result = supabase.table("learning_feedback").select("*").order("created_at", desc=True).limit(limit).execute()
+        return result.data
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# ---------- AI Prompt Testing (Multi‑AI Comparison) ----------
+@app.post("/test-prompt", response_model=PromptTestResponse)
+def test_ai_prompt(req: PromptTestRequest):
+    """Test a prompt with the specified AI provider (OpenAI, DeepSeek, Gemma)."""
+    try:
+        # Call the appropriate AI model via the ai_models module
+        result = test_prompt(
+            ai_provider=req.ai_provider,
+            system_prompt=req.system_prompt,
+            user_prompt=req.user_prompt,
+            model=req.model
+        )
+        return PromptTestResponse(result=result)
+    except Exception as e:
+        raise HTTPException(500, f"AI test failed: {str(e)}")
+
+# ---------- Utility Endpoints ----------
 @app.get("/rubric")
 def get_rubric():
     return evaluator.RUBRIC
