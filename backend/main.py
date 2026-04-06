@@ -1,7 +1,7 @@
 import os
 import tempfile
 import shutil
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
@@ -9,10 +9,11 @@ import ocr_utils
 import evaluator
 from supabase_client import supabase
 from ai_models import test_prompt
+from rag import get_similar_essay_context   # not directly used here, but evaluator uses it
 
 app = FastAPI(title="AI Essay Evaluator API")
 
-# Allow all origins for production (restrict later if needed)
+# CORS - allow all origins for production (you can restrict later)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -58,7 +59,7 @@ class PromptTestRequest(BaseModel):
     ai_provider: str   # "openai", "deepseek", "gemma"
     system_prompt: str
     user_prompt: str
-    model: Optional[str] = None   # optional specific model name
+    model: Optional[str] = None
 
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
@@ -91,16 +92,25 @@ async def ocr_from_file(file: UploadFile = File(...)):
     finally:
         os.unlink(tmp_path)
 
-# ---------- Evaluation Endpoint ----------
+# ---------- Evaluation Endpoints ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
-        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type)
+        # Default: RAG is OFF for this endpoint (to keep original behaviour)
+        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=False)
         return EvaluationResponse(scores=scores, feedback=feedback)
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- Knowledge Base Endpoints (Supabase) ----------
+@app.post("/evaluate-rag", response_model=EvaluationResponse)
+def evaluate_essay_with_rag(req: EvaluationRequest):
+    try:
+        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
+        return EvaluationResponse(scores=scores, feedback=feedback)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+# ---------- Knowledge Base (Supabase) ----------
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry):
     try:
@@ -125,10 +135,9 @@ def get_knowledge(id: int):
         return result.data[0]
     raise HTTPException(404, "Not found")
 
-# ---------- Teacher Override & Learning Knowledge Base ----------
+# ---------- Teacher Override & Learning KB ----------
 @app.post("/override")
 def save_override(override: OverrideRequest):
-    """Save teacher override to learning knowledge base."""
     try:
         data = override.dict()
         result = supabase.table("learning_feedback").insert(data).execute()
@@ -138,19 +147,16 @@ def save_override(override: OverrideRequest):
 
 @app.get("/learning-kb")
 def list_learning_feedback(limit: int = 50):
-    """Retrieve all teacher overrides for learning."""
     try:
         result = supabase.table("learning_feedback").select("*").order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- AI Prompt Testing (Multi‑AI Comparison) ----------
+# ---------- AI Prompt Testing (Multi‑AI) ----------
 @app.post("/test-prompt", response_model=PromptTestResponse)
 def test_ai_prompt(req: PromptTestRequest):
-    """Test a prompt with the specified AI provider (OpenAI, DeepSeek, Gemma)."""
     try:
-        # Call the appropriate AI model via the ai_models module
         result = test_prompt(
             ai_provider=req.ai_provider,
             system_prompt=req.system_prompt,
