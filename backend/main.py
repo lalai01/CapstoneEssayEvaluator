@@ -11,7 +11,7 @@ from supabase_client import supabase
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
 
-# ---------- Google Cloud Vision Credentials (for Render) ----------
+# ---------- Google Cloud Vision Credentials ----------
 google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
 if google_creds_json:
     try:
@@ -19,19 +19,21 @@ if google_creds_json:
             f.write(google_creds_json)
             creds_file = f.name
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = creds_file
-        print(f"✅ Google Cloud credentials loaded from environment variable. Temp file: {creds_file}")
+        print(f"✅ Google Cloud credentials loaded.")
     except Exception as e:
         print(f"❌ Failed to set Google credentials: {e}")
 else:
-    print("⚠️ GOOGLE_APPLICATION_CREDENTIALS_JSON not set. Vision API will use default credentials if available.")
+    print("⚠️ GOOGLE_APPLICATION_CREDENTIALS_JSON not set.")
 
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
-# CORS - allow all origins for production (you can restrict later)
+# ---------- CORS Configuration (Fixed) ----------
+# Allow your frontend origin – use environment variable for production
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -52,7 +54,7 @@ class OCRResponse(BaseModel):
     confidence: float
     method: str
     page_count: Optional[int] = None
-    engine: Optional[str] = None   # which OCR engine was used
+    engine: Optional[str] = None
 
 class KnowledgeEntry(BaseModel):
     essay: str
@@ -73,7 +75,7 @@ class OverrideRequest(BaseModel):
     accepted: bool
 
 class PromptTestRequest(BaseModel):
-    ai_provider: str   # "openai", "deepseek", "gemma"
+    ai_provider: str
     system_prompt: str
     user_prompt: str
     model: Optional[str] = None
@@ -86,7 +88,7 @@ class PromptTestResponse(BaseModel):
 def health_check():
     return {"status": "ok"}
 
-# ---------- OCR Endpoint (supports both sync and async) ----------
+# ---------- OCR Endpoint ----------
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -98,15 +100,10 @@ async def ocr_from_file(file: UploadFile = File(...)):
     try:
         if suffix == '.pdf':
             result = ocr_utils.extract_text_from_pdf(tmp_path)
-            # If result is a tuple (text, page_count) -> synchronous
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], str):
                 text, page_count = result
-                confidence = 75.0
-                method = "Tesseract OCR (PDF)"
-                engine = "tesseract"
-                return OCRResponse(text=text, confidence=confidence, method=method, engine=engine, page_count=page_count)
+                return OCRResponse(text=text, confidence=75.0, method="Tesseract OCR (PDF)", engine="tesseract", page_count=page_count)
             else:
-                # Async job – result is job_id
                 job_id = result
                 return {"job_id": job_id, "status": "processing", "message": "OCR job submitted. Poll /ocr/status/{job_id}"}
         else:
@@ -121,7 +118,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
 @app.get("/ocr/status/{job_id}")
 def get_ocr_status(job_id: str):
-    """Poll for async PDF OCR job status."""
     status = get_job_status(job_id)
     if not status:
         raise HTTPException(404, "Job not found")
@@ -132,11 +128,10 @@ def get_ocr_status(job_id: str):
     else:
         return {"status": "processing"}
 
-# ---------- Evaluation Endpoints ----------
+# ---------- Evaluation Endpoints (RAG default = True) ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
-        # RAG is now ON by default (use_rag=True)
         scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
         return EvaluationResponse(scores=scores, feedback=feedback)
     except Exception as e:
@@ -150,7 +145,7 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- Knowledge Base (Supabase) ----------
+# ---------- Knowledge Base ----------
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry):
     try:
@@ -193,7 +188,7 @@ def list_learning_feedback(limit: int = 50):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- AI Prompt Testing (Multi‑AI) ----------
+# ---------- AI Prompt Testing ----------
 @app.post("/test-prompt", response_model=PromptTestResponse)
 def test_ai_prompt(req: PromptTestRequest):
     try:
