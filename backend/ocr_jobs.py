@@ -1,5 +1,6 @@
 import threading
 import uuid
+import time
 from ocr_engines import submit_pdf_to_vision_async, poll_vision_operation
 
 jobs = {}  # job_id -> {'status': 'pending'/'done', 'result': text, 'error': str}

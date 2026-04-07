@@ -52,6 +52,7 @@ class OCRResponse(BaseModel):
     confidence: float
     method: str
     page_count: Optional[int] = None
+    engine: Optional[str] = None   # which OCR engine was used
 
 class KnowledgeEntry(BaseModel):
     essay: str
@@ -86,7 +87,6 @@ def health_check():
     return {"status": "ok"}
 
 # ---------- OCR Endpoint (supports both sync and async) ----------
-# No response_model so we can return either OCRResponse or async job dict
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -103,15 +103,16 @@ async def ocr_from_file(file: UploadFile = File(...)):
                 text, page_count = result
                 confidence = 75.0
                 method = "Tesseract OCR (PDF)"
-                return OCRResponse(text=text, confidence=confidence, method=method, page_count=page_count)
+                engine = "tesseract"
+                return OCRResponse(text=text, confidence=confidence, method=method, engine=engine, page_count=page_count)
             else:
                 # Async job – result is job_id
                 job_id = result
                 return {"job_id": job_id, "status": "processing", "message": "OCR job submitted. Poll /ocr/status/{job_id}"}
         else:
-            text, confidence = ocr_utils.extract_text_from_image(tmp_path)
-            method = "Auto-selected OCR"
-            return OCRResponse(text=text, confidence=confidence, method=method)
+            text, confidence, engine = ocr_utils.extract_text_from_image(tmp_path)
+            method = f"Auto-selected OCR ({engine})"
+            return OCRResponse(text=text, confidence=confidence, method=method, engine=engine)
     except Exception as e:
         print(f"OCR error: {e}")
         raise HTTPException(500, str(e))
@@ -135,8 +136,8 @@ def get_ocr_status(job_id: str):
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
-        # Default: RAG is OFF for this endpoint (to keep original behaviour)
-        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=False)
+        # RAG is now ON by default (use_rag=True)
+        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
         return EvaluationResponse(scores=scores, feedback=feedback)
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -202,10 +203,8 @@ def test_ai_prompt(req: PromptTestRequest):
             user_prompt=req.user_prompt,
             model=req.model
         )
-        # Even if result contains an error, we return it as JSON (no 500)
         return PromptTestResponse(result=result)
     except Exception as e:
-        # This should rarely happen now, but as a last resort:
         return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
 # ---------- Utility Endpoints ----------
