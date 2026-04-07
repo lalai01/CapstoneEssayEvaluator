@@ -28,18 +28,22 @@ def is_handwritten(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 30, 100)
     edge_density = np.sum(edges > 0) / (gray.shape[0] * gray.shape[1])
-    return 0.05 < edge_density < 0.25
+    # Handwriting usually has edge density between 0.08 and 0.35
+    return 0.08 < edge_density < 0.35
 
 def recommend_ocr_engine(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
-        return 'tesseract'
+        return 'google_vision'   # fallback
+
     sharpness = estimate_sharpness(img)
     contrast = estimate_contrast(img)
     skew = abs(detect_skew(img))
     handwritten = is_handwritten(img)
-    if handwritten or sharpness < 100 or contrast < 30 or skew > 5:
+
+    # Aggressive thresholds: use Google Vision for any sign of trouble
+    if handwritten or sharpness < 200 or contrast < 50 or skew > 3:
         return 'google_vision'
     else:
         return 'tesseract'
