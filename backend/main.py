@@ -3,6 +3,7 @@ import tempfile
 import shutil
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import ocr_utils
@@ -28,12 +29,11 @@ else:
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
-# ---------- CORS Configuration (Allow Firebase frontend) ----------
+# ---------- CORS Configuration ----------
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
     "https://capstoneessayevaluator.web.app",
-    "https://capstoneessayevaluator.web.app",   # your Firebase domain
 ]
 
 app.add_middleware(
@@ -44,6 +44,31 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Custom middleware to force CORS headers on every response (extra safety)
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+# Explicit OPTIONS handler for all endpoints (preflight)
+@app.options("/{path:path}")
+async def preflight_handler():
+    return JSONResponse(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        },
+        content={}
+    )
 
 # ---------- Request/Response Models ----------
 class EvaluationRequest(BaseModel):
@@ -93,7 +118,7 @@ class PromptTestResponse(BaseModel):
 def health_check():
     return {"status": "ok"}
 
-# ---------- OCR Endpoint (Async for PDFs) ----------
+# ---------- OCR Endpoint ----------
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -122,17 +147,27 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
 @app.get("/ocr/status/{job_id}")
 def get_ocr_status(job_id: str):
-    status = get_job_status(job_id)
-    if not status:
-        raise HTTPException(404, "Job not found")
-    if status['status'] == 'completed':
-        return {"status": "completed", "text": status['result'], "confidence": 90.0}
-    elif status['status'] == 'failed':
-        return {"status": "failed", "error": status['error']}
-    else:
-        return {"status": "processing"}
+    try:
+        status = get_job_status(job_id)
+        if not status:
+            return JSONResponse(
+                status_code=404,
+                content={"status": "not_found", "error": "Job ID not found"}
+            )
+        if status['status'] == 'completed':
+            return {"status": "completed", "text": status['result'], "confidence": 90.0}
+        elif status['status'] == 'failed':
+            return {"status": "failed", "error": status['error']}
+        else:
+            return {"status": "processing"}
+    except Exception as e:
+        print(f"Status endpoint error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "error": str(e)}
+        )
 
-# ---------- Evaluation Endpoints (RAG default = True) ----------
+# ---------- Evaluation Endpoints ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
