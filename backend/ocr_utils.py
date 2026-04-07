@@ -8,6 +8,7 @@ import pytesseract
 import fitz  # PyMuPDF
 from google.cloud import vision
 from google.oauth2 import service_account
+import easyocr
 
 # ---------- Tesseract path detection ----------
 possible_paths = [
@@ -40,6 +41,15 @@ def get_vision_client():
         else:
             _vision_client = vision.ImageAnnotatorClient()
     return _vision_client
+
+# ---------- EasyOCR reader (lazy init) ----------
+_easyocr_reader = None
+
+def get_easyocr_reader():
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        _easyocr_reader = easyocr.Reader(['en'], gpu=False)
+    return _easyocr_reader
 
 # ---------- Helper: clean OCR text ----------
 def clean_ocr_text(text: str) -> str:
@@ -93,7 +103,7 @@ def extract_with_google_vision(image_bytes):
                                 total_symbols += 1
         if total_symbols > 0:
             confidence = (total_conf / total_symbols) * 100
-    return text, confidence
+    return text, confidence, 'google_vision'
 
 # ---------- Tesseract extraction ----------
 def extract_with_tesseract(image_bytes, preprocessing=True):
@@ -112,7 +122,30 @@ def extract_with_tesseract(image_bytes, preprocessing=True):
         avg_confidence = sum(confidences) / len(confidences) if confidences else 0
     except:
         avg_confidence = 75
-    return text, avg_confidence
+    return text, avg_confidence, 'tesseract'
+
+# ---------- EasyOCR extraction ----------
+def extract_with_easyocr(image_bytes):
+    """Extract text from an image using EasyOCR."""
+    reader = get_easyocr_reader()
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = reader.readtext(img_rgb)
+    
+    if not results:
+        return "", 0.0, 'easyocr'
+    
+    text_parts = []
+    confidences = []
+    for (bbox, text, conf) in results:
+        text_parts.append(text)
+        confidences.append(conf)
+    
+    full_text = " ".join(text_parts)
+    avg_conf = (sum(confidences) / len(confidences)) * 100
+    full_text = clean_ocr_text(full_text)
+    return full_text, avg_conf, 'easyocr'
 
 # ---------- Image preprocessing for Tesseract ----------
 def preprocess_image_for_ocr(image):
@@ -198,5 +231,7 @@ def extract_text_from_image(image_path, preprocessing=True):
     print(f"Selected OCR engine: {engine}")
     if engine == 'google_vision':
         return extract_with_google_vision(image_bytes)
+    elif engine == 'easyocr':
+        return extract_with_easyocr(image_bytes)
     else:
         return extract_with_tesseract(image_bytes, preprocessing)

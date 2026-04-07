@@ -164,7 +164,7 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
     return "\n".join(feedback)
 
 # ----------------------------------------------------------------------
-# Main evaluation function (with optional RAG)
+# Main evaluation function (RAG default True)
 # ----------------------------------------------------------------------
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
     analysis = analyze_essay_content(essay_text)
