@@ -1,105 +1,69 @@
-import re
 import os
-import time
-import json
-from google.cloud import vision
-from google.oauth2 import service_account
-from google.cloud.vision_v1 import types
 import tempfile
+import time
+import fitz
+from io import BytesIO
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
+from google.cloud import vision
+from google.cloud.vision_v1 import types
 
-_vision_client = None
 _vision_async_client = None
-
-def get_vision_client():
-    global _vision_client
-    if _vision_client is None:
-        creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-        if creds_path and os.path.exists(creds_path):
-            credentials = service_account.Credentials.from_service_account_file(creds_path)
-            _vision_client = vision.ImageAnnotatorClient(credentials=credentials)
-        else:
-            _vision_client = vision.ImageAnnotatorClient()
-    return _vision_client
-
 def get_vision_async_client():
     global _vision_async_client
     if _vision_async_client is None:
-        _vision_async_client = get_vision_client()  # same client works for async
+        _vision_async_client = vision.ImageAnnotatorClient()
     return _vision_async_client
 
-def extract_with_google_vision(image_bytes):
-    client = get_vision_client()
-    image = vision.Image(content=image_bytes)
-    response = client.document_text_detection(image=image)
-    if response.error.message:
-        raise Exception(f'Vision API error: {response.error.message}')
-    annotation = response.full_text_annotation
-    text = annotation.text if annotation else ""
-    text = re.sub(r'\s+', ' ', text).strip()
-    # confidence (average)
-    confidence = 0.0
-    if annotation.pages:
-        total_conf = 0
-        total_symbols = 0
-        for page in annotation.pages:
-            for block in page.blocks:
-                for paragraph in block.paragraphs:
-                    for word in paragraph.words:
-                        for symbol in word.symbols:
-                            if symbol.confidence:
-                                total_conf += symbol.confidence
-                                total_symbols += 1
-        if total_symbols > 0:
-            confidence = (total_conf / total_symbols) * 100
-    return text, confidence
-
 def submit_pdf_to_vision_async(pdf_bytes):
-    """Submit PDF to Vision async batch annotation, return operation name."""
     client = get_vision_async_client()
-    # Save PDF to temp file (required by Vision API)
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
         tmp.write(pdf_bytes)
         tmp_path = tmp.name
     try:
         with open(tmp_path, 'rb') as f:
             content = f.read()
-        input_config = types.InputConfig(
-            mime_type='application/pdf',
-            content=content
-        )
+        input_config = types.InputConfig(mime_type='application/pdf', content=content)
         features = [types.Feature(type_=types.Feature.Type.DOCUMENT_TEXT_DETECTION)]
         request = types.AsyncBatchAnnotateFilesRequest(
-            requests=[types.AsyncAnnotateFileRequest(
-                input_config=input_config,
-                features=features
-            )]
+            requests=[types.AsyncAnnotateFileRequest(input_config=input_config, features=features)]
         )
         operation = client.async_batch_annotate_files(request=request)
-        # Return operation name for polling
         return operation.operation.name
     finally:
         os.unlink(tmp_path)
 
 def poll_vision_operation(operation_name):
-    """Poll operation until done, return extracted text."""
-    from google.cloud.vision_v1 import ImageAnnotatorClient
     client = get_vision_async_client()
     operation = client.transport.operations_client.get_operation(operation_name)
     if not operation.done:
         return None
     response = operation.response
     text_pages = []
-    for result in response.responses:
-        if result.output_config.gcs_destination_uri:
-            # Not using GCS; we rely on inline output (not typical). 
-            # Actually async response returns a list of AnnotateFileResponse.
-            # We'll parse the response directly.
-            pass
-        # Simplified: iterate over responses
-        for file_response in response.responses:
-            for page in file_response.responses:
-                if page.full_text_annotation:
-                    text_pages.append(page.full_text_annotation.text)
+    for file_response in response.responses:
+        for page in file_response.responses:
+            if page.full_text_annotation:
+                text_pages.append(page.full_text_annotation.text)
     full_text = '\n\n'.join(text_pages)
-    full_text = re.sub(r'\s+', ' ', full_text).strip()
     return full_text
+
+def extract_pdf_with_tesseract(pdf_bytes):
+    """Process PDF locally with Tesseract (lower DPI for speed)."""
+    doc = fitz.open(stream=BytesIO(pdf_bytes), filetype="pdf")
+    all_text = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        zoom = 150 / 72   # 150 DPI – faster than 300
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        # Preprocess
+        img = img.convert('L')
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+        img = img.filter(ImageFilter.SHARPEN)
+        img = img.point(lambda x: 0 if x < 128 else 255, '1')
+        text = pytesseract.image_to_string(img, config='--psm 6 --oem 3 -l eng')
+        all_text.append(text)
+    doc.close()
+    return "\n\n".join(all_text)

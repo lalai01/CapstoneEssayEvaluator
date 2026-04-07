@@ -1,9 +1,6 @@
 import re
-from rag import get_similar_essay_context   # RAG helper
+from rag import get_similar_essay_context
 
-# ----------------------------------------------------------------------
-# Essay analysis
-# ----------------------------------------------------------------------
 def analyze_essay_content(essay_text):
     words = essay_text.split()
     word_count = len(words)
@@ -24,9 +21,6 @@ def analyze_essay_content(essay_text):
         'transition_count': transition_count
     }
 
-# ----------------------------------------------------------------------
-# Scoring functions (unchanged)
-# ----------------------------------------------------------------------
 def calculate_grammar_score(essay_text, analysis):
     score = 85
     if analysis['avg_sentence_length'] > 25:
@@ -76,9 +70,6 @@ def calculate_content_score(essay_text, analysis):
     score += min(10, evidence_count * 2)
     return max(60, min(98, score))
 
-# ----------------------------------------------------------------------
-# Enhanced feedback generation (fixed for high scores)
-# ----------------------------------------------------------------------
 def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag_context=""):
     feedback = []
     if rag_context:
@@ -91,7 +82,7 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
     feedback.append(f"Average sentence length: {analysis['avg_sentence_length']:.1f} words.")
     feedback.append("")
     
-    # ---------- GRAMMAR ----------
+    # Grammar
     feedback.append(f"📝 **GRAMMAR ANALYSIS (Score: {scores['grammar']})**")
     if scores['grammar'] >= 90:
         feedback.append("- Excellent grammar! Your writing is clear and correct.")
@@ -123,7 +114,7 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
         feedback.append("• Use grammar checking tools to identify specific errors")
         feedback.append("• Review subject-verb agreement in complex sentences")
     
-    # ---------- COHERENCE ----------
+    # Coherence
     feedback.append("")
     feedback.append(f"🔄 **COHERENCE ANALYSIS (Score: {scores['coherence']})**")
     paragraphs = essay_text.split('\n\n')
@@ -131,7 +122,6 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
         feedback.append(f"- Your essay has {len(paragraphs)} paragraphs, which is good for organization.")
     else:
         feedback.append("- Consider breaking your essay into paragraphs for better organization.")
-    
     if analysis['transition_count'] > 3:
         feedback.append(f"- Good use of transition words ({analysis['transition_count']} instances).")
     elif analysis['transition_count'] > 0:
@@ -139,18 +129,15 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
     else:
         feedback.append("- Adding transition words (however, therefore, moreover) would improve logical flow.")
     
-    # ---------- CONTENT (fixed logic – checks actual presence) ----------
+    # Content
     feedback.append("")
     feedback.append(f"📚 **CONTENT ANALYSIS (Score: {scores['content']})**")
-    
     lower_text = essay_text.lower()
-    # Expanded lists for introduction and conclusion indicators
-    intro_indicators = ['introduction', 'first', 'begin', 'start', 'purpose', 'this essay', 'in this essay', 'the goal']
-    conc_indicators = ['conclusion', 'summary', 'finally', 'in conclusion', 'to summarize', 'overall', 'to sum up']
+    intro_indicators = ['introduction', 'first', 'begin', 'start', 'purpose', 'this essay', 'in this essay']
+    conc_indicators = ['conclusion', 'summary', 'finally', 'in conclusion', 'to summarize', 'overall']
     has_intro = any(word in lower_text[:500] for word in intro_indicators)
     has_conclusion = any(word in lower_text[-500:] for word in conc_indicators)
-    
-    evidence_words = ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data', 'shows', 'demonstrates', 'evidence']
+    evidence_words = ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data', 'shows', 'demonstrates']
     evidence_count = sum(1 for word in evidence_words if word in lower_text)
     
     if scores['content'] >= 90:
@@ -192,7 +179,6 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
         else:
             feedback.append("- Your evidence is limited – try to elaborate further.")
     
-    # Sample improvement (only for essays that are not already near perfect)
     if len(essay_text) > 100 and scores['content'] < 90:
         sentences = re.split(r'[.!?]+', essay_text)
         sample_sentences = [s.strip() for s in sentences if len(s.strip().split()) > 5]
@@ -206,9 +192,6 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
     
     return "\n".join(feedback)
 
-# ----------------------------------------------------------------------
-# Main evaluation function (RAG default = True)
-# ----------------------------------------------------------------------
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
     analysis = analyze_essay_content(essay_text)
     scores = {
@@ -225,9 +208,6 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
     feedback = generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag_context)
     return scores, feedback
 
-# ----------------------------------------------------------------------
-# Constants for frontend (rubric and suggestions guide)
-# ----------------------------------------------------------------------
 RUBRIC = {
     "grammar": "Correctness of sentence structure, punctuation, spelling, and tense consistency.",
     "coherence": "Logical flow of ideas, use of transition words, paragraph organization, and clarity.",
