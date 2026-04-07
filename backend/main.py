@@ -202,9 +202,11 @@ def test_ai_prompt(req: PromptTestRequest):
             user_prompt=req.user_prompt,
             model=req.model
         )
+        # Even if result contains an error, we return it as JSON (no 500)
         return PromptTestResponse(result=result)
     except Exception as e:
-        raise HTTPException(500, f"AI test failed: {str(e)}")
+        # This should rarely happen now, but as a last resort:
+        return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
 # ---------- Utility Endpoints ----------
 @app.get("/rubric")
