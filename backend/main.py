@@ -12,7 +12,6 @@ from ai_models import test_prompt
 from ocr_jobs import get_job_status
 
 # ---------- Google Cloud Vision Credentials (for Render) ----------
-# If the environment variable contains the JSON content, write it to a temporary file
 google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
 if google_creds_json:
     try:
@@ -36,6 +35,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # ---------- Request/Response Models ----------
@@ -80,8 +80,14 @@ class PromptTestRequest(BaseModel):
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
 
+# ---------- Health Check ----------
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 # ---------- OCR Endpoint (supports both sync and async) ----------
-@app.post("/ocr", response_model=OCRResponse)
+# No response_model so we can return either OCRResponse or async job dict
+@app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf']:
@@ -107,6 +113,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
             method = "Auto-selected OCR"
             return OCRResponse(text=text, confidence=confidence, method=method)
     except Exception as e:
+        print(f"OCR error: {e}")
         raise HTTPException(500, str(e))
     finally:
         os.unlink(tmp_path)
