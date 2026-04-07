@@ -19,7 +19,7 @@ if google_creds_json:
             f.write(google_creds_json)
             creds_file = f.name
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = creds_file
-        print(f"✅ Google Cloud credentials loaded.")
+        print("✅ Google Cloud credentials loaded.")
     except Exception as e:
         print(f"❌ Failed to set Google credentials: {e}")
 else:
@@ -28,12 +28,17 @@ else:
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
-# ---------- CORS Configuration (Fixed) ----------
-# Allow your frontend origin – use environment variable for production
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+# ---------- CORS Configuration (Allow Firebase frontend) ----------
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://capstoneessayevaluator.web.app",
+    "https://capstoneessayevaluator.web.app",   # your Firebase domain
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173", "https://capstoneessayevaluator.web.app","https://capstoneessayevaluator.web.app"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -88,7 +93,7 @@ class PromptTestResponse(BaseModel):
 def health_check():
     return {"status": "ok"}
 
-# ---------- OCR Endpoint ----------
+# ---------- OCR Endpoint (Async for PDFs) ----------
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -99,13 +104,12 @@ async def ocr_from_file(file: UploadFile = File(...)):
         tmp_path = tmp.name
     try:
         if suffix == '.pdf':
-            result = ocr_utils.extract_text_from_pdf(tmp_path)
-            if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], str):
-                text, page_count = result
-                return OCRResponse(text=text, confidence=75.0, method="Tesseract OCR (PDF)", engine="tesseract", page_count=page_count)
-            else:
-                job_id = result
-                return {"job_id": job_id, "status": "processing", "message": "OCR job submitted. Poll /ocr/status/{job_id}"}
+            # Always async for PDFs – return job_id immediately
+            with open(tmp_path, 'rb') as f:
+                pdf_bytes = f.read()
+            from ocr_jobs import start_pdf_ocr_job
+            job_id = start_pdf_ocr_job(pdf_bytes)
+            return {"job_id": job_id, "status": "processing", "message": "OCR job submitted. Poll /ocr/status/{job_id}"}
         else:
             text, confidence, engine = ocr_utils.extract_text_from_image(tmp_path)
             method = f"Auto-selected OCR ({engine})"
