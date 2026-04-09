@@ -29,7 +29,7 @@ else:
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
-# ---------- CORS Configuration ----------
+# ---------- CORS Configuration (Allow Firebase) ----------
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
@@ -45,7 +45,7 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Custom middleware to force CORS headers on every response (extra safety)
+# Custom middleware to force CORS headers on every response (including errors)
 @app.middleware("http")
 async def add_cors_headers(request, call_next):
     response = await call_next(request)
@@ -53,11 +53,9 @@ async def add_cors_headers(request, call_next):
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 
-# Explicit OPTIONS handler for all endpoints (preflight)
+# Explicit OPTIONS handler for all routes
 @app.options("/{path:path}")
 async def preflight_handler():
     return JSONResponse(
