@@ -35,7 +35,7 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
 
 def start_pdf_ocr_job(pdf_bytes):
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {'status': 'processing', 'result': None, 'error': None, 'engine': None}
+    jobs[job_id] = {'status': 'processing', 'result': None, 'error': None, 'engine': None, 'current_engine': None}
     
     def worker():
         try:
@@ -43,6 +43,7 @@ def start_pdf_ocr_job(pdf_bytes):
             text = None
             used_engine = None
             for engine in engines:
+                jobs[job_id]['current_engine'] = engine
                 try:
                     text = extract_pdf_with_engine(pdf_bytes, engine)
                     if text and len(text.strip()) > 20:
@@ -58,6 +59,7 @@ def start_pdf_ocr_job(pdf_bytes):
             jobs[job_id]['result'] = text
             jobs[job_id]['engine'] = used_engine
             jobs[job_id]['status'] = 'completed'
+            jobs[job_id]['current_engine'] = None
         except Exception as e:
             jobs[job_id]['error'] = str(e)
             jobs[job_id]['status'] = 'failed'
