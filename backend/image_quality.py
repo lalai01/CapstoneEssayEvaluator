@@ -2,16 +2,12 @@ import cv2
 import numpy as np
 import os
 
-# Try to import EasyOCR with error handling
 EASYOCR_AVAILABLE = False
 try:
     import easyocr
     EASYOCR_AVAILABLE = True
-    print("✅ EasyOCR loaded successfully")
 except ImportError:
-    print("⚠️ EasyOCR not available. Messy handwriting detection will be limited.")
-except Exception as e:
-    print(f"⚠️ EasyOCR import error: {e}")
+    print("⚠️ EasyOCR not installed. Messy handwriting detection disabled.")
 
 _easyocr_reader = None
 
@@ -21,7 +17,6 @@ def get_easyocr_reader():
         return None
     if _easyocr_reader is None:
         try:
-            # Use CPU mode, reduce memory by limiting language
             _easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
         except Exception as e:
             print(f"❌ Failed to initialize EasyOCR: {e}")
@@ -59,7 +54,7 @@ def is_handwritten(image):
 
 def assess_handwriting_messiness(image_bytes):
     if not EASYOCR_AVAILABLE:
-        return 0.0  # Not messy (fallback)
+        return 0.0
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -84,7 +79,6 @@ def assess_handwriting_messiness(image_bytes):
         total_components = len(contours)
         broken_ratio = small_components / max(1, total_components)
         
-        # EasyOCR confidence variance (only if reader available)
         reader = get_easyocr_reader()
         if reader:
             h, w, _ = img.shape
@@ -123,7 +117,7 @@ def recommend_ocr_engine(image_bytes):
             if messiness > 0.6:
                 return 'easyocr'
         except:
-            pass  # Fall through to other engines
+            pass
     
     if sharpness < 300 or contrast < 60 or skew > 2:
         return 'google_vision'

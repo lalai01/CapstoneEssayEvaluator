@@ -11,8 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender1 \
     libgomp1 \
-    libffi-dev \
-    libssl-dev \
     mupdf \
     && rm -rf /var/lib/apt/lists/*
 

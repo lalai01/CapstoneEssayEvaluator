@@ -16,7 +16,7 @@ try:
 except ImportError:
     pass
 
-# Tesseract path detection
+# Tesseract path
 possible_paths = [
     '/usr/bin/tesseract',
     r'C:\Program Files\Tesseract-OCR\tesseract.exe',
@@ -150,3 +150,10 @@ def extract_text_from_image(image_path, preprocessing=True):
         return extract_with_easyocr(image_bytes)
     else:
         return extract_with_tesseract(image_bytes, preprocessing)
+
+def extract_text_from_pdf(pdf_path):
+    """Always async – uses first page to decide engine, then processes all pages."""
+    from ocr_jobs import start_pdf_ocr_job
+    with open(pdf_path, 'rb') as f:
+        pdf_bytes = f.read()
+    return start_pdf_ocr_job(pdf_bytes)
