@@ -162,7 +162,11 @@ def get_ocr_status(job_id: str):
         elif status['status'] == 'failed':
             return {"status": "failed", "error": status['error']}
         else:
-            return {"status": "processing"}
+            # processing
+            return {
+                "status": "processing",
+                "current_engine": status.get('current_engine')
+            }
     except Exception as e:
         print(f"Status endpoint error: {e}")
         return JSONResponse(
