@@ -17,4 +17,5 @@ numpy==1.24.3
 scipy==1.11.4
 google-cloud-vision==3.4.5
 easyocr==1.7.0
+paddleocr==2.7.3
 langdetect==1.0.9
