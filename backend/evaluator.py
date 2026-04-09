@@ -1,5 +1,35 @@
 import re
+from langdetect import detect, DetectorFactory
 from rag import get_similar_essay_context
+
+# Set seed for consistent language detection
+DetectorFactory.seed = 0
+
+def is_valid_essay(text):
+    """Check if the input is a meaningful English essay."""
+    words = text.split()
+    if len(words) < 20:
+        return False, "Essay too short. Please enter at least 20 words."
+    
+    # Check for at least one English word (simple heuristic)
+    # Actually we use language detection
+    try:
+        lang = detect(text)
+        if lang != 'en':
+            return False, f"Essay must be in English (detected: {lang}). Please write in English."
+    except Exception:
+        return False, "Could not detect language. Please enter English text with complete sentences."
+    
+    # Additional: check for gibberish (low vowel count per word)
+    vowel_pattern = re.compile(r'[aeiou]', re.IGNORECASE)
+    real_word_count = 0
+    for word in words:
+        if len(word) > 2 and vowel_pattern.search(word):
+            real_word_count += 1
+    if real_word_count < 5:
+        return False, "Input does not appear to be real English text. Please write proper sentences."
+    
+    return True, None
 
 def analyze_essay_content(essay_text):
     words = essay_text.split()
@@ -193,6 +223,13 @@ def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag
     return "\n".join(feedback)
 
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
+    # Input validation
+    is_valid, error_msg = is_valid_essay(essay_text)
+    if not is_valid:
+        scores = {"grammar": 0, "coherence": 0, "content": 0}
+        feedback = f"⚠️ Invalid Input: {error_msg}\n\nPlease provide a meaningful essay with complete sentences."
+        return scores, feedback
+    
     analysis = analyze_essay_content(essay_text)
     scores = {
         "grammar": calculate_grammar_score(essay_text, analysis),

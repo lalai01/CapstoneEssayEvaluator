@@ -1,21 +1,21 @@
 import threading
 import uuid
-import time
 from io import BytesIO
 import fitz
 from PIL import Image
 import pytesseract
+import cv2
+import numpy as np
+from image_quality import recommend_ocr_engine, EASYOCR_AVAILABLE
 
 jobs = {}
 
 def extract_pdf_with_tesseract(pdf_bytes, dpi=150):
-    """Lightweight Tesseract PDF processing (fallback)"""
     doc = fitz.open(stream=BytesIO(pdf_bytes), filetype="pdf")
     all_text = []
     for page in doc:
         pix = page.get_pixmap(dpi=dpi)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        # Minimal preprocessing to save memory
         img = img.convert('L')
         text = pytesseract.image_to_string(img, config='--psm 6')
         all_text.append(text)
@@ -23,7 +23,6 @@ def extract_pdf_with_tesseract(pdf_bytes, dpi=150):
     return "\n\n".join(all_text)
 
 def extract_pdf_with_easyocr(pdf_bytes, dpi=150):
-    """Try EasyOCR on PDF (convert each page to image)"""
     try:
         import easyocr
         reader = easyocr.Reader(['en'], gpu=False, verbose=False)
@@ -32,7 +31,6 @@ def extract_pdf_with_easyocr(pdf_bytes, dpi=150):
         for page in doc:
             pix = page.get_pixmap(dpi=dpi)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            # Convert to numpy for EasyOCR
             import numpy as np
             img_np = np.array(img)
             results = reader.readtext(img_np)
@@ -50,8 +48,24 @@ def start_pdf_ocr_job(pdf_bytes):
     
     def worker():
         try:
-            # Try EasyOCR first, fallback to Tesseract
-            text = extract_pdf_with_easyocr(pdf_bytes)
+            # Check first page to decide engine (for messy handwriting)
+            doc = fitz.open(stream=BytesIO(pdf_bytes), filetype="pdf")
+            if len(doc) == 0:
+                jobs[job_id]['error'] = "Empty PDF"
+                jobs[job_id]['status'] = 'failed'
+                return
+            pix = doc[0].get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            doc.close()
+            # Convert to bytes for recommend_ocr_engine
+            engine = recommend_ocr_engine(img_bytes)
+            print(f"PDF OCR engine selected: {engine}")
+            
+            if engine == 'easyocr' and EASYOCR_AVAILABLE:
+                text = extract_pdf_with_easyocr(pdf_bytes)
+            else:
+                text = extract_pdf_with_tesseract(pdf_bytes)
+            
             if not text.strip():
                 text = "[No text could be extracted from this PDF. Please check the document quality or type manually.]"
             jobs[job_id]['result'] = text
