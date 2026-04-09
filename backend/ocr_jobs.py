@@ -17,10 +17,6 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
     for page_num in range(len(doc)):
         pix = doc[page_num].get_pixmap(dpi=dpi)
         img_bytes = pix.tobytes("png")
-        # Convert to numpy for OCR functions
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        # Use the same extraction functions as for images
         if engine == 'google_vision':
             from ocr_utils import extract_with_google_vision
             text, _, _ = extract_with_google_vision(img_bytes)
@@ -31,7 +27,6 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
             from ocr_utils import extract_with_easyocr
             text, _, _ = extract_with_easyocr(img_bytes)
         else:
-            # Tesseract
             from ocr_utils import extract_with_tesseract
             text, _, _ = extract_with_tesseract(img_bytes)
         all_text.append(text)
@@ -40,17 +35,18 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
 
 def start_pdf_ocr_job(pdf_bytes):
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {'status': 'processing', 'result': None, 'error': None}
+    jobs[job_id] = {'status': 'processing', 'result': None, 'error': None, 'engine': None}
     
     def worker():
         try:
-            # Check first page to decide which engine to try first (optional)
             engines = get_priority_engines()
             text = None
+            used_engine = None
             for engine in engines:
                 try:
                     text = extract_pdf_with_engine(pdf_bytes, engine)
                     if text and len(text.strip()) > 20:
+                        used_engine = engine
                         print(f"PDF OCR succeeded with {engine}")
                         break
                 except Exception as e:
@@ -58,7 +54,9 @@ def start_pdf_ocr_job(pdf_bytes):
                     continue
             if not text or not text.strip():
                 text = "[No text could be extracted from this PDF. Please check the document quality or type manually.]"
+                used_engine = 'none'
             jobs[job_id]['result'] = text
+            jobs[job_id]['engine'] = used_engine
             jobs[job_id]['status'] = 'completed'
         except Exception as e:
             jobs[job_id]['error'] = str(e)

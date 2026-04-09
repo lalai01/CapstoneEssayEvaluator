@@ -153,7 +153,12 @@ def get_ocr_status(job_id: str):
                 content={"status": "not_found", "error": "Job ID not found"}
             )
         if status['status'] == 'completed':
-            return {"status": "completed", "text": status['result'], "confidence": 90.0}
+            return {
+                "status": "completed",
+                "text": status['result'],
+                "confidence": 90.0,
+                "engine": status.get('engine', 'unknown')
+            }
         elif status['status'] == 'failed':
             return {"status": "failed", "error": status['error']}
         else:
