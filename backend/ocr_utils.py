@@ -8,26 +8,11 @@ import fitz
 from google.cloud import vision
 from google.oauth2 import service_account
 
-# Try to import EasyOCR
-EASYOCR_AVAILABLE = False
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    pass
-
-# Tesseract path
-possible_paths = [
-    '/usr/bin/tesseract',
-    r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-    r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-]
-for path in possible_paths:
-    if os.path.exists(path):
-        pytesseract.pytesseract.tesseract_cmd = path
-        break
-
+# Lazy initializers
 _vision_client = None
+_paddle_ocr = None
+_easyocr_reader = None
+
 def get_vision_client():
     global _vision_client
     if _vision_client is None:
@@ -39,16 +24,26 @@ def get_vision_client():
             _vision_client = vision.ImageAnnotatorClient()
     return _vision_client
 
-_easyocr_reader = None
+def get_paddle_ocr():
+    global _paddle_ocr
+    if _paddle_ocr is None:
+        try:
+            from paddleocr import PaddleOCR
+            _paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+        except Exception as e:
+            print(f"PaddleOCR init failed: {e}")
+            _paddle_ocr = None
+    return _paddle_ocr
+
 def get_easyocr_reader():
     global _easyocr_reader
-    if not EASYOCR_AVAILABLE:
-        return None
     if _easyocr_reader is None:
         try:
+            import easyocr
             _easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-        except:
-            return None
+        except Exception as e:
+            print(f"EasyOCR init failed: {e}")
+            _easyocr_reader = None
     return _easyocr_reader
 
 def clean_ocr_text(text: str) -> str:
@@ -90,6 +85,45 @@ def extract_with_google_vision(image_bytes):
             confidence = (total_conf / total_symbols) * 100
     return text, confidence, 'google_vision'
 
+def extract_with_paddleocr(image_bytes):
+    ocr = get_paddle_ocr()
+    if ocr is None:
+        raise Exception("PaddleOCR not available")
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    result = ocr.ocr(img, cls=True)
+    if not result or not result[0]:
+        return "", 0.0, 'paddleocr'
+    text_parts = []
+    confidences = []
+    for line in result[0]:
+        text_parts.append(line[1][0])
+        confidences.append(line[1][1])
+    full_text = " ".join(text_parts)
+    avg_conf = (sum(confidences) / len(confidences)) * 100
+    full_text = clean_ocr_text(full_text)
+    return full_text, avg_conf, 'paddleocr'
+
+def extract_with_easyocr(image_bytes):
+    reader = get_easyocr_reader()
+    if reader is None:
+        raise Exception("EasyOCR not available")
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = reader.readtext(img_rgb)
+    if not results:
+        return "", 0.0, 'easyocr'
+    text_parts = []
+    confidences = []
+    for (bbox, text, conf) in results:
+        text_parts.append(text)
+        confidences.append(conf)
+    full_text = " ".join(text_parts)
+    avg_conf = (sum(confidences) / len(confidences)) * 100
+    full_text = clean_ocr_text(full_text)
+    return full_text, avg_conf, 'easyocr'
+
 def extract_with_tesseract(image_bytes, preprocessing=True):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -112,47 +146,30 @@ def extract_with_tesseract(image_bytes, preprocessing=True):
         avg_confidence = 75
     return text, avg_confidence, 'tesseract'
 
-def extract_with_easyocr(image_bytes):
-    if not EASYOCR_AVAILABLE:
-        return extract_with_tesseract(image_bytes)
-    reader = get_easyocr_reader()
-    if reader is None:
-        return extract_with_tesseract(image_bytes)
-    try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = reader.readtext(img_rgb)
-        if not results:
-            return extract_with_tesseract(image_bytes)
-        text_parts = []
-        confidences = []
-        for (bbox, text, conf) in results:
-            text_parts.append(text)
-            confidences.append(conf)
-        full_text = " ".join(text_parts)
-        avg_conf = (sum(confidences) / len(confidences)) * 100
-        full_text = clean_ocr_text(full_text)
-        return full_text, avg_conf, 'easyocr'
-    except Exception as e:
-        print(f"EasyOCR failed, falling back to Tesseract: {e}")
-        return extract_with_tesseract(image_bytes)
-
 def extract_text_from_image(image_path, preprocessing=True):
     with open(image_path, 'rb') as f:
         image_bytes = f.read()
-    from image_quality import recommend_ocr_engine
-    engine = recommend_ocr_engine(image_bytes)
-    print(f"Selected OCR engine: {engine}")
-    if engine == 'google_vision':
-        return extract_with_google_vision(image_bytes)
-    elif engine == 'easyocr':
-        return extract_with_easyocr(image_bytes)
-    else:
-        return extract_with_tesseract(image_bytes, preprocessing)
+    from image_quality import get_priority_engines
+    engines = get_priority_engines()
+    for engine in engines:
+        try:
+            if engine == 'google_vision':
+                text, conf, eng = extract_with_google_vision(image_bytes)
+            elif engine == 'paddleocr':
+                text, conf, eng = extract_with_paddleocr(image_bytes)
+            elif engine == 'easyocr':
+                text, conf, eng = extract_with_easyocr(image_bytes)
+            else:
+                text, conf, eng = extract_with_tesseract(image_bytes, preprocessing)
+            if text and len(text.strip()) > 10:  # Accept if meaningful
+                print(f"OCR succeeded with {engine}")
+                return text, conf, eng
+        except Exception as e:
+            print(f"{engine} failed: {e}, trying next")
+    # Fallback to Tesseract even if empty
+    return extract_with_tesseract(image_bytes, preprocessing)
 
 def extract_text_from_pdf(pdf_path):
-    """Always async – uses first page to decide engine, then processes all pages."""
     from ocr_jobs import start_pdf_ocr_job
     with open(pdf_path, 'rb') as f:
         pdf_bytes = f.read()
