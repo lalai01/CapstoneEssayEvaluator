@@ -6,12 +6,10 @@ from PIL import Image
 import cv2
 import numpy as np
 from image_quality import get_priority_engines
-import pytesseract
 
 jobs = {}
 
 def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
-    """Extract PDF using a specific engine on each page."""
     doc = fitz.open(stream=BytesIO(pdf_bytes), filetype="pdf")
     all_text = []
     for page_num in range(len(doc)):
@@ -26,9 +24,11 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
         elif engine == 'easyocr':
             from ocr_utils import extract_with_easyocr
             text, _, _ = extract_with_easyocr(img_bytes)
-        else:
+        elif engine == 'tesseract':
             from ocr_utils import extract_with_tesseract
             text, _, _ = extract_with_tesseract(img_bytes)
+        else:
+            text = ""
         all_text.append(text)
     doc.close()
     return "\n\n".join(all_text)
@@ -36,7 +36,6 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
 def start_pdf_ocr_job(pdf_bytes):
     job_id = str(uuid.uuid4())
     jobs[job_id] = {'status': 'processing', 'result': None, 'error': None, 'engine': None, 'current_engine': None}
-    
     def worker():
         try:
             engines = get_priority_engines()
@@ -54,16 +53,16 @@ def start_pdf_ocr_job(pdf_bytes):
                     print(f"PDF OCR with {engine} failed: {e}")
                     continue
             if not text or not text.strip():
-                text = "[No text could be extracted from this PDF. Please check the document quality or type manually.]"
-                used_engine = 'none'
-            jobs[job_id]['result'] = text
-            jobs[job_id]['engine'] = used_engine
-            jobs[job_id]['status'] = 'completed'
+                jobs[job_id]['error'] = "All OCR engines (including Tesseract) failed. Please check the PDF quality."
+                jobs[job_id]['status'] = 'failed'
+            else:
+                jobs[job_id]['result'] = text
+                jobs[job_id]['engine'] = used_engine
+                jobs[job_id]['status'] = 'completed'
             jobs[job_id]['current_engine'] = None
         except Exception as e:
             jobs[job_id]['error'] = str(e)
             jobs[job_id]['status'] = 'failed'
-    
     threading.Thread(target=worker).start()
     return job_id
 
