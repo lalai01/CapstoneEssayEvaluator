@@ -7,7 +7,14 @@ import pytesseract
 import fitz
 from google.cloud import vision
 from google.oauth2 import service_account
-import easyocr
+
+# Try to import EasyOCR
+EASYOCR_AVAILABLE = False
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    pass
 
 # Tesseract path detection
 possible_paths = [
@@ -20,7 +27,6 @@ for path in possible_paths:
         pytesseract.pytesseract.tesseract_cmd = path
         break
 
-# Google Vision client
 _vision_client = None
 def get_vision_client():
     global _vision_client
@@ -33,12 +39,16 @@ def get_vision_client():
             _vision_client = vision.ImageAnnotatorClient()
     return _vision_client
 
-# EasyOCR reader
 _easyocr_reader = None
 def get_easyocr_reader():
     global _easyocr_reader
+    if not EASYOCR_AVAILABLE:
+        return None
     if _easyocr_reader is None:
-        _easyocr_reader = easyocr.Reader(['en'], gpu=False)
+        try:
+            _easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+        except:
+            return None
     return _easyocr_reader
 
 def clean_ocr_text(text: str) -> str:
@@ -47,7 +57,6 @@ def clean_ocr_text(text: str) -> str:
     cleaned = [line for line in lines if len(re.findall(r'[A-Za-z]{3,}', line)) >= 3]
     return '\n'.join(cleaned)
 
-# ---------- Google Vision (single image) ----------
 def extract_with_google_vision(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -81,7 +90,6 @@ def extract_with_google_vision(image_bytes):
             confidence = (total_conf / total_symbols) * 100
     return text, confidence, 'google_vision'
 
-# ---------- Tesseract (single image) ----------
 def extract_with_tesseract(image_bytes, preprocessing=True):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -104,26 +112,32 @@ def extract_with_tesseract(image_bytes, preprocessing=True):
         avg_confidence = 75
     return text, avg_confidence, 'tesseract'
 
-# ---------- EasyOCR (single image) ----------
 def extract_with_easyocr(image_bytes):
+    if not EASYOCR_AVAILABLE:
+        return extract_with_tesseract(image_bytes)
     reader = get_easyocr_reader()
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = reader.readtext(img_rgb)
-    if not results:
-        return "", 0.0, 'easyocr'
-    text_parts = []
-    confidences = []
-    for (bbox, text, conf) in results:
-        text_parts.append(text)
-        confidences.append(conf)
-    full_text = " ".join(text_parts)
-    avg_conf = (sum(confidences) / len(confidences)) * 100
-    full_text = clean_ocr_text(full_text)
-    return full_text, avg_conf, 'easyocr'
+    if reader is None:
+        return extract_with_tesseract(image_bytes)
+    try:
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = reader.readtext(img_rgb)
+        if not results:
+            return extract_with_tesseract(image_bytes)
+        text_parts = []
+        confidences = []
+        for (bbox, text, conf) in results:
+            text_parts.append(text)
+            confidences.append(conf)
+        full_text = " ".join(text_parts)
+        avg_conf = (sum(confidences) / len(confidences)) * 100
+        full_text = clean_ocr_text(full_text)
+        return full_text, avg_conf, 'easyocr'
+    except Exception as e:
+        print(f"EasyOCR failed, falling back to Tesseract: {e}")
+        return extract_with_tesseract(image_bytes)
 
-# ---------- Image dispatcher ----------
 def extract_text_from_image(image_path, preprocessing=True):
     with open(image_path, 'rb') as f:
         image_bytes = f.read()
