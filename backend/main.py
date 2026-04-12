@@ -34,6 +34,7 @@ ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
     "https://capstoneessayevaluator.web.app",
+    "https://essay-evaluator.duckdns.org",
 ]
 
 app.add_middleware(
