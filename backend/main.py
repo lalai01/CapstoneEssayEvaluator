@@ -1,6 +1,5 @@
 import os
 import tempfile
-import shutil
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,11 +7,10 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import ocr_utils
 import evaluator
-from supabase_client import supabase, supabase_admin  # added supabase_admin
+from supabase_client import supabase, supabase_admin
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
-from handwriting_recognizer import get_handwriting_recognizer
-from auth import get_current_user  # <--- NEW import
+from auth import get_current_user
 
 # ---------- Google Cloud Vision Credentials ----------
 google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
@@ -126,16 +124,8 @@ async def ocr_from_file(file: UploadFile = File(...)):
         raise HTTPException(400, "Unsupported file type")
     
     contents = await file.read()
-    # Check if it's an image and likely handwritten (optional)
-    if suffix != '.pdf':
-        from image_quality import assess_handwriting_messiness
-        messiness = assess_handwriting_messiness(contents)
-        if messiness > 0.6:   # threshold for messy handwriting
-            recognizer = get_handwriting_recognizer()
-            text = recognizer.recognize_from_bytes(contents)
-            return OCRResponse(text=text, confidence=85.0, method="Handwriting-optimized OCR", engine="easyocr_handwriting")
     
-    # Otherwise fallback to existing OCR pipeline
+    # Use standard OCR pipeline (no handwriting recognizer fallback)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -153,29 +143,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
     finally:
         if suffix != '.pdf':
             os.unlink(tmp_path)
-
-@app.post("/extract-handwriting")
-async def extract_handwriting(file: UploadFile = File(...)):
-    """Extract messy handwriting from image or PDF using dedicated EasyOCR pipeline."""
-    suffix = os.path.splitext(file.filename)[1].lower()
-    if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf']:
-        raise HTTPException(400, "Unsupported file type. Use image or PDF.")
-    
-    contents = await file.read()
-    recognizer = get_handwriting_recognizer()
-    
-    try:
-        if suffix == '.pdf':
-            text = recognizer.recognize_from_pdf(contents)
-        else:
-            text = recognizer.recognize_from_bytes(contents)
-        
-        if not text.strip():
-            raise HTTPException(422, "No handwriting could be extracted. Image may be too blurry or contain no text.")
-        
-        return {"text": text, "method": "handwriting_recognizer (EasyOCR)", "confidence": 85.0}
-    except Exception as e:
-        raise HTTPException(500, f"Handwriting extraction failed: {str(e)}")
 
 @app.get("/ocr/status/{job_id}")
 def get_ocr_status(job_id: str):
@@ -196,7 +163,6 @@ def get_ocr_status(job_id: str):
         elif status['status'] == 'failed':
             return {"status": "failed", "error": status['error']}
         else:
-            # processing
             return {
                 "status": "processing",
                 "current_engine": status.get('current_engine')
@@ -208,8 +174,7 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-# ---------- Evaluation Endpoints (public or authenticated? you decide) ----------
-# Here we keep them public. If you want to restrict, add user=Depends(get_current_user)
+# ---------- Evaluation Endpoints ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
@@ -226,12 +191,12 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- Knowledge Base (Protected: requires authentication) ----------
+# ---------- Knowledge Base (Protected) ----------
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
-        data["user_id"] = user["id"]   # Associate with authenticated user
+        data["user_id"] = user["id"]
         result = supabase.table("knowledge_base").insert(data).execute()
         return {"id": result.data[0]["id"]}
     except Exception as e:
@@ -240,7 +205,6 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
 @app.get("/knowledge")
 def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
     try:
-        # Use RLS to only return user's own entries, or query with filter
         result = supabase.table("knowledge_base").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
@@ -272,7 +236,7 @@ def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- AI Prompt Testing (Optional: protect if needed) ----------
+# ---------- AI Prompt Testing ----------
 @app.post("/test-prompt", response_model=PromptTestResponse)
 def test_ai_prompt(req: PromptTestRequest):
     try:
@@ -286,7 +250,7 @@ def test_ai_prompt(req: PromptTestRequest):
     except Exception as e:
         return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
-# ---------- Utility Endpoints (public) ----------
+# ---------- Utility Endpoints ----------
 @app.get("/rubric")
 def get_rubric():
     return evaluator.RUBRIC
