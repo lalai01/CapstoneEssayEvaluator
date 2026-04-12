@@ -176,13 +176,14 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-# ---------- Evaluation Endpoints ----------
+# ---------- Evaluation Endpoints (public) ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
         scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
         return EvaluationResponse(scores=scores, feedback=feedback)
     except Exception as e:
+        print(f"❌ Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
@@ -191,6 +192,7 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
         scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
         return EvaluationResponse(scores=scores, feedback=feedback)
     except Exception as e:
+        print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
 # ---------- Knowledge Base (Protected) ----------
@@ -200,24 +202,32 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
         data = entry.dict()
         data["user_id"] = user["id"]
         result = supabase.table("knowledge_base").insert(data).execute()
+        print(f"✅ Knowledge saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
+        print(f"❌ Error saving knowledge: {e}")
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/knowledge")
-def list_knowledge(limit: int = 50):  
+def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
     try:
-        result = supabase.table("knowledge_base").select("*").order("created_at", desc=True).limit(limit).execute()
+        print(f"📚 Fetching knowledge for user: {user['id']}")
+        result = supabase.table("knowledge_base").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
+        print(f"❌ Error listing knowledge: {e}")
         raise HTTPException(500, str(e))
 
 @app.get("/knowledge/{id}")
 def get_knowledge(id: int, user=Depends(get_current_user)):
-    result = supabase.table("knowledge_base").select("*").eq("id", id).eq("user_id", user["id"]).execute()
-    if result.data:
-        return result.data[0]
-    raise HTTPException(404, "Not found")
+    try:
+        result = supabase.table("knowledge_base").select("*").eq("id", id).eq("user_id", user["id"]).execute()
+        if result.data:
+            return result.data[0]
+        raise HTTPException(404, "Not found")
+    except Exception as e:
+        print(f"❌ Error getting knowledge {id}: {e}")
+        raise HTTPException(500, str(e))
 
 # ---------- Teacher Override & Learning KB (Protected) ----------
 @app.post("/override")
@@ -226,19 +236,23 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
         data = override.dict()
         data["user_id"] = user["id"]
         result = supabase.table("learning_feedback").insert(data).execute()
+        print(f"✅ Override saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
+        print(f"❌ Error saving override: {e}")
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/learning-kb")
-def list_learning_feedback(limit: int = 50):
+def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
     try:
+        print(f"🧠 Fetching learning feedback for user: {user['id']}")
         result = supabase.table("learning_feedback").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
+        print(f"❌ Error listing learning feedback: {e}")
         raise HTTPException(500, str(e))
 
-# ---------- AI Prompt Testing ----------
+# ---------- AI Prompt Testing (public) ----------
 @app.post("/test-prompt", response_model=PromptTestResponse)
 def test_ai_prompt(req: PromptTestRequest):
     try:
@@ -250,9 +264,10 @@ def test_ai_prompt(req: PromptTestRequest):
         )
         return PromptTestResponse(result=result)
     except Exception as e:
+        print(f"❌ Prompt test error: {e}")
         return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
-# ---------- Utility Endpoints ----------
+# ---------- Utility Endpoints (public) ----------
 @app.get("/rubric")
 def get_rubric():
     return evaluator.RUBRIC
