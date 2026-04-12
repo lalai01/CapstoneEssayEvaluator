@@ -205,9 +205,9 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/knowledge")
-def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
+def list_knowledge(limit: int = 50):  
     try:
-        result = supabase.table("knowledge_base").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
+        result = supabase.table("knowledge_base").select("*").order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
         raise HTTPException(500, str(e))
