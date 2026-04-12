@@ -231,7 +231,7 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/learning-kb")
-def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
+def list_learning_feedback(limit: int = 50):
     try:
         result = supabase.table("learning_feedback").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
         return result.data
