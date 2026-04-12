@@ -11,6 +11,8 @@ security = HTTPBearer()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+    print(f"🔑 Token received: {token[:30]}...")
+    
     try:
         payload = jwt.decode(
             token,
@@ -20,8 +22,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         )
         user_id = payload.get("sub")
         email = payload.get("email")
+        
+        print(f"✅ Token valid for: {email} (ID: {user_id})")
+        
         if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            print("❌ Token missing 'sub' claim")
+            raise HTTPException(status_code=401, detail="Invalid token: missing user ID")
+        
         return {"id": user_id, "email": email}
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except JWTError as e:
+        print(f"❌ JWT Error: {e}")
+        raise HTTPException(status_code=401, detail=f"Invalid or expired token: {str(e)}")
