@@ -1,91 +1,86 @@
 import os
+import json
 import requests
 from openai import OpenAI
-from typing import Dict, Any, Optional
 
-openai_client = None
-if os.environ.get("OPENAI_API_KEY"):
-    openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-def call_openai(system_prompt: str, user_prompt: str, model: str = "gpt-3.5-turbo") -> Dict[str, Any]:
-    if not openai_client:
-        raise Exception("OpenAI API key not set")
-    response = openai_client.chat.completions.create(
+# ---------- OpenAI ----------
+def call_openai(system_prompt, user_prompt, model="gpt-3.5-turbo"):
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY not set")
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.7
+        temperature=0.3
     )
     return {
         "text": response.choices[0].message.content,
         "model": model,
-        "usage": response.usage.dict() if response.usage else None
+        "provider": "openai"
     }
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-
-def call_deepseek(system_prompt: str, user_prompt: str, model: str = "deepseek-chat") -> Dict[str, Any]:
-    if not DEEPSEEK_API_KEY:
-        raise Exception("DeepSeek API key not set")
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+# ---------- DeepSeek ----------
+def call_deepseek(system_prompt, user_prompt, model="deepseek-chat"):
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ValueError("DEEPSEEK_API_KEY not set")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.7
+        "temperature": 0.3
     }
-    response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload)
+    response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload)
     response.raise_for_status()
     data = response.json()
-    return {"text": data["choices"][0]["message"]["content"], "model": model, "usage": data.get("usage")}
+    return {
+        "text": data["choices"][0]["message"]["content"],
+        "model": model,
+        "provider": "deepseek"
+    }
 
-GEMMA_API_URL = os.environ.get("GEMMA_API_URL", "http://localhost:11434/api/generate")
-
-def call_gemma(system_prompt: str, user_prompt: str, model: str = "gemma2:2b") -> Dict[str, Any]:
+# ---------- Ollama (Gemma) ----------
+def call_ollama(system_prompt, user_prompt, model="gemma2:2b"):
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
     payload = {
         "model": model,
-        "prompt": f"{system_prompt}\n\nUser: {user_prompt}\nAssistant:",
-        "stream": False
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.3
+        }
     }
-    response = requests.post(GEMMA_API_URL, json=payload)
+    response = requests.post(f"{ollama_url}/api/chat", json=payload)
     response.raise_for_status()
     data = response.json()
-    return {"text": data.get("response", ""), "model": model}
+    return {
+        "text": data["message"]["content"],
+        "model": model,
+        "provider": "ollama"
+    }
 
-def get_mock_response(ai_provider: str, essay_text: str) -> str:
-    return f"""
-⚠️ **Mock Evaluation (no real API key for {ai_provider})**
-
-Based on your essay, here is a simulated feedback:
-
-- **Grammar score:** 76/100  
-- **Coherence score:** 72/100  
-- **Content score:** 74/100  
-
-**Feedback:**  
-Your essay has a clear structure, but some sentences are too long. Consider breaking them into shorter, clearer statements. Add more specific examples to support your arguments. The introduction is good, but the conclusion could be stronger.
-
-*To get real AI evaluations, add your {ai_provider.upper()} API key to the backend environment variables.*
-"""
-
-def test_prompt(ai_provider: str, system_prompt: str, user_prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
-    try:
-        if ai_provider == "openai":
-            if not os.environ.get("OPENAI_API_KEY"):
-                return {"text": get_mock_response("openai", user_prompt), "model": "mock", "error": "missing_key"}
-            return call_openai(system_prompt, user_prompt, model=model or "gpt-3.5-turbo")
-        elif ai_provider == "deepseek":
-            if not DEEPSEEK_API_KEY:
-                return {"text": get_mock_response("deepseek", user_prompt), "model": "mock", "error": "missing_key"}
-            return call_deepseek(system_prompt, user_prompt, model=model or "deepseek-chat")
-        elif ai_provider == "gemma":
-            return call_gemma(system_prompt, user_prompt, model=model or "gemma2:2b")
-        else:
-            raise ValueError(f"Unknown AI provider: {ai_provider}")
-    except Exception as e:
-        return {"text": get_mock_response(ai_provider, user_prompt), "model": "mock", "error": str(e)}
+# ---------- Router ----------
+def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
+    provider = ai_provider.lower()
+    
+    if provider == "openai":
+        return call_openai(system_prompt, user_prompt, model or "gpt-3.5-turbo")
+    elif provider == "deepseek":
+        return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat")
+    elif provider == "gemma" or provider == "ollama":
+        return call_ollama(system_prompt, user_prompt, model or "gemma2:2b")
+    else:
+        raise ValueError(f"Unsupported AI provider: {ai_provider}")
