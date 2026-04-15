@@ -87,6 +87,7 @@ class OCRResponse(BaseModel):
     engine: Optional[str] = None
 
 class KnowledgeEntry(BaseModel):
+    title: Optional[str] = None
     essay: str
     grammar: int
     coherence: int
@@ -113,10 +114,44 @@ class PromptTestRequest(BaseModel):
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
 
+class SavedEssayEntry(BaseModel):
+    title: str
+    essay: str
+
 # ---------- Health Check ----------
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.post("/saved-essays")
+def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
+    try:
+        data = entry.dict()
+        data["user_id"] = user["id"]
+        result = supabase.table("saved_essays").insert(data).execute()
+        return {"id": result.data[0]["id"]}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/saved-essays")
+def list_saved_essays(user=Depends(get_current_user)):
+    try:
+        result = supabase.table("saved_essays") \
+            .select("id,title,essay,created_at") \
+            .eq("user_id", user["id"]) \
+            .order("created_at", desc=True) \
+            .execute()
+        return result.data
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.delete("/saved-essays/{id}")
+def delete_saved_essay(id: int, user=Depends(get_current_user)):
+    try:
+        supabase.table("saved_essays").delete().eq("id", id).eq("user_id", user["id"]).execute()
+        return {"status": "deleted"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 # ---------- OCR Endpoint (public) ----------
 @app.post("/ocr")
