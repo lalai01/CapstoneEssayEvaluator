@@ -89,9 +89,9 @@ class OCRResponse(BaseModel):
 class KnowledgeEntry(BaseModel):
     title: Optional[str] = None
     essay: str
-    grammar: int
-    coherence: int
-    content: int
+    grammar: Optional[int] = None
+    coherence: Optional[int] = None
+    content: Optional[int] = None
     feedback: str
     eval_type: str
     accepted: bool = False
