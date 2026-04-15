@@ -235,12 +235,16 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
 def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
+        print(f"📥 Received knowledge entry: {data}")  # Log incoming data
         data["user_id"] = user["id"]
         result = supabase.table("knowledge_base").insert(data).execute()
         print(f"✅ Knowledge saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
         print(f"❌ Error saving knowledge: {e}")
+        # If it's a validation error, print the details
+        if hasattr(e, 'errors'):
+            print(f"Validation errors: {e.errors()}")
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/knowledge")
