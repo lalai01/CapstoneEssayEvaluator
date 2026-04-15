@@ -86,7 +86,7 @@ def call_llamacpp(system_prompt, user_prompt, model=None):
         ],
         "temperature": 0.3
     }
-    response = requests.post(f"{llamacpp_url}/chat/completions", json=payload, timeout=60)
+    response = requests.post(f"{llamacpp_url}/chat/completions", json=payload, timeout=120)
     response.raise_for_status()
     data = response.json()
     return {
