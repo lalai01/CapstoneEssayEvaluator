@@ -72,6 +72,29 @@ def call_ollama(system_prompt, user_prompt, model="gemma2:2b"):
         "provider": "ollama"
     }
 
+# ---------- Llama.cpp (OpenAI-compatible) ----------
+def call_llamacpp(system_prompt, user_prompt, model=None):
+    llamacpp_url = os.environ.get("LLAMACPP_URL", "http://llamacpp:8080/v1")
+    default_model = os.environ.get("LLAMACPP_MODEL", "Phi-3.5-mini-instruct-Q4_K_M.gguf")
+    model = model or default_model
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.3
+    }
+    response = requests.post(f"{llamacpp_url}/chat/completions", json=payload, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "text": data["choices"][0]["message"]["content"],
+        "model": model,
+        "provider": "llamacpp"
+    }
+
 # ---------- Router ----------
 def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
     provider = ai_provider.lower()
@@ -80,7 +103,9 @@ def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
         return call_openai(system_prompt, user_prompt, model or "gpt-3.5-turbo")
     elif provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat")
-    elif provider == "gemma" or provider == "ollama":
+    elif provider in ("gemma", "ollama"):
         return call_ollama(system_prompt, user_prompt, model or "gemma2:2b")
+    elif provider == "llamacpp":
+        return call_llamacpp(system_prompt, user_prompt, model)
     else:
         raise ValueError(f"Unsupported AI provider: {ai_provider}")
