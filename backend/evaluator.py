@@ -2,33 +2,31 @@ import re
 from langdetect import detect, DetectorFactory
 from rag import get_similar_essay_context
 
-# Set seed for consistent language detection
 DetectorFactory.seed = 0
 
+# ---------- Holistic Rubric (5-point scale) ----------
+HOLISTIC_RUBRIC = {
+    5: "🌟 Excellent (5/5) – Clear thesis, strong organization, compelling arguments, and virtually no errors. The essay demonstrates mastery of the topic.",
+    4: "👍 Good (4/5) – Clear main idea, well-organized, with minor errors that do not impede understanding. Arguments are solid but could be more developed.",
+    3: "📝 Satisfactory (3/5) – Understandable but with some weaknesses in clarity, organization, or support. Several grammatical issues or vague points.",
+    2: "⚠️ Needs Improvement (2/5) – Unclear thesis, disorganized, or lacking sufficient evidence. Frequent errors make reading difficult.",
+    1: "❌ Poor (1/5) – Hard to follow, no clear structure, many errors. The essay fails to address the topic adequately."
+}
+
 def is_valid_essay(text):
-    """Check if the input is a meaningful English essay."""
     words = text.split()
     if len(words) < 20:
         return False, "Essay too short. Please enter at least 20 words."
-    
-    # Check for at least one English word (simple heuristic)
-    # Actually we use language detection
     try:
         lang = detect(text)
         if lang != 'en':
-            return False, f"Essay must be in English (detected: {lang}). Please write in English."
+            return False, f"Essay must be in English (detected: {lang})."
     except Exception:
-        return False, "Could not detect language. Please enter English text with complete sentences."
-    
-    # Additional: check for gibberish (low vowel count per word)
+        return False, "Could not detect language. Please enter English text."
     vowel_pattern = re.compile(r'[aeiou]', re.IGNORECASE)
-    real_word_count = 0
-    for word in words:
-        if len(word) > 2 and vowel_pattern.search(word):
-            real_word_count += 1
+    real_word_count = sum(1 for w in words if len(w) > 2 and vowel_pattern.search(w))
     if real_word_count < 5:
-        return False, "Input does not appear to be real English text. Please write proper sentences."
-    
+        return False, "Input does not appear to be real English text."
     return True, None
 
 def analyze_essay_content(essay_text):
@@ -51,198 +49,206 @@ def analyze_essay_content(essay_text):
         'transition_count': transition_count
     }
 
-def calculate_grammar_score(essay_text, analysis):
-    score = 85
-    if analysis['avg_sentence_length'] > 25:
-        score -= 5
-    elif analysis['avg_sentence_length'] < 8:
-        score -= 5
-    if analysis['vocabulary_richness'] < 0.4:
-        score -= 5
-    elif analysis['vocabulary_richness'] > 0.7:
-        score += 3
-    if re.search(r'\s+[,.!?]', essay_text):
-        score -= 2
-    if re.search(r'[,.!?]{2,}', essay_text):
-        score -= 3
-    return max(60, min(98, score))
+def find_long_sentences(essay_text, threshold=25):
+    sentences = re.split(r'(?<=[.!?])\s+', essay_text)
+    long_sentences = []
+    for sent in sentences:
+        words = sent.split()
+        if len(words) > threshold:
+            long_sentences.append((sent.strip(), len(words)))
+    return long_sentences
 
-def calculate_coherence_score(essay_text, analysis):
-    score = 80
+def find_vague_words(essay_text):
+    vague = ['good', 'bad', 'nice', 'thing', 'stuff', 'very', 'really', 'quite', 'pretty']
+    found = {}
+    for word in vague:
+        count = len(re.findall(rf'\b{word}\b', essay_text, re.IGNORECASE))
+        if count:
+            found[word] = count
+    return found
+
+def calculate_analytic_scores(essay_text, analysis):
+    grammar = 85
+    if analysis['avg_sentence_length'] > 25 or analysis['avg_sentence_length'] < 8:
+        grammar -= 5
+    if analysis['vocabulary_richness'] < 0.4:
+        grammar -= 5
+    elif analysis['vocabulary_richness'] > 0.7:
+        grammar += 3
+    if re.search(r'\s+[,.!?]', essay_text) or re.search(r'[,.!?]{2,}', essay_text):
+        grammar -= 5
+    grammar = max(60, min(98, grammar))
+
+    coherence = 80
     paragraphs = essay_text.split('\n\n')
     if len(paragraphs) > 1:
-        score += 5
+        coherence += 5
     if analysis['transition_count'] > 3:
-        score += 5
+        coherence += 5
     elif analysis['transition_count'] == 0:
-        score -= 5
+        coherence -= 5
     lower_text = essay_text.lower()
-    intro_indicators = ['introduction', 'first', 'begin', 'start', 'purpose']
-    conc_indicators = ['conclusion', 'summary', 'finally', 'in conclusion', 'to summarize']
-    if any(word in lower_text[:500] for word in intro_indicators):
-        score += 3
-    if any(word in lower_text[-500:] for word in conc_indicators):
-        score += 3
-    return max(60, min(98, score))
+    if any(w in lower_text[:500] for w in ['introduction', 'first', 'begin', 'purpose']):
+        coherence += 3
+    if any(w in lower_text[-500:] for w in ['conclusion', 'summary', 'finally', 'in conclusion']):
+        coherence += 3
+    coherence = max(60, min(98, coherence))
 
-def calculate_content_score(essay_text, analysis):
-    score = 75
+    content = 75
     if analysis['word_count'] > 500:
-        score += 10
+        content += 10
     elif analysis['word_count'] > 300:
-        score += 5
+        content += 5
     elif analysis['word_count'] < 100:
-        score -= 10
+        content -= 10
     if analysis['vocabulary_richness'] > 0.6:
-        score += 5
-    evidence_indicators = ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data']
-    evidence_count = sum(1 for indicator in evidence_indicators if indicator in essay_text.lower())
-    score += min(10, evidence_count * 2)
-    return max(60, min(98, score))
+        content += 5
+    evidence_words = ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data']
+    evidence_count = sum(1 for w in evidence_words if w in lower_text)
+    content += min(10, evidence_count * 2)
+    content = max(60, min(98, content))
 
-def generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag_context=""):
+    return {"grammar": grammar, "coherence": coherence, "content": content}
+
+def calculate_holistic_score(essay_text, analysis):
+    analytic = calculate_analytic_scores(essay_text, analysis)
+    avg = (analytic['grammar'] + analytic['coherence'] + analytic['content']) / 3
+    if avg >= 90:
+        return 5
+    elif avg >= 80:
+        return 4
+    elif avg >= 70:
+        return 3
+    elif avg >= 60:
+        return 2
+    else:
+        return 1
+
+def generate_specific_suggestions(essay_text, analysis, scores):
+    suggestions = []
+    long_sents = find_long_sentences(essay_text)
+    if long_sents:
+        sent, length = long_sents[0]
+        truncated = sent[:150] + "..." if len(sent) > 150 else sent
+        suggestions.append({
+            "title": "Long sentence detected",
+            "original": truncated,
+            "suggestion": "Break this into shorter sentences. Example: 'Education is the cornerstone of personal and societal development. It empowers individuals with knowledge and critical thinking skills.'"
+        })
+    if analysis['transition_count'] < 2:
+        suggestions.append({
+            "title": "Add transitions",
+            "original": "Limited use of transition words.",
+            "suggestion": "Add words like 'Furthermore', 'However', or 'For example' to connect ideas."
+        })
+    vague_found = find_vague_words(essay_text)
+    if 'very' in vague_found or 'really' in vague_found:
+        suggestions.append({
+            "title": "Stronger vocabulary",
+            "original": f"Uses weak modifiers: {', '.join([k for k in vague_found])}",
+            "suggestion": "Replace 'very important' with 'crucial' or 'essential' for stronger impact."
+        })
+    return suggestions
+
+def generate_analytic_feedback(essay_text, scores, analysis, rag_context=""):
     feedback = []
     if rag_context:
-        feedback.append("📚 **Retrieved from similar past evaluations (RAG)**")
+        feedback.append("[RAG_INSIGHTS_START]")
         feedback.append(rag_context)
-        feedback.append("")
+        feedback.append("[RAG_INSIGHTS_END]")
 
-    feedback.append("📊 **ESSAY ANALYSIS**")
+    feedback.append("[ESSAY_ANALYSIS_START]")
     feedback.append(f"Your essay contains {analysis['word_count']} words across {analysis['sentence_count']} sentences.")
     feedback.append(f"Average sentence length: {analysis['avg_sentence_length']:.1f} words.")
     feedback.append("")
-    
+
     # Grammar
-    feedback.append(f"📝 **GRAMMAR ANALYSIS (Score: {scores['grammar']})**")
-    if scores['grammar'] >= 90:
-        feedback.append("- Excellent grammar! Your writing is clear and correct.")
-        feedback.append("✅ **Advanced tips:**")
-        feedback.append("• Experiment with more complex sentence structures")
-        feedback.append("• Consider using stylistic devices for emphasis")
-    elif scores['grammar'] >= 70:
-        feedback.append("- Good basic grammar with room for refinement.")
-        if analysis['transition_count'] < 3:
-            feedback.append("- Adding more transition words would improve flow.")
-        feedback.append("✅ **Refinement suggestions:**")
-        feedback.append("• Vary your sentence structure for better rhythm")
-        feedback.append("• Check for consistent tense usage throughout")
+    feedback.append(f"📝 GRAMMAR ANALYSIS (Score: {scores['grammar']})")
+    long_sents = find_long_sentences(essay_text)
+    if long_sents:
+        sent, length = long_sents[0]
+        feedback.append(f"- Found a very long sentence ({length} words):")
+        feedback.append(f'  > "{sent[:120]}..."')
+        feedback.append('  ✅ Try splitting it: "Education is the cornerstone of personal and societal development. It empowers individuals with knowledge..."')
     else:
-        grammar_issues = []
-        if analysis['avg_sentence_length'] > 25:
-            grammar_issues.append("- Some sentences are quite long. Consider breaking them into shorter, clearer sentences.")
-        if analysis['vocabulary_richness'] < 0.4:
-            grammar_issues.append("- Limited vocabulary detected. Try using more varied word choices.")
-        if re.search(r'[,.!?][A-Za-z]', essay_text):
-            grammar_issues.append("- Missing spaces after punctuation in some places.")
-        if grammar_issues:
-            feedback.extend(grammar_issues)
-        else:
-            feedback.append("- Several grammatical patterns need attention. Consider reviewing basic grammar rules.")
-        feedback.append("")
-        feedback.append("✅ **Suggestions for improvement:**")
-        feedback.append("• Read your essay aloud to catch awkward phrasing")
-        feedback.append("• Use grammar checking tools to identify specific errors")
-        feedback.append("• Review subject-verb agreement in complex sentences")
-    
-    # Coherence
+        feedback.append("- Sentence lengths are well-balanced.")
+    if analysis['vocabulary_richness'] < 0.45:
+        feedback.append("- Vocabulary could be more varied. Try using synonyms or more precise terms.")
     feedback.append("")
-    feedback.append(f"🔄 **COHERENCE ANALYSIS (Score: {scores['coherence']})**")
+
+    # Coherence
+    feedback.append(f"🔄 COHERENCE ANALYSIS (Score: {scores['coherence']})")
     paragraphs = essay_text.split('\n\n')
     if len(paragraphs) > 1:
-        feedback.append(f"- Your essay has {len(paragraphs)} paragraphs, which is good for organization.")
+        feedback.append(f"- Your essay has {len(paragraphs)} paragraphs, good for organization.")
     else:
-        feedback.append("- Consider breaking your essay into paragraphs for better organization.")
-    if analysis['transition_count'] > 3:
-        feedback.append(f"- Good use of transition words ({analysis['transition_count']} instances).")
-    elif analysis['transition_count'] > 0:
-        feedback.append(f"- You used {analysis['transition_count']} transition words – adding a few more would improve flow.")
+        feedback.append("- Consider breaking your essay into paragraphs.")
+    if analysis['transition_count'] < 2:
+        feedback.append("- Add transition words like 'Furthermore' or 'However' to improve flow.")
     else:
-        feedback.append("- Adding transition words (however, therefore, moreover) would improve logical flow.")
-    
-    # Content
+        feedback.append("- Good use of transition words.")
     feedback.append("")
-    feedback.append(f"📚 **CONTENT ANALYSIS (Score: {scores['content']})**")
-    lower_text = essay_text.lower()
-    intro_indicators = ['introduction', 'first', 'begin', 'start', 'purpose', 'this essay', 'in this essay']
-    conc_indicators = ['conclusion', 'summary', 'finally', 'in conclusion', 'to summarize', 'overall']
-    has_intro = any(word in lower_text[:500] for word in intro_indicators)
-    has_conclusion = any(word in lower_text[-500:] for word in conc_indicators)
-    evidence_words = ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data', 'shows', 'demonstrates']
-    evidence_count = sum(1 for word in evidence_words if word in lower_text)
-    
-    if scores['content'] >= 90:
-        feedback.append("- Outstanding content! Your essay is well-developed and insightful.")
-        if has_intro:
-            feedback.append("- Clear introduction that sets up your argument.")
-        else:
-            feedback.append("- Consider making your introduction more explicit (state your main thesis).")
-        if has_conclusion:
-            feedback.append("- Strong conclusion that reinforces your main points.")
-        else:
-            feedback.append("- Add a brief conclusion to leave a lasting impression.")
-        if evidence_count >= 3:
-            feedback.append(f"- Excellent use of evidence ({evidence_count} examples).")
-        else:
-            feedback.append("- To reach perfection, include more specific data or real-world examples.")
-    elif scores['content'] >= 75:
-        feedback.append("- Good content with room for development.")
-        if not has_intro:
-            feedback.append("- Add a clear introduction stating your main idea.")
-        else:
-            feedback.append("- Your introduction is present – try to make it more engaging.")
-        if not has_conclusion:
-            feedback.append("- Add a conclusion that summarizes your main points.")
-        else:
-            feedback.append("- Your conclusion is good; consider adding a final thought or call to action.")
-        if evidence_count < 2:
-            feedback.append("- Include more specific examples or evidence to support your arguments.")
-        else:
-            feedback.append(f"- Good use of evidence ({evidence_count} instances).")
+
+    # Content
+    feedback.append(f"📚 CONTENT ANALYSIS (Score: {scores['content']})")
+    evidence_count = sum(1 for w in ['example', 'for instance', 'such as', 'because', 'research'] if w in essay_text.lower())
+    if evidence_count < 2:
+        feedback.append("- Include at least one concrete example to strengthen your argument.")
     else:
-        feedback.append("- Content needs significant improvement.")
-        if not has_intro:
-            feedback.append("- Start with an introduction that tells the reader what your essay is about.")
-        if not has_conclusion:
-            feedback.append("- End with a conclusion that restates your main idea.")
-        if evidence_count == 0:
-            feedback.append("- Add examples, facts, or data to support your claims.")
-        else:
-            feedback.append("- Your evidence is limited – try to elaborate further.")
-    
-    if len(essay_text) > 100 and scores['content'] < 90:
-        sentences = re.split(r'[.!?]+', essay_text)
-        sample_sentences = [s.strip() for s in sentences if len(s.strip().split()) > 5]
-        if sample_sentences:
-            sample = sample_sentences[0][:100] + "..." if len(sample_sentences[0]) > 100 else sample_sentences[0]
-            feedback.append("")
-            feedback.append("✨ **SAMPLE IMPROVEMENT BASED ON YOUR WRITING:**")
-            feedback.append(f"Original: \"{sample}\"")
-            feedback.append("Enhanced version would include more specific details and varied vocabulary.")
-            feedback.append("Tip: Try to replace general words with more precise terminology.")
-    
+        feedback.append(f"- Good use of evidence ({evidence_count} instances).")
+    feedback.append("")
+
+    # Specific improvements
+    specific = generate_specific_suggestions(essay_text, analysis, scores)
+    if specific:
+        feedback.append("✨ SPECIFIC IMPROVEMENTS YOU CAN MAKE")
+        for i, s in enumerate(specific[:2]):
+            feedback.append(f"{i+1}. {s['title']}: {s['suggestion']}")
+
+    return "\n".join(feedback)
+
+def generate_holistic_feedback(essay_text, holistic_score, analysis, rag_context=""):
+    feedback = []
+    if rag_context:
+        feedback.append("[RAG_INSIGHTS_START]")
+        feedback.append(rag_context)
+        feedback.append("[RAG_INSIGHTS_END]")
+
+    feedback.append(f"🌟 Holistic Score: {holistic_score}/5")
+    feedback.append(HOLISTIC_RUBRIC[holistic_score])
+    feedback.append("")
+    feedback.append("💡 Key Areas to Improve")
+    if holistic_score <= 3:
+        feedback.append("- Focus on clarity and organization.")
+        long_sents = find_long_sentences(essay_text)
+        if long_sents:
+            feedback.append(f"- Example long sentence: \"{long_sents[0][0][:100]}...\" → try breaking it into shorter sentences.")
     return "\n".join(feedback)
 
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
-    # Input validation
     is_valid, error_msg = is_valid_essay(essay_text)
     if not is_valid:
-        scores = {"grammar": 0, "coherence": 0, "content": 0}
-        feedback = f"⚠️ Invalid Input: {error_msg}\n\nPlease provide a meaningful essay with complete sentences."
-        return scores, feedback
-    
+        if evaluation_type == "holistic":
+            return {"holistic_score": 0, "level_description": error_msg}, f"⚠️ Invalid Input: {error_msg}"
+        else:
+            return {"grammar": 0, "coherence": 0, "content": 0}, f"⚠️ Invalid Input: {error_msg}"
+
     analysis = analyze_essay_content(essay_text)
-    scores = {
-        "grammar": calculate_grammar_score(essay_text, analysis),
-        "coherence": calculate_coherence_score(essay_text, analysis),
-        "content": calculate_content_score(essay_text, analysis)
-    }
     rag_context = ""
     if use_rag:
         try:
             rag_context = get_similar_essay_context(essay_text)
         except Exception as e:
             print(f"RAG error: {e}")
-    feedback = generate_dynamic_feedback(essay_text, scores, analysis, evaluation_type, rag_context)
+
+    if evaluation_type == "holistic":
+        score = calculate_holistic_score(essay_text, analysis)
+        feedback = generate_holistic_feedback(essay_text, score, analysis, rag_context)
+        scores = {"holistic_score": score, "level_description": HOLISTIC_RUBRIC[score]}
+    else:
+        scores = calculate_analytic_scores(essay_text, analysis)
+        feedback = generate_analytic_feedback(essay_text, scores, analysis, rag_context)
+
     return scores, feedback
 
 RUBRIC = {
@@ -260,18 +266,18 @@ SUGGESTION_GUIDE = {
 • Require consistent grading for multiple essays
 • Want to digitize handwritten essays for evaluation""",
     "how": """How to get the best results:
-1. **Input Methods**:
+1. Input Methods:
    - Type or paste your essay directly
    - Upload an image (JPG, PNG, etc.) of handwritten/printed essay
    - Upload a PDF file (all pages will be processed)
    
-2. **For Best OCR Results**:
+2. For Best OCR Results:
    - Ensure good lighting when photographing
    - Use clear, legible handwriting
    - Avoid shadows and glare
    - For PDFs, ensure they are text-based or high-quality scans
    
-3. **Review Process**:
+3. Review Process:
    - Check extracted text for accuracy
    - Make manual corrections if needed
    - Then click Evaluate for personalized feedback"""
