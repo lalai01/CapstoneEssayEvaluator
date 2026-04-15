@@ -217,12 +217,50 @@ def generate_holistic_feedback(essay_text, holistic_score, analysis, rag_context
     feedback.append(f"🌟 Holistic Score: {holistic_score}/5")
     feedback.append(HOLISTIC_RUBRIC[holistic_score])
     feedback.append("")
-    feedback.append("💡 Key Areas to Improve")
-    if holistic_score <= 3:
-        feedback.append("- Focus on clarity and organization.")
-        long_sents = find_long_sentences(essay_text)
-        if long_sents:
-            feedback.append(f"- Example long sentence: \"{long_sents[0][0][:100]}...\" → try breaking it into shorter sentences.")
+
+    feedback.append("📊 Essay Statistics")
+    feedback.append(f"• Words: {analysis['word_count']} | Sentences: {analysis['sentence_count']}")
+    feedback.append(f"• Avg sentence length: {analysis['avg_sentence_length']:.1f} words")
+    feedback.append(f"• Vocabulary richness: {analysis['vocabulary_richness']:.2f}")
+    feedback.append(f"• Transition words used: {analysis['transition_count']}")
+    feedback.append("")
+
+    feedback.append("💡 Specific Areas to Improve")
+    
+    long_sents = find_long_sentences(essay_text)
+    if long_sents:
+        sent, length = long_sents[0]
+        feedback.append(f"• Long sentence detected ({length} words): \"{sent[:100]}...\"")
+        feedback.append("  ✅ Try breaking it into shorter sentences for better readability.")
+    else:
+        feedback.append("• Sentence lengths are generally well-balanced.")
+    
+    if analysis['transition_count'] < 2:
+        feedback.append("• Add more transition words (e.g., 'Furthermore', 'However', 'Therefore') to improve flow between ideas.")
+    else:
+        feedback.append("• Good use of transition words to connect paragraphs.")
+    
+    vague_found = find_vague_words(essay_text)
+    if vague_found:
+        feedback.append(f"• Consider replacing vague words like {', '.join(list(vague_found.keys())[:3])} with more precise vocabulary.")
+    
+    paragraphs = essay_text.split('\n\n')
+    if len(paragraphs) < 2:
+        feedback.append("• Break your essay into distinct paragraphs (introduction, body, conclusion).")
+    
+    lower_text = essay_text.lower()
+    evidence_count = sum(1 for w in ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data'] if w in lower_text)
+    if evidence_count < 2:
+        feedback.append("• Include specific examples or evidence to strengthen your arguments.")
+    
+    feedback.append("")
+    if holistic_score >= 4:
+        feedback.append("✨ Overall, this is a strong essay. Focus on refining word choice and adding more nuanced examples to reach excellence.")
+    elif holistic_score >= 3:
+        feedback.append("📝 This essay shows competence. Work on deeper analysis and clearer organization to elevate it.")
+    else:
+        feedback.append("⚠️ This essay needs significant revision. Start by clarifying your main thesis and organizing your thoughts into clear paragraphs.")
+
     return "\n".join(feedback)
 
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
