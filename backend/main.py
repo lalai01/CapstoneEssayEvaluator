@@ -104,6 +104,7 @@ class OverrideRequest(BaseModel):
     teacher_feedback: str
     suggested_changes: Optional[str] = None
     accepted: bool
+    satisfaction: Optional[int] = 5
 
 class PromptTestRequest(BaseModel):
     ai_provider: str
@@ -275,10 +276,8 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
         data = override.dict()
         data["user_id"] = user["id"]
         result = supabase.table("learning_feedback").insert(data).execute()
-        print(f"✅ Override saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
-        print(f"❌ Error saving override: {e}")
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/learning-kb")
