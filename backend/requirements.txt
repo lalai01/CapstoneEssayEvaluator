@@ -42,3 +42,6 @@ numpy==1.24.3
 scipy==1.11.4
 lmdb==1.4.1
 pydantic==2.5.0
+
+# ---------- Corrector & Feedback ----------
+language-tool-python==2.7.1

@@ -115,6 +115,7 @@ class PromptTestRequest(BaseModel):
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
 
+# ---------- Saved Essays Model ----------
 class SavedEssayEntry(BaseModel):
     title: str
     essay: str
@@ -124,36 +125,6 @@ class SavedEssayEntry(BaseModel):
 def health_check():
     return {"status": "ok"}
 
-@app.post("/saved-essays")
-def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
-    try:
-        data = entry.dict()
-        data["user_id"] = user["id"]
-        result = supabase.table("saved_essays").insert(data).execute()
-        return {"id": result.data[0]["id"]}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-@app.get("/saved-essays")
-def list_saved_essays(user=Depends(get_current_user)):
-    try:
-        result = supabase.table("saved_essays") \
-            .select("id,title,essay,created_at") \
-            .eq("user_id", user["id"]) \
-            .order("created_at", desc=True) \
-            .execute()
-        return result.data
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-@app.delete("/saved-essays/{id}")
-def delete_saved_essay(id: int, user=Depends(get_current_user)):
-    try:
-        supabase.table("saved_essays").delete().eq("id", id).eq("user_id", user["id"]).execute()
-        return {"status": "deleted"}
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
 # ---------- OCR Endpoint (public) ----------
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
@@ -162,8 +133,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
         raise HTTPException(400, "Unsupported file type")
     
     contents = await file.read()
-    
-    # Use standard OCR pipeline (no handwriting recognizer fallback)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -216,7 +185,7 @@ def get_ocr_status(job_id: str):
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
-        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
+        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=False)
         return EvaluationResponse(scores=scores, feedback=feedback)
     except Exception as e:
         print(f"❌ Evaluation error: {e}")
@@ -236,16 +205,12 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
 def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
-        print(f"📥 Received knowledge entry: {data}")  # Log incoming data
         data["user_id"] = user["id"]
         result = supabase.table("knowledge_base").insert(data).execute()
         print(f"✅ Knowledge saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
         print(f"❌ Error saving knowledge: {e}")
-        # If it's a validation error, print the details
-        if hasattr(e, 'errors'):
-            print(f"Validation errors: {e.errors()}")
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/knowledge")
@@ -276,8 +241,10 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
         data = override.dict()
         data["user_id"] = user["id"]
         result = supabase.table("learning_feedback").insert(data).execute()
+        print(f"✅ Override saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
+        print(f"❌ Error saving override: {e}")
         raise HTTPException(500, f"Supabase error: {str(e)}")
 
 @app.get("/learning-kb")
@@ -288,6 +255,37 @@ def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
         return result.data
     except Exception as e:
         print(f"❌ Error listing learning feedback: {e}")
+        raise HTTPException(500, str(e))
+
+# ---------- Saved Essays (Protected) ----------
+@app.post("/saved-essays")
+def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
+    try:
+        data = entry.dict()
+        data["user_id"] = user["id"]
+        result = supabase.table("saved_essays").insert(data).execute()
+        return {"id": result.data[0]["id"]}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/saved-essays")
+def list_saved_essays(user=Depends(get_current_user)):
+    try:
+        result = supabase.table("saved_essays") \
+            .select("id,title,essay,created_at") \
+            .eq("user_id", user["id"]) \
+            .order("created_at", desc=True) \
+            .execute()
+        return result.data
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.delete("/saved-essays/{id}")
+def delete_saved_essay(id: int, user=Depends(get_current_user)):
+    try:
+        supabase.table("saved_essays").delete().eq("id", id).eq("user_id", user["id"]).execute()
+        return {"status": "deleted"}
+    except Exception as e:
         raise HTTPException(500, str(e))
 
 # ---------- AI Prompt Testing (public) ----------

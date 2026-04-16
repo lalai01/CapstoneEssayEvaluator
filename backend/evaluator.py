@@ -1,10 +1,16 @@
 import re
+import requests
+import os
+import language_tool_python
 from langdetect import detect, DetectorFactory
 from rag import get_similar_essay_context
 
 DetectorFactory.seed = 0
 
-# ---------- Holistic Rubric (5-point scale) ----------
+# Initialize LanguageTool for English (offline)
+tool = language_tool_python.LanguageTool('en-US')
+
+# ---------- Holistic Rubric (unchanged) ----------
 HOLISTIC_RUBRIC = {
     5: "🌟 Excellent (5/5) – Clear thesis, strong organization, compelling arguments, and virtually no errors. The essay demonstrates mastery of the topic.",
     4: "👍 Good (4/5) – Clear main idea, well-organized, with minor errors that do not impede understanding. Arguments are solid but could be more developed.",
@@ -67,6 +73,23 @@ def find_vague_words(essay_text):
             found[word] = count
     return found
 
+def check_grammar_with_nlp(text):
+    matches = tool.check(text)
+    errors = []
+    for match in matches[:5]:
+        if match.replacements:
+            suggestion = match.replacements[0]
+        else:
+            suggestion = "Review this part."
+        errors.append({
+            'message': match.message,
+            'suggestion': suggestion,
+            'context': match.context,
+            'offset': match.offset,
+            'length': match.errorLength
+        })
+    return errors
+
 def calculate_analytic_scores(essay_text, analysis):
     grammar = 85
     if analysis['avg_sentence_length'] > 25 or analysis['avg_sentence_length'] < 8:
@@ -77,6 +100,8 @@ def calculate_analytic_scores(essay_text, analysis):
         grammar += 3
     if re.search(r'\s+[,.!?]', essay_text) or re.search(r'[,.!?]{2,}', essay_text):
         grammar -= 5
+    grammar_errors = check_grammar_with_nlp(essay_text)
+    grammar -= min(10, len(grammar_errors) * 2)
     grammar = max(60, min(98, grammar))
 
     coherence = 80
@@ -124,33 +149,17 @@ def calculate_holistic_score(essay_text, analysis):
     else:
         return 1
 
-def generate_specific_suggestions(essay_text, analysis, scores):
-    suggestions = []
-    long_sents = find_long_sentences(essay_text)
-    if long_sents:
-        sent, length = long_sents[0]
-        truncated = sent[:150] + "..." if len(sent) > 150 else sent
-        suggestions.append({
-            "title": "Long sentence detected",
-            "original": truncated,
-            "suggestion": "Break this into shorter sentences. Example: 'Education is the cornerstone of personal and societal development. It empowers individuals with knowledge and critical thinking skills.'"
-        })
-    if analysis['transition_count'] < 2:
-        suggestions.append({
-            "title": "Add transitions",
-            "original": "Limited use of transition words.",
-            "suggestion": "Add words like 'Furthermore', 'However', or 'For example' to connect ideas."
-        })
-    vague_found = find_vague_words(essay_text)
-    if 'very' in vague_found or 'really' in vague_found:
-        suggestions.append({
-            "title": "Stronger vocabulary",
-            "original": f"Uses weak modifiers: {', '.join([k for k in vague_found])}",
-            "suggestion": "Replace 'very important' with 'crucial' or 'essential' for stronger impact."
-        })
-    return suggestions
+def get_paragraph_number(text, offset):
+    paragraphs = text.split('\n\n')
+    char_count = 0
+    for i, para in enumerate(paragraphs):
+        char_count += len(para) + 2
+        if offset < char_count:
+            return i + 1
+    return 1
 
-def generate_analytic_feedback(essay_text, scores, analysis, rag_context=""):
+def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context=""):
+    """Generate rule-based analytic feedback (without AI enhancement)."""
     feedback = []
     if rag_context:
         feedback.append("[RAG_INSIGHTS_START]")
@@ -162,52 +171,63 @@ def generate_analytic_feedback(essay_text, scores, analysis, rag_context=""):
     feedback.append(f"Average sentence length: {analysis['avg_sentence_length']:.1f} words.")
     feedback.append("")
 
-    # Grammar
     feedback.append(f"📝 GRAMMAR ANALYSIS (Score: {scores['grammar']})")
+    grammar_errors = check_grammar_with_nlp(essay_text)
+    if grammar_errors:
+        feedback.append(f"- Found {len(grammar_errors)} grammar issues:")
+        for i, err in enumerate(grammar_errors[:3]):
+            para_num = get_paragraph_number(essay_text, err['offset'])
+            feedback.append(f"  {i+1}. In paragraph {para_num}: {err['message']}")
+            feedback.append(f"     Suggestion: {err['suggestion']}")
+    else:
+        feedback.append("- No major grammar issues detected.")
+    
     long_sents = find_long_sentences(essay_text)
     if long_sents:
         sent, length = long_sents[0]
-        feedback.append(f"- Found a very long sentence ({length} words):")
-        feedback.append(f'  > "{sent[:120]}..."')
-        feedback.append('  ✅ Try splitting it: "Education is the cornerstone of personal and societal development. It empowers individuals with knowledge..."')
-    else:
-        feedback.append("- Sentence lengths are well-balanced.")
+        para_num = get_paragraph_number(essay_text, essay_text.find(sent[:30]))
+        feedback.append(f"- In paragraph {para_num}, a long sentence ({length} words) may be hard to follow. Consider splitting it.")
+    
     if analysis['vocabulary_richness'] < 0.45:
         feedback.append("- Vocabulary could be more varied. Try using synonyms or more precise terms.")
     feedback.append("")
 
-    # Coherence
     feedback.append(f"🔄 COHERENCE ANALYSIS (Score: {scores['coherence']})")
     paragraphs = essay_text.split('\n\n')
     if len(paragraphs) > 1:
         feedback.append(f"- Your essay has {len(paragraphs)} paragraphs, good for organization.")
     else:
-        feedback.append("- Consider breaking your essay into paragraphs.")
+        feedback.append("- Consider breaking your essay into distinct paragraphs.")
+    
+    for i, para in enumerate(paragraphs):
+        if len(para.split()) < 20 and i > 0 and i < len(paragraphs)-1:
+            feedback.append(f"- Paragraph {i+1} is quite short. Consider developing it further.")
+    
     if analysis['transition_count'] < 2:
         feedback.append("- Add transition words like 'Furthermore' or 'However' to improve flow.")
     else:
         feedback.append("- Good use of transition words.")
     feedback.append("")
 
-    # Content
     feedback.append(f"📚 CONTENT ANALYSIS (Score: {scores['content']})")
     evidence_count = sum(1 for w in ['example', 'for instance', 'such as', 'because', 'research'] if w in essay_text.lower())
     if evidence_count < 2:
         feedback.append("- Include at least one concrete example to strengthen your argument.")
     else:
         feedback.append(f"- Good use of evidence ({evidence_count} instances).")
-    feedback.append("")
-
-    # Specific improvements
-    specific = generate_specific_suggestions(essay_text, analysis, scores)
-    if specific:
-        feedback.append("✨ SPECIFIC IMPROVEMENTS YOU CAN MAKE")
-        for i, s in enumerate(specific[:2]):
-            feedback.append(f"{i+1}. {s['title']}: {s['suggestion']}")
+    
+    if len(paragraphs) >= 2:
+        intro_words = ['introduction', 'first', 'begin', 'purpose', 'this essay']
+        if not any(w in paragraphs[0].lower() for w in intro_words):
+            feedback.append("- Your first paragraph could more clearly introduce the topic.")
+        conc_words = ['conclusion', 'summary', 'finally', 'in conclusion', 'overall']
+        if not any(w in paragraphs[-1].lower() for w in conc_words):
+            feedback.append("- Your final paragraph could be strengthened with a concluding statement.")
 
     return "\n".join(feedback)
 
-def generate_holistic_feedback(essay_text, holistic_score, analysis, rag_context=""):
+def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, rag_context=""):
+    """Generate rule-based holistic feedback (without AI enhancement)."""
     feedback = []
     if rag_context:
         feedback.append("[RAG_INSIGHTS_START]")
@@ -227,18 +247,26 @@ def generate_holistic_feedback(essay_text, holistic_score, analysis, rag_context
 
     feedback.append("💡 Specific Areas to Improve")
     
+    grammar_errors = check_grammar_with_nlp(essay_text)
+    if grammar_errors:
+        err = grammar_errors[0]
+        para_num = get_paragraph_number(essay_text, err['offset'])
+        feedback.append(f"• Grammar issue in paragraph {para_num}: {err['message']}")
+        feedback.append(f"  ✅ Suggested correction: {err['suggestion']}")
+    
     long_sents = find_long_sentences(essay_text)
     if long_sents:
         sent, length = long_sents[0]
-        feedback.append(f"• Long sentence detected ({length} words): \"{sent[:100]}...\"")
-        feedback.append("  ✅ Try breaking it into shorter sentences for better readability.")
+        para_num = get_paragraph_number(essay_text, essay_text.find(sent[:30]))
+        feedback.append(f"• Long sentence in paragraph {para_num} ({length} words): \"{sent[:100]}...\"")
+        feedback.append("  ✅ Try breaking it into shorter sentences.")
     else:
         feedback.append("• Sentence lengths are generally well-balanced.")
     
     if analysis['transition_count'] < 2:
-        feedback.append("• Add more transition words (e.g., 'Furthermore', 'However', 'Therefore') to improve flow between ideas.")
+        feedback.append("• Add more transition words (e.g., 'Furthermore', 'However', 'Therefore').")
     else:
-        feedback.append("• Good use of transition words to connect paragraphs.")
+        feedback.append("• Good use of transition words.")
     
     vague_found = find_vague_words(essay_text)
     if vague_found:
@@ -255,15 +283,65 @@ def generate_holistic_feedback(essay_text, holistic_score, analysis, rag_context
     
     feedback.append("")
     if holistic_score >= 4:
-        feedback.append("✨ Overall, this is a strong essay. Focus on refining word choice and adding more nuanced examples to reach excellence.")
+        feedback.append("✨ Overall, this is a strong essay. Focus on refining word choice and adding more nuanced examples.")
     elif holistic_score >= 3:
-        feedback.append("📝 This essay shows competence. Work on deeper analysis and clearer organization to elevate it.")
+        feedback.append("📝 This essay shows competence. Work on deeper analysis and clearer organization.")
     else:
-        feedback.append("⚠️ This essay needs significant revision. Start by clarifying your main thesis and organizing your thoughts into clear paragraphs.")
+        feedback.append("⚠️ This essay needs significant revision. Start by clarifying your main thesis and organizing your thoughts.")
 
     return "\n".join(feedback)
 
+def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback):
+    """Use local Ollama (Gemma) to rewrite feedback into warmer, more natural language."""
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+    model = "gemma2:2b"
+    
+    if 'holistic_score' in scores:
+        score_info = f"Holistic Score: {scores['holistic_score']}/5\nDescription: {scores.get('level_description', '')}"
+    else:
+        score_info = f"Grammar: {scores.get('grammar', 'N/A')}\nCoherence: {scores.get('coherence', 'N/A')}\nContent: {scores.get('content', 'N/A')}"
+    
+    system_msg = "You are an expert writing coach who provides warm, encouraging, and actionable feedback to students."
+    user_msg = f"""Rewrite the following technical analysis into a single, natural feedback paragraph. Preserve all scores, specific issues, paragraph numbers, and actionable suggestions. Use a supportive tone.
+
+Essay excerpt: {essay_text[:1000]}...
+
+Scores: {score_info}
+
+Technical Analysis: {rule_feedback[:2000]}
+
+Write only the final feedback paragraph:"""
+    
+    try:
+        response = requests.post(
+            f"{ollama_url}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.7}
+            },
+            timeout=45
+        )
+        if response.status_code == 200:
+            data = response.json()
+            enhanced = data.get("message", {}).get("content", "").strip()
+            if enhanced:
+                # Preserve RAG section if it exists
+                if "[RAG_INSIGHTS_START]" in rule_feedback:
+                    rag_part = rule_feedback.split("[RAG_INSIGHTS_START]")[1].split("[RAG_INSIGHTS_END]")[0]
+                    return f"[RAG_INSIGHTS_START]\n{rag_part}\n[RAG_INSIGHTS_END]\n\n{enhanced}"
+                return enhanced
+    except Exception as e:
+        print(f"AI enhancement failed, using rule-based feedback: {e}")
+    
+    return rule_feedback
+
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
+    """Main evaluation function. Returns scores and AI-enhanced feedback."""
     is_valid, error_msg = is_valid_essay(essay_text)
     if not is_valid:
         if evaluation_type == "holistic":
@@ -281,14 +359,18 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
 
     if evaluation_type == "holistic":
         score = calculate_holistic_score(essay_text, analysis)
-        feedback = generate_holistic_feedback(essay_text, score, analysis, rag_context)
+        rule_feedback = generate_rule_based_holistic_feedback(essay_text, score, analysis, rag_context)
         scores = {"holistic_score": score, "level_description": HOLISTIC_RUBRIC[score]}
     else:
         scores = calculate_analytic_scores(essay_text, analysis)
-        feedback = generate_analytic_feedback(essay_text, scores, analysis, rag_context)
+        rule_feedback = generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context)
+
+    # Always enhance feedback with AI (fallback to rule-based on failure)
+    feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback)
 
     return scores, feedback
 
+# Rubric and Suggestion Guide remain unchanged
 RUBRIC = {
     "grammar": "Correctness of sentence structure, punctuation, spelling, and tense consistency.",
     "coherence": "Logical flow of ideas, use of transition words, paragraph organization, and clarity.",
