@@ -3,6 +3,7 @@ import tempfile
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import ocr_utils
@@ -10,7 +11,7 @@ import evaluator
 from supabase_client import supabase, supabase_admin
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
-from auth import get_current_user
+from auth import get_current_user, security   # ✅ Import security (HTTPBearer)
 
 # ---------- Google Cloud Vision Credentials ----------
 google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
@@ -141,19 +142,33 @@ def health_check():
 def is_admin(user):
     return user.get("role") == "admin"
 
-# ---------- Ratings & Reviews ----------
+# ---------- Ratings & Reviews (FIXED) ----------
 @app.post("/ratings")
-def submit_rating(entry: RatingEntry, user=Depends(get_current_user)):
+def submit_rating(
+    entry: RatingEntry,
+    user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)   # ✅ Get raw JWT
+):
+    # Extract the user's access token
+    token = credentials.credentials
+
+    # Create a Supabase client that carries the user's JWT
+    from supabase import create_client, Client
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    user_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    user_client.auth.set_session(token, "")   # Set the user's JWT
+
     # Upsert: update if exists, else insert
-    existing = supabase.table("ratings").select("*").eq("user_id", user["id"]).execute()
+    existing = user_client.table("ratings").select("*").eq("user_id", user["id"]).execute()
     if existing.data:
-        result = supabase.table("ratings").update({
+        result = user_client.table("ratings").update({
             "rating": entry.rating,
             "comment": entry.comment,
             "updated_at": "now()"
         }).eq("user_id", user["id"]).execute()
     else:
-        result = supabase.table("ratings").insert({
+        result = user_client.table("ratings").insert({
             "user_id": user["id"],
             "rating": entry.rating,
             "comment": entry.comment
@@ -216,7 +231,6 @@ def delete_survey(id: int, user=Depends(get_current_user)):
 # ---------- User: Survey Responses ----------
 @app.post("/surveys/{id}/respond")
 def submit_survey_response(id: int, response: SurveyResponseEntry, user=Depends(get_current_user)):
-    # Ensure survey exists and is active
     survey = supabase.table("surveys").select("*").eq("id", id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "Survey not found or inactive")
@@ -226,13 +240,12 @@ def submit_survey_response(id: int, response: SurveyResponseEntry, user=Depends(
 
 @app.get("/surveys/{id}/responses")
 def get_survey_responses(id: int, user=Depends(get_current_user)):
-    # Admin only, or allow users to see aggregated results (you can adjust policy)
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     result = supabase.table("survey_responses").select("*").eq("survey_id", id).execute()
     return result.data
 
-# ---------- Saved Essays (for AI Playground auto‑save) ----------
+# ---------- Saved Essays ----------
 @app.post("/saved-essays")
 def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
     try:
@@ -263,7 +276,7 @@ def delete_saved_essay(id: int, user=Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- OCR Endpoint (public) ----------
+# ---------- OCR Endpoint ----------
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -322,7 +335,6 @@ def get_ocr_status(job_id: str):
 # ---------- Evaluation Endpoints ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
-    """Evaluate essay without RAG enhancement."""
     try:
         scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=False)
         return EvaluationResponse(scores=scores, feedback=feedback)
@@ -332,7 +344,6 @@ def evaluate_essay(req: EvaluationRequest):
 
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
 def evaluate_essay_with_rag(req: EvaluationRequest):
-    """Evaluate essay with RAG enhancement (retrieve similar past evaluations)."""
     try:
         scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
         return EvaluationResponse(scores=scores, feedback=feedback)
@@ -340,7 +351,7 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
         print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
-# ---------- Knowledge Base (Protected) ----------
+# ---------- Knowledge Base ----------
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
@@ -374,7 +385,7 @@ def get_knowledge(id: int, user=Depends(get_current_user)):
         print(f"❌ Error getting knowledge {id}: {e}")
         raise HTTPException(500, str(e))
 
-# ---------- Teacher Override & Learning KB (Protected) ----------
+# ---------- Teacher Override ----------
 @app.post("/override")
 def save_override(override: OverrideRequest, user=Depends(get_current_user)):
     try:
@@ -397,7 +408,7 @@ def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
         print(f"❌ Error listing learning feedback: {e}")
         raise HTTPException(500, str(e))
 
-# ---------- AI Prompt Testing (public) ----------
+# ---------- AI Prompt Testing ----------
 @app.post("/test-prompt", response_model=PromptTestResponse)
 def test_ai_prompt(req: PromptTestRequest):
     try:
@@ -412,7 +423,7 @@ def test_ai_prompt(req: PromptTestRequest):
         print(f"❌ Prompt test error: {e}")
         return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
-# ---------- Utility Endpoints (public) ----------
+# ---------- Utility Endpoints ----------
 @app.get("/rubric")
 def get_rubric():
     return evaluator.RUBRIC
