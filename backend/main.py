@@ -147,18 +147,17 @@ def is_admin(user):
 def submit_rating(
     entry: RatingEntry,
     user: dict = Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security)   # ✅ Get raw JWT
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
-    # Extract the user's access token
     token = credentials.credentials
-
-    # Create a Supabase client that carries the user's JWT
-    from supabase import create_client, Client
     SUPABASE_URL = os.environ.get("SUPABASE_URL")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-    user_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    user_client.auth.set_session(token, "")   # Set the user's JWT
-
+    
+    # Create a client and explicitly set the Authorization header
+    from supabase import create_client
+    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    user_client.postgrest.auth(token)   # ✅ This directly sets the JWT for REST calls
+    
     # Upsert: update if exists, else insert
     existing = user_client.table("ratings").select("*").eq("user_id", user["id"]).execute()
     if existing.data:
