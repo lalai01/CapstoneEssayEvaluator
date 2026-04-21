@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon-x11-0 \
     mupdf \
     wget \
+    default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Tesseract environment variables
