@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies for Tesseract, OpenCV, PaddleOCR, EasyOCR, and PyMuPDF
+# Install system dependencies including Java and unzip
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mupdf \
     wget \
     default-jre-headless \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Tesseract environment variables
@@ -32,8 +33,14 @@ COPY requirements.txt .
 # Install PyTorch CPU (required for EasyOCR)
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Install Python dependencies (includes PaddleOCR, EasyOCR, etc.)
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download LanguageTool model
+RUN mkdir -p /root/.cache/language_tool_python && \
+    wget -q -O /tmp/LanguageTool.zip https://languagetool.org/download/LanguageTool-stable.zip && \
+    unzip -q /tmp/LanguageTool.zip -d /root/.cache/language_tool_python/ && \
+    rm /tmp/LanguageTool.zip
 
 # Copy the rest of the application
 COPY . .
@@ -42,4 +49,4 @@ COPY . .
 EXPOSE 8000
 
 # Run FastAPI with uvicorn
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

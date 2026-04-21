@@ -1,14 +1,31 @@
 import re
 import requests
 import os
+import time
 import language_tool_python
 from langdetect import detect, DetectorFactory
 from rag import get_similar_essay_context
 
 DetectorFactory.seed = 0
 
-# Initialize LanguageTool for English (offline)
-tool = language_tool_python.LanguageTool('en-US')
+# ---------- Safe LanguageTool Initialization with Retry ----------
+tool = None
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
+for attempt in range(1, MAX_RETRIES + 1):
+    try:
+        tool = language_tool_python.LanguageTool('en-US')
+        print(f"✅ LanguageTool initialized successfully (attempt {attempt})")
+        break
+    except Exception as e:
+        print(f"⚠️ LanguageTool initialization attempt {attempt} failed: {e}")
+        if attempt < MAX_RETRIES:
+            print(f"   Retrying in {RETRY_DELAY} seconds...")
+            time.sleep(RETRY_DELAY)
+        else:
+            print("❌ LanguageTool could not be initialized. Grammar checking will be disabled.")
+            tool = None
 
 # ---------- Holistic Rubric (unchanged) ----------
 HOLISTIC_RUBRIC = {
@@ -74,7 +91,15 @@ def find_vague_words(essay_text):
     return found
 
 def check_grammar_with_nlp(text):
-    matches = tool.check(text)
+    """Return a list of grammar errors with suggestions and context.
+       Returns empty list if LanguageTool is unavailable."""
+    if tool is None:
+        return []
+    try:
+        matches = tool.check(text)
+    except Exception as e:
+        print(f"LanguageTool check failed: {e}")
+        return []
     errors = []
     for match in matches[:5]:
         if match.replacements:
@@ -159,7 +184,6 @@ def get_paragraph_number(text, offset):
     return 1
 
 def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context=""):
-    """Generate rule-based analytic feedback (without AI enhancement)."""
     feedback = []
     if rag_context:
         feedback.append("[RAG_INSIGHTS_START]")
@@ -227,7 +251,6 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
     return "\n".join(feedback)
 
 def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, rag_context=""):
-    """Generate rule-based holistic feedback (without AI enhancement)."""
     feedback = []
     if rag_context:
         feedback.append("[RAG_INSIGHTS_START]")
@@ -330,7 +353,6 @@ Write only the final feedback paragraph:"""
             data = response.json()
             enhanced = data.get("message", {}).get("content", "").strip()
             if enhanced:
-                # Preserve RAG section if it exists
                 if "[RAG_INSIGHTS_START]" in rule_feedback:
                     rag_part = rule_feedback.split("[RAG_INSIGHTS_START]")[1].split("[RAG_INSIGHTS_END]")[0]
                     return f"[RAG_INSIGHTS_START]\n{rag_part}\n[RAG_INSIGHTS_END]\n\n{enhanced}"
@@ -365,12 +387,9 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
         scores = calculate_analytic_scores(essay_text, analysis)
         rule_feedback = generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context)
 
-    # Always enhance feedback with AI (fallback to rule-based on failure)
     feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback)
-
     return scores, feedback
 
-# Rubric and Suggestion Guide remain unchanged
 RUBRIC = {
     "grammar": "Correctness of sentence structure, punctuation, spelling, and tense consistency.",
     "coherence": "Logical flow of ideas, use of transition words, paragraph organization, and clarity.",
