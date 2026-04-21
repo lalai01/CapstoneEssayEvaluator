@@ -119,10 +119,118 @@ class SavedEssayEntry(BaseModel):
     title: str
     essay: str
 
+class RatingEntry(BaseModel):
+    rating: int
+    comment: Optional[str] = None
+
+class SurveyEntry(BaseModel):
+    question: str
+    options: Optional[List[str]] = None
+    is_active: bool = True
+
+class SurveyResponseEntry(BaseModel):
+    survey_id: int
+    answer: str
+
+
 # ---------- Health Check ----------
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+def is_admin(user):
+    return user.get("role") == "admin"
+
+# ---------- Ratings & Reviews ----------
+@app.post("/ratings")
+def submit_rating(entry: RatingEntry, user=Depends(get_current_user)):
+    # Upsert: update if exists, else insert
+    existing = supabase.table("ratings").select("*").eq("user_id", user["id"]).execute()
+    if existing.data:
+        result = supabase.table("ratings").update({
+            "rating": entry.rating,
+            "comment": entry.comment,
+            "updated_at": "now()"
+        }).eq("user_id", user["id"]).execute()
+    else:
+        result = supabase.table("ratings").insert({
+            "user_id": user["id"],
+            "rating": entry.rating,
+            "comment": entry.comment
+        }).execute()
+    return {"id": result.data[0]["id"]}
+
+@app.get("/ratings")
+def list_ratings():
+    result = supabase.table("ratings").select("*").order("created_at", desc=True).execute()
+    return result.data
+
+@app.get("/ratings/summary")
+def get_rating_summary():
+    result = supabase.table("ratings").select("rating").execute()
+    ratings = [r["rating"] for r in result.data]
+    avg = sum(ratings) / len(ratings) if ratings else 0
+    return {
+        "average": round(avg, 1),
+        "count": len(ratings),
+        "distribution": {
+            "1": ratings.count(1),
+            "2": ratings.count(2),
+            "3": ratings.count(3),
+            "4": ratings.count(4),
+            "5": ratings.count(5)
+        }
+    }
+
+# ---------- Admin: Surveys ----------
+@app.post("/surveys")
+def create_survey(survey: SurveyEntry, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    data = survey.dict()
+    result = supabase.table("surveys").insert(data).execute()
+    return {"id": result.data[0]["id"]}
+
+@app.get("/surveys")
+def list_surveys(active_only: bool = True):
+    query = supabase.table("surveys").select("*")
+    if active_only:
+        query = query.eq("is_active", True)
+    result = query.order("created_at", desc=True).execute()
+    return result.data
+
+@app.put("/surveys/{id}")
+def update_survey(id: int, survey: SurveyEntry, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    result = supabase.table("surveys").update(survey.dict()).eq("id", id).execute()
+    return {"status": "updated"}
+
+@app.delete("/surveys/{id}")
+def delete_survey(id: int, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    supabase.table("surveys").delete().eq("id", id).execute()
+    return {"status": "deleted"}
+
+# ---------- User: Survey Responses ----------
+@app.post("/surveys/{id}/respond")
+def submit_survey_response(id: int, response: SurveyResponseEntry, user=Depends(get_current_user)):
+    # Ensure survey exists and is active
+    survey = supabase.table("surveys").select("*").eq("id", id).eq("is_active", True).execute()
+    if not survey.data:
+        raise HTTPException(404, "Survey not found or inactive")
+    data = {"survey_id": id, "user_id": user["id"], "answer": response.answer}
+    result = supabase.table("survey_responses").insert(data).execute()
+    return {"id": result.data[0]["id"]}
+
+@app.get("/surveys/{id}/responses")
+def get_survey_responses(id: int, user=Depends(get_current_user)):
+    # Admin only, or allow users to see aggregated results (you can adjust policy)
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    result = supabase.table("survey_responses").select("*").eq("survey_id", id).execute()
+    return result.data
 
 # ---------- Saved Essays (for AI Playground auto‑save) ----------
 @app.post("/saved-essays")
