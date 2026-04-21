@@ -176,8 +176,33 @@ def submit_rating(
 
 @app.get("/ratings")
 def list_ratings():
+    # Get all ratings
     result = supabase.table("ratings").select("*").order("created_at", desc=True).execute()
-    return result.data
+    ratings = result.data
+
+    # Collect unique user IDs
+    user_ids = list(set(r["user_id"] for r in ratings if r.get("user_id")))
+
+    # Fetch user profiles from auth.users using admin client
+    user_profiles = {}
+    if user_ids:
+        # Query auth.users via admin API (service_role bypasses RLS)
+        auth_users = supabase_admin.auth.admin.list_users()
+        for u in auth_users:
+            if u.id in user_ids:
+                meta = u.user_metadata
+                user_profiles[u.id] = {
+                    "full_name": meta.get("full_name") or meta.get("name") or u.email,
+                    "avatar_url": meta.get("avatar_url") or meta.get("picture")
+                }
+
+    # Attach profile info to each rating
+    for r in ratings:
+        profile = user_profiles.get(r["user_id"], {})
+        r["user_name"] = profile.get("full_name") or "Anonymous"
+        r["user_avatar"] = profile.get("avatar_url")
+
+    return ratings
 
 @app.get("/ratings/summary")
 def get_rating_summary():
