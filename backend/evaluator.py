@@ -1,33 +1,21 @@
 import re
 import requests
 import os
-import time
 import language_tool_python
 from langdetect import detect, DetectorFactory
 from rag import get_similar_essay_context
 
 DetectorFactory.seed = 0
 
-# ---------- Safe LanguageTool Initialization with Retry ----------
+# ---------- Safe LanguageTool Initialization ----------
 tool = None
-MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
+try:
+    tool = language_tool_python.LanguageTool('en-US')
+    print("✅ LanguageTool initialized successfully.")
+except Exception as e:
+    print(f"⚠️ LanguageTool initialization failed: {e}. Grammar checking will be limited to heuristics.")
 
-for attempt in range(1, MAX_RETRIES + 1):
-    try:
-        tool = language_tool_python.LanguageTool('en-US')
-        print(f"✅ LanguageTool initialized successfully (attempt {attempt})")
-        break
-    except Exception as e:
-        print(f"⚠️ LanguageTool initialization attempt {attempt} failed: {e}")
-        if attempt < MAX_RETRIES:
-            print(f"   Retrying in {RETRY_DELAY} seconds...")
-            time.sleep(RETRY_DELAY)
-        else:
-            print("❌ LanguageTool could not be initialized. Grammar checking will be disabled.")
-            tool = None
-
-# ---------- Holistic Rubric (unchanged) ----------
+# ---------- Holistic Rubric (5-point scale) ----------
 HOLISTIC_RUBRIC = {
     5: "🌟 Excellent (5/5) – Clear thesis, strong organization, compelling arguments, and virtually no errors. The essay demonstrates mastery of the topic.",
     4: "👍 Good (4/5) – Clear main idea, well-organized, with minor errors that do not impede understanding. Arguments are solid but could be more developed.",
@@ -91,15 +79,10 @@ def find_vague_words(essay_text):
     return found
 
 def check_grammar_with_nlp(text):
-    """Return a list of grammar errors with suggestions and context.
-       Returns empty list if LanguageTool is unavailable."""
+    """Return a list of grammar errors with suggestions and context."""
     if tool is None:
         return []
-    try:
-        matches = tool.check(text)
-    except Exception as e:
-        print(f"LanguageTool check failed: {e}")
-        return []
+    matches = tool.check(text)
     errors = []
     for match in matches[:5]:
         if match.replacements:
@@ -183,6 +166,32 @@ def get_paragraph_number(text, offset):
             return i + 1
     return 1
 
+def generate_specific_suggestions(essay_text, analysis, scores):
+    suggestions = []
+    long_sents = find_long_sentences(essay_text)
+    if long_sents:
+        sent, length = long_sents[0]
+        truncated = sent[:150] + "..." if len(sent) > 150 else sent
+        suggestions.append({
+            "title": "Long sentence detected",
+            "original": truncated,
+            "suggestion": "Break this into shorter sentences. Example: 'Education is the cornerstone of personal and societal development. It empowers individuals with knowledge and critical thinking skills.'"
+        })
+    if analysis['transition_count'] < 2:
+        suggestions.append({
+            "title": "Add transitions",
+            "original": "Limited use of transition words.",
+            "suggestion": "Add words like 'Furthermore', 'However', or 'For example' to connect ideas."
+        })
+    vague_found = find_vague_words(essay_text)
+    if 'very' in vague_found or 'really' in vague_found:
+        suggestions.append({
+            "title": "Stronger vocabulary",
+            "original": f"Uses weak modifiers: {', '.join([k for k in vague_found])}",
+            "suggestion": "Replace 'very important' with 'crucial' or 'essential' for stronger impact."
+        })
+    return suggestions
+
 def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context=""):
     feedback = []
     if rag_context:
@@ -247,6 +256,13 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
         conc_words = ['conclusion', 'summary', 'finally', 'in conclusion', 'overall']
         if not any(w in paragraphs[-1].lower() for w in conc_words):
             feedback.append("- Your final paragraph could be strengthened with a concluding statement.")
+    feedback.append("")
+
+    specific = generate_specific_suggestions(essay_text, analysis, scores)
+    if specific:
+        feedback.append("✨ SPECIFIC IMPROVEMENTS YOU CAN MAKE")
+        for i, s in enumerate(specific[:2]):
+            feedback.append(f"{i+1}. {s['title']}: {s['suggestion']}")
 
     return "\n".join(feedback)
 
@@ -315,7 +331,6 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
     return "\n".join(feedback)
 
 def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback):
-    """Use local Ollama (Gemma) to rewrite feedback into warmer, more natural language."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     model = "gemma2:2b"
     
@@ -363,7 +378,6 @@ Write only the final feedback paragraph:"""
     return rule_feedback
 
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
-    """Main evaluation function. Returns scores and AI-enhanced feedback."""
     is_valid, error_msg = is_valid_essay(essay_text)
     if not is_valid:
         if evaluation_type == "holistic":
@@ -390,6 +404,7 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
     feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback)
     return scores, feedback
 
+# ---------- Rubric and Suggestion Guide ----------
 RUBRIC = {
     "grammar": "Correctness of sentence structure, punctuation, spelling, and tense consistency.",
     "coherence": "Logical flow of ideas, use of transition words, paragraph organization, and clarity.",
