@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies including Java and unzip
+# Install system dependencies including Java, unzip, and wget
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -36,11 +36,13 @@ RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download LanguageTool model
+# Pre-download LanguageTool model and move contents to the correct location
 RUN mkdir -p /root/.cache/language_tool_python && \
     wget -q -O /tmp/LanguageTool.zip https://languagetool.org/download/LanguageTool-stable.zip && \
     unzip -q /tmp/LanguageTool.zip -d /root/.cache/language_tool_python/ && \
-    rm /tmp/LanguageTool.zip
+    rm /tmp/LanguageTool.zip && \
+    mv /root/.cache/language_tool_python/LanguageTool-*/* /root/.cache/language_tool_python/ && \
+    rmdir /root/.cache/language_tool_python/LanguageTool-*
 
 # Copy the rest of the application
 COPY . .
