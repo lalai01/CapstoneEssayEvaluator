@@ -176,25 +176,28 @@ def submit_rating(
 
 @app.get("/ratings")
 def list_ratings():
-    # Get all ratings
+    # Fetch ratings
     result = supabase.table("ratings").select("*").order("created_at", desc=True).execute()
     ratings = result.data
+
+    if not ratings:
+        return []
 
     # Collect unique user IDs
     user_ids = list(set(r["user_id"] for r in ratings if r.get("user_id")))
 
-    # Fetch user profiles from auth.users using admin client
+    # Fetch user profiles via RPC (works with anon key)
     user_profiles = {}
     if user_ids:
-        # Query auth.users via admin API (service_role bypasses RLS)
-        auth_users = supabase_admin.auth.admin.list_users()
-        for u in auth_users:
-            if u.id in user_ids:
-                meta = u.user_metadata
-                user_profiles[u.id] = {
-                    "full_name": meta.get("full_name") or meta.get("name") or u.email,
-                    "avatar_url": meta.get("avatar_url") or meta.get("picture")
+        try:
+            profiles = supabase.rpc("get_user_profiles", {"user_ids": user_ids}).execute()
+            for p in profiles.data:
+                user_profiles[p["id"]] = {
+                    "full_name": p.get("full_name") or "Anonymous",
+                    "avatar_url": p.get("avatar_url")
                 }
+        except Exception as e:
+            print(f"Failed to fetch user profiles via RPC: {e}")
 
     # Attach profile info to each rating
     for r in ratings:
