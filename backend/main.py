@@ -1,6 +1,6 @@
 import os
 import tempfile
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -49,28 +49,23 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-@app.middleware("http")
-async def add_cors_headers(request, call_next):
-    response = await call_next(request)
+# Global exception handler – always adds CORS headers
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin")
+    headers = {}
     if origin in ALLOWED_ORIGINS:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
-
-@app.options("/{path:path}")
-async def preflight_handler():
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    import traceback
+    traceback.print_exc()
     return JSONResponse(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        },
-        content={}
+        status_code=500,
+        content={"detail": str(exc)},
+        headers=headers,
     )
 
-# ---------- Helper: create authenticated Supabase client ----------
+# ---------- Supabase helper ----------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -82,6 +77,7 @@ def get_user_client(credentials: HTTPAuthorizationCredentials = Depends(security
     return c
 
 # ---------- Models ----------
+# (All models unchanged – included for completeness)
 class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
@@ -181,7 +177,7 @@ def is_admin(user):
     admin_emails = os.environ.get("ADMIN_EMAILS", "admin_essay_capstone@gmail.com").split(",")
     return (user.get("role") == "admin") or (user.get("email") in admin_emails)
 
-# ---------- Comments ----------
+# ---------- Comments & Reactions ----------
 @app.post("/comments")
 def create_comment(
     entry: CommentEntry,
@@ -201,13 +197,10 @@ def create_comment(
 def list_comments(rating_id: int, user=Depends(get_current_user)):
     comments_result = supabase.table("comments").select("*").eq("rating_id", rating_id).order("created_at", desc=False).execute()
     comments = comments_result.data
-
     if not comments:
         return []
-
     user_ids = list(set(c["user_id"] for c in comments if c.get("user_id")))
     comment_ids = [c["id"] for c in comments]
-
     user_profiles = {}
     if user_ids:
         try:
@@ -219,10 +212,8 @@ def list_comments(rating_id: int, user=Depends(get_current_user)):
                 }
         except Exception as e:
             print(f"Failed to fetch user profiles: {e}")
-
     reactions_result = supabase.table("comment_reactions").select("*").in_("comment_id", comment_ids).execute()
     reactions = reactions_result.data
-
     comment_reactions_map = {}
     user_reactions_map = {}
     for r in reactions:
@@ -235,7 +226,6 @@ def list_comments(rating_id: int, user=Depends(get_current_user)):
             if cid not in user_reactions_map:
                 user_reactions_map[cid] = []
             user_reactions_map[cid].append(rtype)
-
     enriched = []
     for c in comments:
         profile = user_profiles.get(c["user_id"], {})
@@ -244,7 +234,6 @@ def list_comments(rating_id: int, user=Depends(get_current_user)):
         c["reactions"] = comment_reactions_map.get(c["id"], {})
         c["user_reactions"] = user_reactions_map.get(c["id"], [])
         enriched.append(c)
-
     return enriched
 
 @app.post("/reactions")
@@ -293,7 +282,6 @@ def list_ratings():
     ratings = result.data
     if not ratings:
         return []
-
     user_ids = list(set(r["user_id"] for r in ratings if r.get("user_id")))
     user_profiles = {}
     if user_ids:
@@ -306,12 +294,10 @@ def list_ratings():
                 }
         except Exception as e:
             print(f"Failed to fetch user profiles: {e}")
-
     for r in ratings:
         profile = user_profiles.get(r["user_id"], {})
         r["user_name"] = profile.get("full_name") or "Anonymous"
         r["user_avatar"] = profile.get("avatar_url")
-
     return ratings
 
 @app.get("/ratings/summary")
@@ -331,7 +317,7 @@ def get_rating_summary():
         }
     }
 
-# ---------- Admin Surveys (Authenticated client) ----------
+# ---------- Admin Surveys (🔥 fixed with user_client) ----------
 @app.post("/surveys")
 def create_survey(
     survey: SurveyCreate,
@@ -376,7 +362,7 @@ def delete_survey(
     user_client.table("surveys").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
-# ---------- Admin Questions (Authenticated client) ----------
+# ---------- Admin Questions (🔥 fixed with user_client) ----------
 @app.post("/surveys/{survey_id}/questions")
 def add_question(
     survey_id: int,
@@ -420,7 +406,7 @@ def delete_question(
     user_client.table("survey_questions").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
-# ---------- User Survey Responses (Authenticated client) ----------
+# ---------- User Survey Responses ----------
 @app.post("/surveys/{survey_id}/respond")
 def submit_survey_response(
     survey_id: int,
@@ -428,11 +414,9 @@ def submit_survey_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
-    # Verify survey is active
     survey = supabase.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "Survey not found or inactive")
-
     for question_id, answer in payload.answers.items():
         user_client.table("survey_responses").upsert({
             "survey_id": survey_id,
@@ -440,7 +424,6 @@ def submit_survey_response(
             "user_id": user["id"],
             "answer": answer
         }, on_conflict="survey_id,question_id,user_id").execute()
-
     return {"status": "submitted"}
 
 @app.get("/surveys/{survey_id}/responses")
@@ -453,13 +436,6 @@ def get_survey_responses(
         raise HTTPException(403, "Admin only")
     responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
     return responses.data
-
-@app.get("/surveys/responses")
-def get_all_responses(user: dict = Depends(get_current_user), user_client: Client = Depends(get_user_client)):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
-    result = user_client.table("survey_responses").select("*").execute()
-    return result.data
 
 # ---------- Saved Essays ----------
 @app.post("/saved-essays")
@@ -547,7 +523,7 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-# ---------- Evaluation Endpoints ----------
+# ---------- Evaluation ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
