@@ -344,8 +344,11 @@ def create_survey(
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys")
-def list_surveys(active_only: bool = False):
-    query = supabase.table("surveys").select("*")
+def list_surveys(
+    active_only: bool = False,
+    user_client: Client = Depends(get_user_client)
+):
+    query = user_client.table("surveys").select("*")
     if active_only:
         query = query.eq("is_active", True)
     result = query.order("created_at", desc=True).execute()
