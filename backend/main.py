@@ -77,7 +77,6 @@ def get_user_client(credentials: HTTPAuthorizationCredentials = Depends(security
     return c
 
 # ---------- Models ----------
-# (All models unchanged – included for completeness)
 class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
@@ -317,30 +316,23 @@ def get_rating_summary():
         }
     }
 
-# ---------- Admin Surveys (🔥 fixed with user_client) ----------
+# ---------- Admin Surveys ----------
 @app.post("/surveys")
 def create_survey(
     survey: SurveyCreate,
     user: dict = Depends(get_current_user),
-    user_client: Client = Depends(get_user_client)   # kept for fallback
+    user_client: Client = Depends(get_user_client)
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-
     data = survey.dict()
-    print(f"🔍 Admin user: {user['email']}, role: {user.get('role')}")
-    print(f"📦 Creating survey: {data['title']}")
-
-    # Prefer supabase_admin (bypasses RLS) – most reliable
     try:
         if supabase_admin:
             result = supabase_admin.table("surveys").insert(data).execute()
-            return {"id": result.data[0]["id"]}
-    except Exception as e:
-        print(f"⚠️ supabase_admin failed: {e}, falling back to user_client")
-
-    # Fallback to authenticated client
-    result = user_client.table("surveys").insert(data).execute()
+        else:
+            result = user_client.table("surveys").insert(data).execute()
+    except Exception:
+        result = user_client.table("surveys").insert(data).execute()
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys")
@@ -373,7 +365,6 @@ def update_survey(
         user_client.table("surveys").update(data).eq("id", id).execute()
     return {"status": "updated"}
 
-
 @app.delete("/surveys/{id}")
 def delete_survey(
     id: int,
@@ -391,7 +382,7 @@ def delete_survey(
         user_client.table("surveys").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
-# ---------- Admin Questions (🔥 fixed with user_client) ----------
+# ---------- Admin Questions ----------
 @app.post("/surveys/{survey_id}/questions")
 def add_question(
     survey_id: int,
@@ -424,25 +415,7 @@ def list_questions(
         .execute()
     return result.data
 
-def update_question(
-    id: int,
-    question: QuestionUpdate,
-    user: dict = Depends(get_current_user),
-    user_client: Client = Depends(get_user_client)
-):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
-    data = {k: v for k, v in question.dict().items() if v is not None}
-    try:
-        if supabase_admin:
-            supabase_admin.table("survey_questions").update(data).eq("id", id).execute()
-        else:
-            user_client.table("survey_questions").update(data).eq("id", id).execute()
-    except Exception:
-        user_client.table("survey_questions").update(data).eq("id", id).execute()
-    return {"status": "updated"}
-
-@app.put("/questions/{id}")  
+@app.put("/questions/{id}")
 def update_question(
     id: int,
     question: QuestionUpdate,
@@ -486,19 +459,16 @@ def submit_survey_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
-    # Verify survey is active
     survey = supabase.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "Survey not found or inactive")
-
     for question_id_str, answer in payload.answers.items():
         user_client.table("survey_responses").upsert({
             "survey_id": survey_id,
-            "question_id": int(question_id_str),    
+            "question_id": int(question_id_str),
             "user_id": user["id"],
             "answer": answer
         }, on_conflict="survey_id,question_id,user_id").execute()
-
     return {"status": "submitted"}
 
 @app.get("/surveys/{survey_id}/responses")
