@@ -166,7 +166,7 @@ class QuestionUpdate(BaseModel):
 
 class SurveyResponseSubmit(BaseModel):
     survey_id: int
-    answers: Dict[int, str]
+    answers: Dict[str, str]
 
 # ---------- Health ----------
 @app.get("/health")
@@ -467,16 +467,19 @@ def submit_survey_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
+    # Verify survey is active
     survey = supabase.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "Survey not found or inactive")
-    for question_id, answer in payload.answers.items():
+
+    for question_id_str, answer in payload.answers.items():
         user_client.table("survey_responses").upsert({
             "survey_id": survey_id,
-            "question_id": int(question_id),
+            "question_id": int(question_id_str),    
             "user_id": user["id"],
             "answer": answer
         }, on_conflict="survey_id,question_id,user_id").execute()
+
     return {"status": "submitted"}
 
 @app.get("/surveys/{survey_id}/responses")
