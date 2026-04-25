@@ -190,7 +190,8 @@ def health_check():
     return {"status": "ok"}
 
 def is_admin(user):
-    return user.get("role") == "admin"
+    admin_emails = os.environ.get("ADMIN_EMAILS", "admin_essay_capstone@gmail.com").split(",")
+    return (user.get("role") == "admin") or (user.get("email") in admin_emails)
 
 @app.post("/comments")
 def create_comment(
