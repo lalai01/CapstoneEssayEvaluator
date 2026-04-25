@@ -133,6 +133,27 @@ class SurveyResponseEntry(BaseModel):
     survey_id: int
     answer: str
 
+class CommentEntry(BaseModel):
+    rating_id: int
+    parent_id: Optional[int] = None 
+    body: str
+
+class ReactionEntry(BaseModel):
+    comment_id: int
+    reaction_type: str
+
+class CommentResponse(BaseModel):
+    id: int
+    rating_id: int
+    user_id: str
+    user_name: Optional[str] = None
+    user_avatar: Optional[str] = None
+    parent_id: Optional[int] = None
+    body: str
+    created_at: str
+    updated_at: str
+    reactions: Dict[str, int] = {}  
+    user_reactions: List[str] = []   
 
 # ---------- Health Check ----------
 @app.get("/health")
@@ -141,6 +162,114 @@ def health_check():
 
 def is_admin(user):
     return user.get("role") == "admin"
+
+@app.post("/comments")
+def create_comment(
+    entry: CommentEntry,
+    user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    token = credentials.credentials
+    # Use authenticated client for RLS
+    from supabase import create_client
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    user_client.postgrest.auth(token)
+
+    data = {
+        "rating_id": entry.rating_id,
+        "user_id": user["id"],
+        "parent_id": entry.parent_id,
+        "body": entry.body
+    }
+    result = user_client.table("comments").insert(data).execute()
+    return {"id": result.data[0]["id"]}
+
+@app.get("/comments/{rating_id}")
+def list_comments(rating_id: int, user=Depends(get_current_user)):
+    # Fetch comments for this rating
+    comments_result = supabase.table("comments").select("*").eq("rating_id", rating_id).order("created_at", desc=False).execute()
+    comments = comments_result.data
+
+    if not comments:
+        return []
+
+    # Collect user IDs
+    user_ids = list(set(c["user_id"] for c in comments if c.get("user_id")))
+    comment_ids = [c["id"] for c in comments]
+
+    # Fetch user profiles via RPC (reuse get_user_profiles function created earlier)
+    user_profiles = {}
+    if user_ids:
+        try:
+            profiles = supabase.rpc("get_user_profiles", {"user_ids": user_ids}).execute()
+            for p in profiles.data:
+                user_profiles[p["id"]] = {
+                    "full_name": p.get("full_name") or "Anonymous",
+                    "avatar_url": p.get("avatar_url")
+                }
+        except Exception as e:
+            print(f"Failed to fetch user profiles: {e}")
+
+    # Fetch reactions for all these comments
+    reactions_result = supabase.table("comment_reactions").select("*").in_("comment_id", comment_ids).execute()
+    reactions = reactions_result.data
+
+    # Aggregate reactions per comment and user's own reactions
+    comment_reactions_map = {}
+    user_reactions_map = {}  # to store what the current user reacted
+    for r in reactions:
+        cid = r["comment_id"]
+        if cid not in comment_reactions_map:
+            comment_reactions_map[cid] = {}
+        rtype = r["reaction_type"]
+        comment_reactions_map[cid][rtype] = comment_reactions_map[cid].get(rtype, 0) + 1
+        # If this reaction belongs to the current user, record it
+        if r["user_id"] == user["id"]:
+            if cid not in user_reactions_map:
+                user_reactions_map[cid] = []
+            user_reactions_map[cid].append(rtype)
+
+    # Attach user profiles and reaction data to each comment
+    enriched = []
+    for c in comments:
+        profile = user_profiles.get(c["user_id"], {})
+        c["user_name"] = profile.get("full_name") or "Anonymous"
+        c["user_avatar"] = profile.get("avatar_url")
+        c["reactions"] = comment_reactions_map.get(c["id"], {})
+        c["user_reactions"] = user_reactions_map.get(c["id"], [])
+        enriched.append(c)
+
+    return enriched
+
+@app.post("/reactions")
+def toggle_reaction(
+    entry: ReactionEntry,
+    user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    token = credentials.credentials
+    from supabase import create_client
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    user_client.postgrest.auth(token)
+
+    # Check if user already has this reaction type for this comment
+    existing = user_client.table("comment_reactions").select("*").eq("comment_id", entry.comment_id).eq("user_id", user["id"]).eq("reaction_type", entry.reaction_type).execute()
+    if existing.data:
+        # Remove reaction (toggle off)
+        user_client.table("comment_reactions").delete().eq("id", existing.data[0]["id"]).execute()
+        return {"status": "removed"}
+    else:
+        # Add reaction
+        user_client.table("comment_reactions").insert({
+            "comment_id": entry.comment_id,
+            "user_id": user["id"],
+            "reaction_type": entry.reaction_type
+        }).execute()
+        return {"status": "added"}
 
 # ---------- Ratings & Reviews (FIXED) ----------
 @app.post("/ratings")
