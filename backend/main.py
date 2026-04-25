@@ -413,8 +413,15 @@ def add_question(
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys/{survey_id}/questions")
-def list_questions(survey_id: int):
-    result = supabase.table("survey_questions").select("*").eq("survey_id", survey_id).order("order_number").execute()
+def list_questions(
+    survey_id: int,
+    user_client: Client = Depends(get_user_client)
+):
+    result = user_client.table("survey_questions") \
+        .select("*") \
+        .eq("survey_id", survey_id) \
+        .order("order_number") \
+        .execute()
     return result.data
 
 def update_question(
