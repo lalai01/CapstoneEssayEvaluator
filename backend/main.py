@@ -11,7 +11,8 @@ import evaluator
 from supabase_client import supabase, supabase_admin
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
-from auth import get_current_user, security   # ✅ Import security (HTTPBearer)
+from auth import get_current_user, security
+from supabase import create_client, Client
 
 # ---------- Google Cloud Vision Credentials ----------
 google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
@@ -30,7 +31,7 @@ else:
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
-# ---------- CORS Configuration (Allow Firebase) ----------
+# ---------- CORS Configuration ----------
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
@@ -48,7 +49,6 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Custom middleware to force CORS headers on every response (including errors)
 @app.middleware("http")
 async def add_cors_headers(request, call_next):
     response = await call_next(request)
@@ -58,7 +58,6 @@ async def add_cors_headers(request, call_next):
         response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
-# Explicit OPTIONS handler for all routes
 @app.options("/{path:path}")
 async def preflight_handler():
     return JSONResponse(
@@ -71,7 +70,18 @@ async def preflight_handler():
         content={}
     )
 
-# ---------- Request/Response Models ----------
+# ---------- Helper: create authenticated Supabase client ----------
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+def get_user_client(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Client:
+    """Return a Supabase client that carries the user's JWT."""
+    token = credentials.credentials
+    c = create_client(SUPABASE_URL, SUPABASE_KEY)
+    c.postgrest.auth(token)
+    return c
+
+# ---------- Models ----------
 class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
@@ -124,36 +134,14 @@ class RatingEntry(BaseModel):
     rating: int
     comment: Optional[str] = None
 
-class SurveyEntry(BaseModel):
-    question: str
-    options: Optional[List[str]] = None
-    is_active: bool = True
-
-class SurveyResponseEntry(BaseModel):
-    survey_id: int
-    answer: str
-
 class CommentEntry(BaseModel):
     rating_id: int
-    parent_id: Optional[int] = None 
+    parent_id: Optional[int] = None
     body: str
 
 class ReactionEntry(BaseModel):
     comment_id: int
     reaction_type: str
-
-class CommentResponse(BaseModel):
-    id: int
-    rating_id: int
-    user_id: str
-    user_name: Optional[str] = None
-    user_avatar: Optional[str] = None
-    parent_id: Optional[int] = None
-    body: str
-    created_at: str
-    updated_at: str
-    reactions: Dict[str, int] = {}  
-    user_reactions: List[str] = []   
 
 class SurveyCreate(BaseModel):
     title: str
@@ -168,7 +156,7 @@ class SurveyUpdate(BaseModel):
 class QuestionCreate(BaseModel):
     survey_id: int
     question: str
-    question_type: str   
+    question_type: str
     options: Optional[List[str]] = None
     is_required: bool = True
     order_number: int = 0
@@ -182,9 +170,9 @@ class QuestionUpdate(BaseModel):
 
 class SurveyResponseSubmit(BaseModel):
     survey_id: int
-    answers: Dict[int, str]    
+    answers: Dict[int, str]
 
-# ---------- Health Check ----------
+# ---------- Health ----------
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -193,20 +181,13 @@ def is_admin(user):
     admin_emails = os.environ.get("ADMIN_EMAILS", "admin_essay_capstone@gmail.com").split(",")
     return (user.get("role") == "admin") or (user.get("email") in admin_emails)
 
+# ---------- Comments ----------
 @app.post("/comments")
 def create_comment(
     entry: CommentEntry,
     user: dict = Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    user_client: Client = Depends(get_user_client)
 ):
-    token = credentials.credentials
-    # Use authenticated client for RLS
-    from supabase import create_client
-    SUPABASE_URL = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    user_client.postgrest.auth(token)
-
     data = {
         "rating_id": entry.rating_id,
         "user_id": user["id"],
@@ -218,18 +199,15 @@ def create_comment(
 
 @app.get("/comments/{rating_id}")
 def list_comments(rating_id: int, user=Depends(get_current_user)):
-    # Fetch comments for this rating
     comments_result = supabase.table("comments").select("*").eq("rating_id", rating_id).order("created_at", desc=False).execute()
     comments = comments_result.data
 
     if not comments:
         return []
 
-    # Collect user IDs
     user_ids = list(set(c["user_id"] for c in comments if c.get("user_id")))
     comment_ids = [c["id"] for c in comments]
 
-    # Fetch user profiles via RPC (reuse get_user_profiles function created earlier)
     user_profiles = {}
     if user_ids:
         try:
@@ -242,26 +220,22 @@ def list_comments(rating_id: int, user=Depends(get_current_user)):
         except Exception as e:
             print(f"Failed to fetch user profiles: {e}")
 
-    # Fetch reactions for all these comments
     reactions_result = supabase.table("comment_reactions").select("*").in_("comment_id", comment_ids).execute()
     reactions = reactions_result.data
 
-    # Aggregate reactions per comment and user's own reactions
     comment_reactions_map = {}
-    user_reactions_map = {}  # to store what the current user reacted
+    user_reactions_map = {}
     for r in reactions:
         cid = r["comment_id"]
         if cid not in comment_reactions_map:
             comment_reactions_map[cid] = {}
         rtype = r["reaction_type"]
         comment_reactions_map[cid][rtype] = comment_reactions_map[cid].get(rtype, 0) + 1
-        # If this reaction belongs to the current user, record it
         if r["user_id"] == user["id"]:
             if cid not in user_reactions_map:
                 user_reactions_map[cid] = []
             user_reactions_map[cid].append(rtype)
 
-    # Attach user profiles and reaction data to each comment
     enriched = []
     for c in comments:
         profile = user_profiles.get(c["user_id"], {})
@@ -277,23 +251,13 @@ def list_comments(rating_id: int, user=Depends(get_current_user)):
 def toggle_reaction(
     entry: ReactionEntry,
     user: dict = Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    user_client: Client = Depends(get_user_client)
 ):
-    token = credentials.credentials
-    from supabase import create_client
-    SUPABASE_URL = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    user_client.postgrest.auth(token)
-
-    # Check if user already has this reaction type for this comment
     existing = user_client.table("comment_reactions").select("*").eq("comment_id", entry.comment_id).eq("user_id", user["id"]).eq("reaction_type", entry.reaction_type).execute()
     if existing.data:
-        # Remove reaction (toggle off)
         user_client.table("comment_reactions").delete().eq("id", existing.data[0]["id"]).execute()
         return {"status": "removed"}
     else:
-        # Add reaction
         user_client.table("comment_reactions").insert({
             "comment_id": entry.comment_id,
             "user_id": user["id"],
@@ -301,23 +265,13 @@ def toggle_reaction(
         }).execute()
         return {"status": "added"}
 
-# ---------- Ratings & Reviews (FIXED) ----------
+# ---------- Ratings ----------
 @app.post("/ratings")
 def submit_rating(
     entry: RatingEntry,
     user: dict = Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    user_client: Client = Depends(get_user_client)
 ):
-    token = credentials.credentials
-    SUPABASE_URL = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-    
-    # Create a client and explicitly set the Authorization header
-    from supabase import create_client
-    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    user_client.postgrest.auth(token)   # ✅ This directly sets the JWT for REST calls
-    
-    # Upsert: update if exists, else insert
     existing = user_client.table("ratings").select("*").eq("user_id", user["id"]).execute()
     if existing.data:
         result = user_client.table("ratings").update({
@@ -335,17 +289,12 @@ def submit_rating(
 
 @app.get("/ratings")
 def list_ratings():
-    # Fetch ratings
     result = supabase.table("ratings").select("*").order("created_at", desc=True).execute()
     ratings = result.data
-
     if not ratings:
         return []
 
-    # Collect unique user IDs
     user_ids = list(set(r["user_id"] for r in ratings if r.get("user_id")))
-
-    # Fetch user profiles via RPC (works with anon key)
     user_profiles = {}
     if user_ids:
         try:
@@ -356,9 +305,8 @@ def list_ratings():
                     "avatar_url": p.get("avatar_url")
                 }
         except Exception as e:
-            print(f"Failed to fetch user profiles via RPC: {e}")
+            print(f"Failed to fetch user profiles: {e}")
 
-    # Attach profile info to each rating
     for r in ratings:
         profile = user_profiles.get(r["user_id"], {})
         r["user_name"] = profile.get("full_name") or "Anonymous"
@@ -383,13 +331,17 @@ def get_rating_summary():
         }
     }
 
-# ---------- Admin: Surveys ----------
+# ---------- Admin Surveys (Authenticated client) ----------
 @app.post("/surveys")
-def create_survey(survey: SurveyCreate, user=Depends(get_current_user)):
+def create_survey(
+    survey: SurveyCreate,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = survey.dict()
-    result = supabase.table("surveys").insert(data).execute()
+    result = user_client.table("surveys").insert(data).execute()
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys")
@@ -401,27 +353,42 @@ def list_surveys(active_only: bool = False):
     return result.data
 
 @app.put("/surveys/{id}")
-def update_survey(id: int, survey: SurveyUpdate, user=Depends(get_current_user)):
+def update_survey(
+    id: int,
+    survey: SurveyUpdate,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = {k: v for k, v in survey.dict().items() if v is not None}
-    result = supabase.table("surveys").update(data).eq("id", id).execute()
+    user_client.table("surveys").update(data).eq("id", id).execute()
     return {"status": "updated"}
 
 @app.delete("/surveys/{id}")
-def delete_survey(id: int, user=Depends(get_current_user)):
+def delete_survey(
+    id: int,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    supabase.table("surveys").delete().eq("id", id).execute()
+    user_client.table("surveys").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
+# ---------- Admin Questions (Authenticated client) ----------
 @app.post("/surveys/{survey_id}/questions")
-def add_question(survey_id: int, question: QuestionCreate, user=Depends(get_current_user)):
+def add_question(
+    survey_id: int,
+    question: QuestionCreate,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = question.dict()
     data["survey_id"] = survey_id
-    result = supabase.table("survey_questions").insert(data).execute()
+    result = user_client.table("survey_questions").insert(data).execute()
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys/{survey_id}/questions")
@@ -430,40 +397,42 @@ def list_questions(survey_id: int):
     return result.data
 
 @app.put("/questions/{id}")
-def update_question(id: int, question: QuestionUpdate, user=Depends(get_current_user)):
+def update_question(
+    id: int,
+    question: QuestionUpdate,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = {k: v for k, v in question.dict().items() if v is not None}
-    supabase.table("survey_questions").update(data).eq("id", id).execute()
+    user_client.table("survey_questions").update(data).eq("id", id).execute()
     return {"status": "updated"}
 
 @app.delete("/questions/{id}")
-def delete_question(id: int, user=Depends(get_current_user)):
+def delete_question(
+    id: int,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    supabase.table("survey_questions").delete().eq("id", id).execute()
+    user_client.table("survey_questions").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
+# ---------- User Survey Responses (Authenticated client) ----------
 @app.post("/surveys/{survey_id}/respond")
 def submit_survey_response(
     survey_id: int,
     payload: SurveyResponseSubmit,
-    user=Depends(get_current_user),
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
 ):
-    token = credentials.credentials
-    from supabase import create_client
-    SUPABASE_URL = os.environ.get("SUPABASE_URL")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    user_client.postgrest.auth(token)
-
     # Verify survey is active
     survey = supabase.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "Survey not found or inactive")
 
-    # Insert each answer
     for question_id, answer in payload.answers.items():
         user_client.table("survey_responses").upsert({
             "survey_id": survey_id,
@@ -475,37 +444,21 @@ def submit_survey_response(
     return {"status": "submitted"}
 
 @app.get("/surveys/{survey_id}/responses")
-def get_survey_responses(survey_id: int, user=Depends(get_current_user)):
+def get_survey_responses(
+    survey_id: int,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    # Fetch responses with user info
-    responses = supabase.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
-    # Optionally enrich with user profiles using get_user_profiles function (like we did for ratings)
-    # For brevity, we return raw responses; frontend can fetch profiles if needed
+    responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
     return responses.data
 
 @app.get("/surveys/responses")
-def get_all_responses(user=Depends(get_current_user)):
+def get_all_responses(user: dict = Depends(get_current_user), user_client: Client = Depends(get_user_client)):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    result = supabase.table("survey_responses").select("*").execute()
-    return result.data
-
-# ---------- User: Survey Responses ----------
-@app.post("/surveys/{id}/respond")
-def submit_survey_response(id: int, response: SurveyResponseEntry, user=Depends(get_current_user)):
-    survey = supabase.table("surveys").select("*").eq("id", id).eq("is_active", True).execute()
-    if not survey.data:
-        raise HTTPException(404, "Survey not found or inactive")
-    data = {"survey_id": id, "user_id": user["id"], "answer": response.answer}
-    result = supabase.table("survey_responses").insert(data).execute()
-    return {"id": result.data[0]["id"]}
-
-@app.get("/surveys/{id}/responses")
-def get_survey_responses(id: int, user=Depends(get_current_user)):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
-    result = supabase.table("survey_responses").select("*").eq("survey_id", id).execute()
+    result = user_client.table("survey_responses").select("*").execute()
     return result.data
 
 # ---------- Saved Essays ----------
@@ -539,13 +492,12 @@ def delete_saved_essay(id: int, user=Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- OCR Endpoint ----------
+# ---------- OCR ----------
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf']:
         raise HTTPException(400, "Unsupported file type")
-    
     contents = await file.read()
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
@@ -686,7 +638,7 @@ def test_ai_prompt(req: PromptTestRequest):
         print(f"❌ Prompt test error: {e}")
         return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
-# ---------- Utility Endpoints ----------
+# ---------- Utility ----------
 @app.get("/rubric")
 def get_rubric():
     return evaluator.RUBRIC
