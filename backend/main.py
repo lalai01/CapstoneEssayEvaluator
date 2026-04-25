@@ -316,6 +316,19 @@ def get_rating_summary():
         }
     }
 
+@app.get("/admin/user-profiles")
+def admin_get_user_profiles(ids: str, user: dict = Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    user_ids = [uid.strip() for uid in ids.split(",") if uid.strip()]
+    if not user_ids:
+        return {"profiles": []}
+    try:
+        result = supabase.rpc("get_user_profiles", {"user_ids": user_ids}).execute()
+        return {"profiles": result.data}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
 # ---------- Admin Surveys ----------
 @app.post("/surveys")
 def create_survey(
@@ -427,6 +440,61 @@ def list_questions(
         .execute()
     return result.data
 
+@app.get("/surveys/{survey_id}/my-response")
+def get_my_response(
+    survey_id: int,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
+    # Check if any answer exists for this user in this survey
+    resp = user_client.table("survey_responses") \
+        .select("id") \
+        .eq("survey_id", survey_id) \
+        .eq("user_id", user["id"]) \
+        .limit(1) \
+        .execute()
+    return {"already_submitted": len(resp.data) > 0}
+
+@app.get("/surveys/{survey_id}/my-responses")
+def get_my_responses(
+    survey_id: int,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
+    # Fetch the user's answers for this survey
+    answers = user_client.table("survey_responses") \
+        .select("*") \
+        .eq("survey_id", survey_id) \
+        .eq("user_id", user["id"]) \
+        .execute()
+    
+    if not answers.data:
+        return {"responses": [], "questions": []}
+
+    # Get question details to display alongside answers
+    question_ids = [a["question_id"] for a in answers.data]
+    questions = user_client.table("survey_questions") \
+        .select("*") \
+        .in_("id", question_ids) \
+        .execute()
+    
+    # Build a map of question_id -> question details
+    q_map = {q["id"]: q for q in questions.data}
+    
+    # Combine answers with question info
+    detailed = []
+    for a in answers.data:
+        q = q_map.get(a["question_id"], {})
+        detailed.append({
+            "question": q.get("question", ""),
+            "question_type": q.get("question_type", "text"),
+            "options": q.get("options"),
+            "answer": a["answer"],
+            "created_at": a["created_at"]
+        })
+    
+    return {"responses": detailed}
+
 @app.put("/questions/{id}")
 def update_question(
     id: int,
@@ -491,13 +559,21 @@ def get_survey_responses(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    try:
-        if supabase_admin:
-            responses = supabase_admin.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
-        else:
-            responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
-    except Exception:
-        responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
+    # Attempt admin client first (bypasses RLS)
+    if supabase_admin:
+        try:
+            responses = supabase_admin.table("survey_responses") \
+                .select("*") \
+                .eq("survey_id", survey_id) \
+                .execute()
+            return responses.data
+        except Exception as e:
+            print(f"supabase_admin failed: {e}")
+    # Fallback to authenticated client (RLS applies)
+    responses = user_client.table("survey_responses") \
+        .select("*") \
+        .eq("survey_id", survey_id) \
+        .execute()
     return responses.data
 
 # ---------- Saved Essays ----------
