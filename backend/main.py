@@ -392,8 +392,19 @@ def add_question(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
+    
     data = question.dict()
     data["survey_id"] = survey_id
+
+    existing = user_client.table("survey_questions") \
+        .select("order_number") \
+        .eq("survey_id", survey_id) \
+        .order("order_number", desc=True) \
+        .limit(1) \
+        .execute()
+    max_order = existing.data[0]["order_number"] if existing.data else 0
+    data["order_number"] = max_order + 1   
+
     try:
         if supabase_admin:
             result = supabase_admin.table("survey_questions").insert(data).execute()
@@ -401,6 +412,7 @@ def add_question(
             result = user_client.table("survey_questions").insert(data).execute()
     except Exception:
         result = user_client.table("survey_questions").insert(data).execute()
+    
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys/{survey_id}/questions")
@@ -459,7 +471,7 @@ def submit_survey_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
-    survey = supabase.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
+    survey = user_client.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "Survey not found or inactive")
     for question_id_str, answer in payload.answers.items():
