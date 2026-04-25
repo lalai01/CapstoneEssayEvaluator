@@ -442,6 +442,25 @@ def update_question(
         user_client.table("survey_questions").update(data).eq("id", id).execute()
     return {"status": "updated"}
 
+@app.put("/questions/{id}")  
+def update_question(
+    id: int,
+    question: QuestionUpdate,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    data = {k: v for k, v in question.dict().items() if v is not None}
+    try:
+        if supabase_admin:
+            supabase_admin.table("survey_questions").update(data).eq("id", id).execute()
+        else:
+            user_client.table("survey_questions").update(data).eq("id", id).execute()
+    except Exception:
+        user_client.table("survey_questions").update(data).eq("id", id).execute()
+    return {"status": "updated"}
+
 @app.delete("/questions/{id}")
 def delete_question(
     id: int,
