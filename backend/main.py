@@ -155,6 +155,35 @@ class CommentResponse(BaseModel):
     reactions: Dict[str, int] = {}  
     user_reactions: List[str] = []   
 
+class SurveyCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    is_active: bool = True
+
+class SurveyUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class QuestionCreate(BaseModel):
+    survey_id: int
+    question: str
+    question_type: str   
+    options: Optional[List[str]] = None
+    is_required: bool = True
+    order_number: int = 0
+
+class QuestionUpdate(BaseModel):
+    question: Optional[str] = None
+    question_type: Optional[str] = None
+    options: Optional[List[str]] = None
+    is_required: Optional[bool] = None
+    order_number: Optional[int] = None
+
+class SurveyResponseSubmit(BaseModel):
+    survey_id: int
+    answers: Dict[int, str]    
+
 # ---------- Health Check ----------
 @app.get("/health")
 def health_check():
@@ -355,7 +384,7 @@ def get_rating_summary():
 
 # ---------- Admin: Surveys ----------
 @app.post("/surveys")
-def create_survey(survey: SurveyEntry, user=Depends(get_current_user)):
+def create_survey(survey: SurveyCreate, user=Depends(get_current_user)):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = survey.dict()
@@ -363,7 +392,7 @@ def create_survey(survey: SurveyEntry, user=Depends(get_current_user)):
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys")
-def list_surveys(active_only: bool = True):
+def list_surveys(active_only: bool = False):
     query = supabase.table("surveys").select("*")
     if active_only:
         query = query.eq("is_active", True)
@@ -371,10 +400,11 @@ def list_surveys(active_only: bool = True):
     return result.data
 
 @app.put("/surveys/{id}")
-def update_survey(id: int, survey: SurveyEntry, user=Depends(get_current_user)):
+def update_survey(id: int, survey: SurveyUpdate, user=Depends(get_current_user)):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    result = supabase.table("surveys").update(survey.dict()).eq("id", id).execute()
+    data = {k: v for k, v in survey.dict().items() if v is not None}
+    result = supabase.table("surveys").update(data).eq("id", id).execute()
     return {"status": "updated"}
 
 @app.delete("/surveys/{id}")
@@ -383,6 +413,82 @@ def delete_survey(id: int, user=Depends(get_current_user)):
         raise HTTPException(403, "Admin only")
     supabase.table("surveys").delete().eq("id", id).execute()
     return {"status": "deleted"}
+
+@app.post("/surveys/{survey_id}/questions")
+def add_question(survey_id: int, question: QuestionCreate, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    data = question.dict()
+    data["survey_id"] = survey_id
+    result = supabase.table("survey_questions").insert(data).execute()
+    return {"id": result.data[0]["id"]}
+
+@app.get("/surveys/{survey_id}/questions")
+def list_questions(survey_id: int):
+    result = supabase.table("survey_questions").select("*").eq("survey_id", survey_id).order("order_number").execute()
+    return result.data
+
+@app.put("/questions/{id}")
+def update_question(id: int, question: QuestionUpdate, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    data = {k: v for k, v in question.dict().items() if v is not None}
+    supabase.table("survey_questions").update(data).eq("id", id).execute()
+    return {"status": "updated"}
+
+@app.delete("/questions/{id}")
+def delete_question(id: int, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    supabase.table("survey_questions").delete().eq("id", id).execute()
+    return {"status": "deleted"}
+
+@app.post("/surveys/{survey_id}/respond")
+def submit_survey_response(
+    survey_id: int,
+    payload: SurveyResponseSubmit,
+    user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    token = credentials.credentials
+    from supabase import create_client
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    user_client.postgrest.auth(token)
+
+    # Verify survey is active
+    survey = supabase.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
+    if not survey.data:
+        raise HTTPException(404, "Survey not found or inactive")
+
+    # Insert each answer
+    for question_id, answer in payload.answers.items():
+        user_client.table("survey_responses").upsert({
+            "survey_id": survey_id,
+            "question_id": int(question_id),
+            "user_id": user["id"],
+            "answer": answer
+        }, on_conflict="survey_id,question_id,user_id").execute()
+
+    return {"status": "submitted"}
+
+@app.get("/surveys/{survey_id}/responses")
+def get_survey_responses(survey_id: int, user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    # Fetch responses with user info
+    responses = supabase.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
+    # Optionally enrich with user profiles using get_user_profiles function (like we did for ratings)
+    # For brevity, we return raw responses; frontend can fetch profiles if needed
+    return responses.data
+
+@app.get("/surveys/responses")
+def get_all_responses(user=Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    result = supabase.table("survey_responses").select("*").execute()
+    return result.data
 
 # ---------- User: Survey Responses ----------
 @app.post("/surveys/{id}/respond")
