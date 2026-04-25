@@ -322,11 +322,24 @@ def get_rating_summary():
 def create_survey(
     survey: SurveyCreate,
     user: dict = Depends(get_current_user),
-    user_client: Client = Depends(get_user_client)
+    user_client: Client = Depends(get_user_client)   # kept for fallback
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
+
     data = survey.dict()
+    print(f"🔍 Admin user: {user['email']}, role: {user.get('role')}")
+    print(f"📦 Creating survey: {data['title']}")
+
+    # Prefer supabase_admin (bypasses RLS) – most reliable
+    try:
+        if supabase_admin:
+            result = supabase_admin.table("surveys").insert(data).execute()
+            return {"id": result.data[0]["id"]}
+    except Exception as e:
+        print(f"⚠️ supabase_admin failed: {e}, falling back to user_client")
+
+    # Fallback to authenticated client
     result = user_client.table("surveys").insert(data).execute()
     return {"id": result.data[0]["id"]}
 
@@ -348,8 +361,15 @@ def update_survey(
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = {k: v for k, v in survey.dict().items() if v is not None}
-    user_client.table("surveys").update(data).eq("id", id).execute()
+    try:
+        if supabase_admin:
+            supabase_admin.table("surveys").update(data).eq("id", id).execute()
+        else:
+            user_client.table("surveys").update(data).eq("id", id).execute()
+    except Exception:
+        user_client.table("surveys").update(data).eq("id", id).execute()
     return {"status": "updated"}
+
 
 @app.delete("/surveys/{id}")
 def delete_survey(
@@ -359,7 +379,13 @@ def delete_survey(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    user_client.table("surveys").delete().eq("id", id).execute()
+    try:
+        if supabase_admin:
+            supabase_admin.table("surveys").delete().eq("id", id).execute()
+        else:
+            user_client.table("surveys").delete().eq("id", id).execute()
+    except Exception:
+        user_client.table("surveys").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
 # ---------- Admin Questions (🔥 fixed with user_client) ----------
@@ -374,7 +400,13 @@ def add_question(
         raise HTTPException(403, "Admin only")
     data = question.dict()
     data["survey_id"] = survey_id
-    result = user_client.table("survey_questions").insert(data).execute()
+    try:
+        if supabase_admin:
+            result = supabase_admin.table("survey_questions").insert(data).execute()
+        else:
+            result = user_client.table("survey_questions").insert(data).execute()
+    except Exception:
+        result = user_client.table("survey_questions").insert(data).execute()
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys/{survey_id}/questions")
@@ -382,7 +414,6 @@ def list_questions(survey_id: int):
     result = supabase.table("survey_questions").select("*").eq("survey_id", survey_id).order("order_number").execute()
     return result.data
 
-@app.put("/questions/{id}")
 def update_question(
     id: int,
     question: QuestionUpdate,
@@ -392,7 +423,13 @@ def update_question(
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     data = {k: v for k, v in question.dict().items() if v is not None}
-    user_client.table("survey_questions").update(data).eq("id", id).execute()
+    try:
+        if supabase_admin:
+            supabase_admin.table("survey_questions").update(data).eq("id", id).execute()
+        else:
+            user_client.table("survey_questions").update(data).eq("id", id).execute()
+    except Exception:
+        user_client.table("survey_questions").update(data).eq("id", id).execute()
     return {"status": "updated"}
 
 @app.delete("/questions/{id}")
@@ -403,7 +440,13 @@ def delete_question(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    user_client.table("survey_questions").delete().eq("id", id).execute()
+    try:
+        if supabase_admin:
+            supabase_admin.table("survey_questions").delete().eq("id", id).execute()
+        else:
+            user_client.table("survey_questions").delete().eq("id", id).execute()
+    except Exception:
+        user_client.table("survey_questions").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
 # ---------- User Survey Responses ----------
@@ -434,7 +477,13 @@ def get_survey_responses(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
+    try:
+        if supabase_admin:
+            responses = supabase_admin.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
+        else:
+            responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
+    except Exception:
+        responses = user_client.table("survey_responses").select("*").eq("survey_id", survey_id).execute()
     return responses.data
 
 # ---------- Saved Essays ----------
