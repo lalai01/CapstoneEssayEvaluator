@@ -1,4 +1,3 @@
-
 from typing import TypedDict, Optional, Dict, Any
 
 from langgraph.graph import StateGraph, START, END
@@ -16,6 +15,9 @@ from evaluator import (
 from rag import get_similar_essay_context
 
 
+# ---------------------------------------------------------------------------
+# State definition
+# ---------------------------------------------------------------------------
 class EvaluationState(TypedDict, total=False):
     essay_text: str
     evaluation_type: str
@@ -25,17 +27,17 @@ class EvaluationState(TypedDict, total=False):
     rag_context: Optional[str]
     error: Optional[str]
     _analysis: Optional[Dict[str, Any]]
+    _validated: Optional[bool]
 
 
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
-
 def validate_node(state: EvaluationState) -> dict:
     valid, err = is_valid_essay(state["essay_text"])
     if not valid:
-        return {"error": err}
-    return {}
+        return {"error": err, "_validated": False}
+    return {"_validated": True}
 
 
 def score_node(state: EvaluationState) -> dict:
@@ -91,7 +93,6 @@ def error_node(state: EvaluationState) -> dict:
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
-
 def build_graph():
     wf = StateGraph(EvaluationState)
 
@@ -118,6 +119,9 @@ def build_graph():
 evaluation_graph = build_graph()
 
 
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool) -> dict:
     initial: EvaluationState = {
         "essay_text": essay_text,
@@ -127,5 +131,6 @@ def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool) -> dict
         "feedback": None,
         "rag_context": None,
         "error": None,
+        "_validated": None,
     }
     return evaluation_graph.invoke(initial)
