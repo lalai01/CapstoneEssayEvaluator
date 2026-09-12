@@ -131,7 +131,7 @@ def check_grammar_with_nlp(text):
 
 def calculate_analytic_scores(essay_text, analysis):
     """
-    Returns 1–4 scores for each rubric criterion:
+    Returns 1-4 scores for each rubric criterion:
     main_statement, organization, evidence, analysis, grammar.
     """
     lower = essay_text.lower()
@@ -146,11 +146,14 @@ def calculate_analytic_scores(essay_text, analysis):
                       "in this paper", "this paper will", "this essay will"]
     first_para = paragraphs[0].lower() if paragraphs else lower
     has_signal = any(s in first_para for s in thesis_signals)
+
     if has_signal and word_count >= 250:
         main_statement = 4
-    elif has_signal and word_count >= 120:
+    elif has_signal:
         main_statement = 3
-    elif word_count >= 150:
+    elif word_count >= 250:
+        main_statement = 3
+    elif word_count >= 100:
         main_statement = 2
     else:
         main_statement = 1
@@ -170,11 +173,11 @@ def calculate_analytic_scores(essay_text, analysis):
     evidence_terms = ["example", "for instance", "such as", "because",
                       "research", "study", "data", "according to"]
     evidence_count = sum(1 for w in evidence_terms if w in lower)
-    if evidence_count >= 3:
+    if evidence_count >= 4 and word_count >= 400:
         evidence = 4
-    elif evidence_count == 2:
+    elif evidence_count >= 2 and word_count >= 250:
         evidence = 3
-    elif evidence_count == 1:
+    elif evidence_count >= 1:
         evidence = 2
     else:
         evidence = 1
@@ -182,9 +185,9 @@ def calculate_analytic_scores(essay_text, analysis):
     # --- Analysis ---
     if word_count >= 400 and evidence_count >= 3 and transitions >= 3:
         analysis_score = 4
-    elif word_count >= 250 and evidence_count >= 2:
+    elif word_count >= 250 and (evidence_count >= 2 or transitions >= 3):
         analysis_score = 3
-    elif word_count >= 120:
+    elif word_count >= 100:
         analysis_score = 2
     else:
         analysis_score = 1
