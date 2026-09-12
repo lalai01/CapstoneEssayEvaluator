@@ -107,7 +107,7 @@ def build_graph():
     wf.add_node("validate", validate_node)
     wf.add_node("score", score_node)
     wf.add_node("rag", rag_node)
-    wf.add_node("feedback", feedback_node)
+    wf.add_node("generate_feedback", feedback_node)   
     wf.add_node("error", error_node)
 
     wf.add_edge(START, "validate")
@@ -117,8 +117,8 @@ def build_graph():
         {"error": "error", "score": "score"},
     )
     wf.add_edge("score", "rag")
-    wf.add_edge("rag", "feedback")
-    wf.add_edge("feedback", END)
+    wf.add_edge("rag", "generate_feedback")          
+    wf.add_edge("generate_feedback", END)           
     wf.add_edge("error", END)
 
     return wf.compile()
