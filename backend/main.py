@@ -643,19 +643,18 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-# ---------- Evaluation (now uses LangGraph) ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
         result = run_evaluation(req.text, req.evaluation_type, use_rag=False)
         if result.get("error"):
             return EvaluationResponse(
-                scores={"grammar": 0, "coherence": 0, "content": 0},
-                feedback=result.get("feedback") or "Invalid input"
+                scores={"main_statement": 0, "organization": 0,
+                        "evidence": 0, "analysis": 0, "grammar": 0},
+                feedback=result.get("feedback") or "Invalid input",
             )
         return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
     except Exception as e:
-        print(f"❌ Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
@@ -664,12 +663,12 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
         result = run_evaluation(req.text, req.evaluation_type, use_rag=True)
         if result.get("error"):
             return EvaluationResponse(
-                scores={"grammar": 0, "coherence": 0, "content": 0},
-                feedback=result.get("feedback") or "Invalid input"
+                scores={"main_statement": 0, "organization": 0,
+                        "evidence": 0, "analysis": 0, "grammar": 0},
+                feedback=result.get("feedback") or "Invalid input",
             )
         return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
     except Exception as e:
-        print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
 # ---------- Knowledge Base ----------

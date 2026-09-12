@@ -6,8 +6,6 @@ from langdetect import detect, DetectorFactory
 from rag import get_similar_essay_context
 
 DetectorFactory.seed = 0
-
-# ---------- Safe LanguageTool Initialization ----------
 tool = None
 try:
     tool = language_tool_python.LanguageTool('en-US')
@@ -15,7 +13,40 @@ try:
 except Exception as e:
     print(f"⚠️ LanguageTool initialization failed: {e}. Grammar checking will be limited to heuristics.")
 
-# ---------- Holistic Rubric (5-point scale) ----------
+
+ANALYTIC_RUBRIC = {
+    "main_statement": {
+        4: "Presents a clear, focused, and defensible thesis that directly addresses the prompt and establishes a strong focus or position.",
+        3: "Presents a clear thesis that addresses the prompt, with minor weaknesses in focus or development.",
+        2: "Presents a thesis, but it is broad, unclear, partially developed, or only partly addresses the prompt.",
+        1: "Thesis is absent, unclear, or does not meaningfully address the prompt.",
+    },
+    "organization": {
+        4: "Ideas are logically and coherently organized; paragraphs and transitions create a clear progression of the argument.",
+        3: "Ideas are generally well organized, with minor weaknesses in sequencing, paragraphing, or transitions.",
+        2: "Organization is inconsistent; some ideas or paragraphs are difficult to follow or insufficiently connected.",
+        1: "Ideas are poorly organized and lack a clear progression, making the argument difficult to follow.",
+    },
+    "evidence": {
+        4: "Provides relevant, sufficient, and appropriate evidence that strongly supports the central position.",
+        3: "Provides generally relevant and adequate evidence that supports the central position, with minor weaknesses.",
+        2: "Provides limited, weak, insufficient, or inconsistently relevant evidence.",
+        1: "Provides little or no relevant evidence to support the position.",
+    },
+    "analysis": {
+        4: "Thoroughly explains and interprets evidence and clearly connects it to claims and the thesis through logical reasoning.",
+        3: "Adequately explains evidence and generally connects it to the argument, with some limitations in depth or reasoning.",
+        2: "Provides limited explanation or weak connections between evidence, claims, and the thesis.",
+        1: "Provides little or no meaningful analysis; evidence is mainly listed, repeated, or left unexplained.",
+    },
+    "grammar": {
+        4: "Uses consistently accurate grammar, sentence structure, spelling, punctuation, capitalization, and word choice; errors do not interfere with clarity.",
+        3: "Contains minor grammatical or mechanical errors that do not substantially interfere with clarity.",
+        2: "Contains frequent errors that sometimes affect readability or clarity.",
+        1: "Contains persistent or serious errors that interfere with meaning and readability.",
+    },
+}
+
 HOLISTIC_RUBRIC = {
     5: "🌟 Excellent (5/5) – Clear thesis, strong organization, compelling arguments, and virtually no errors. The essay demonstrates mastery of the topic.",
     4: "👍 Good (4/5) – Clear main idea, well-organized, with minor errors that do not impede understanding. Arguments are solid but could be more developed.",
@@ -99,60 +130,99 @@ def check_grammar_with_nlp(text):
     return errors
 
 def calculate_analytic_scores(essay_text, analysis):
-    grammar = 85
-    if analysis['avg_sentence_length'] > 25 or analysis['avg_sentence_length'] < 8:
-        grammar -= 5
-    if analysis['vocabulary_richness'] < 0.4:
-        grammar -= 5
-    elif analysis['vocabulary_richness'] > 0.7:
-        grammar += 3
+    """
+    Returns 1–4 scores for each rubric criterion:
+    main_statement, organization, evidence, analysis, grammar.
+    """
+    lower = essay_text.lower()
+    paragraphs = essay_text.split("\n\n")
+    transitions = analysis["transition_count"]
+    vocab = analysis["vocabulary_richness"]
+    avg_sl = analysis["avg_sentence_length"]
+    word_count = analysis["word_count"]
+
+    # --- Main Statement / Thesis ---
+    thesis_signals = ["this essay", "i will argue", "the purpose", "the thesis",
+                      "in this paper", "this paper will", "this essay will"]
+    first_para = paragraphs[0].lower() if paragraphs else lower
+    has_signal = any(s in first_para for s in thesis_signals)
+    if has_signal and word_count >= 250:
+        main_statement = 4
+    elif has_signal and word_count >= 120:
+        main_statement = 3
+    elif word_count >= 150:
+        main_statement = 2
+    else:
+        main_statement = 1
+
+    # --- Organization ---
+    organization = 4
+    if len(paragraphs) < 2:
+        organization = 2
+    elif len(paragraphs) < 3:
+        organization = 3
+    if transitions == 0:
+        organization = min(organization, 2)
+    elif transitions < 3:
+        organization = min(organization, 3)
+
+    # --- Evidence ---
+    evidence_terms = ["example", "for instance", "such as", "because",
+                      "research", "study", "data", "according to"]
+    evidence_count = sum(1 for w in evidence_terms if w in lower)
+    if evidence_count >= 3:
+        evidence = 4
+    elif evidence_count == 2:
+        evidence = 3
+    elif evidence_count == 1:
+        evidence = 2
+    else:
+        evidence = 1
+
+    # --- Analysis ---
+    if word_count >= 400 and evidence_count >= 3 and transitions >= 3:
+        analysis_score = 4
+    elif word_count >= 250 and evidence_count >= 2:
+        analysis_score = 3
+    elif word_count >= 120:
+        analysis_score = 2
+    else:
+        analysis_score = 1
+
+    # --- Grammar and Mechanics ---
+    grammar = 4
+    if avg_sl > 30 or avg_sl < 6:
+        grammar = 2
+    elif avg_sl > 25 or avg_sl < 8:
+        grammar = 3
+    if vocab < 0.35:
+        grammar = min(grammar, 2)
     if re.search(r'\s+[,.!?]', essay_text) or re.search(r'[,.!?]{2,}', essay_text):
-        grammar -= 5
+        grammar = min(grammar, 3)
     grammar_errors = check_grammar_with_nlp(essay_text)
-    grammar -= min(10, len(grammar_errors) * 2)
-    grammar = max(60, min(98, grammar))
+    if len(grammar_errors) >= 4:
+        grammar = 2
+    elif len(grammar_errors) >= 2 and grammar == 4:
+        grammar = 3
 
-    coherence = 80
-    paragraphs = essay_text.split('\n\n')
-    if len(paragraphs) > 1:
-        coherence += 5
-    if analysis['transition_count'] > 3:
-        coherence += 5
-    elif analysis['transition_count'] == 0:
-        coherence -= 5
-    lower_text = essay_text.lower()
-    if any(w in lower_text[:500] for w in ['introduction', 'first', 'begin', 'purpose']):
-        coherence += 3
-    if any(w in lower_text[-500:] for w in ['conclusion', 'summary', 'finally', 'in conclusion']):
-        coherence += 3
-    coherence = max(60, min(98, coherence))
-
-    content = 75
-    if analysis['word_count'] > 500:
-        content += 10
-    elif analysis['word_count'] > 300:
-        content += 5
-    elif analysis['word_count'] < 100:
-        content -= 10
-    if analysis['vocabulary_richness'] > 0.6:
-        content += 5
-    evidence_words = ['example', 'for instance', 'such as', 'because', 'research', 'study', 'data']
-    evidence_count = sum(1 for w in evidence_words if w in lower_text)
-    content += min(10, evidence_count * 2)
-    content = max(60, min(98, content))
-
-    return {"grammar": grammar, "coherence": coherence, "content": content}
+    return {
+        "main_statement": main_statement,
+        "organization": organization,
+        "evidence": evidence,
+        "analysis": analysis_score,
+        "grammar": grammar,
+    }
 
 def calculate_holistic_score(essay_text, analysis):
     analytic = calculate_analytic_scores(essay_text, analysis)
-    avg = (analytic['grammar'] + analytic['coherence'] + analytic['content']) / 3
-    if avg >= 90:
+    avg = sum(analytic.values()) / len(analytic)   # 1.0 – 4.0
+    if avg >= 3.6:
         return 5
-    elif avg >= 80:
+    elif avg >= 3.0:
         return 4
-    elif avg >= 70:
+    elif avg >= 2.3:
         return 3
-    elif avg >= 60:
+    elif avg >= 1.6:
         return 2
     else:
         return 1
@@ -204,62 +274,32 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
     feedback.append(f"Average sentence length: {analysis['avg_sentence_length']:.1f} words.")
     feedback.append("")
 
-    feedback.append(f"📝 GRAMMAR ANALYSIS (Score: {scores['grammar']})")
+    feedback.append(f"🧠 MAIN STATEMENT / THESIS (Score: {scores['main_statement']}/4)")
+    feedback.append(f"- {ANALYTIC_RUBRIC['main_statement'][scores['main_statement']]}")
+    feedback.append("")
+
+    feedback.append(f"🧱 ORGANIZATION (Score: {scores['organization']}/4)")
+    feedback.append(f"- {ANALYTIC_RUBRIC['organization'][scores['organization']]}")
+    feedback.append("")
+
+    feedback.append(f"📚 EVIDENCE (Score: {scores['evidence']}/4)")
+    feedback.append(f"- {ANALYTIC_RUBRIC['evidence'][scores['evidence']]}")
+    feedback.append("")
+
+    feedback.append(f"🔍 ANALYSIS (Score: {scores['analysis']}/4)")
+    feedback.append(f"- {ANALYTIC_RUBRIC['analysis'][scores['analysis']]}")
+    feedback.append("")
+
+    feedback.append(f"📝 GRAMMAR & MECHANICS (Score: {scores['grammar']}/4)")
+    feedback.append(f"- {ANALYTIC_RUBRIC['grammar'][scores['grammar']]}")
+
     grammar_errors = check_grammar_with_nlp(essay_text)
     if grammar_errors:
-        feedback.append(f"- Found {len(grammar_errors)} grammar issues:")
-        for i, err in enumerate(grammar_errors[:3]):
-            para_num = get_paragraph_number(essay_text, err['offset'])
-            feedback.append(f"  {i+1}. In paragraph {para_num}: {err['message']}")
-            feedback.append(f"     Suggestion: {err['suggestion']}")
-    else:
-        feedback.append("- No major grammar issues detected.")
-    
-    long_sents = find_long_sentences(essay_text)
-    if long_sents:
-        sent, length = long_sents[0]
-        para_num = get_paragraph_number(essay_text, essay_text.find(sent[:30]))
-        feedback.append(f"- In paragraph {para_num}, a long sentence ({length} words) may be hard to follow. Consider splitting it.")
-    
-    if analysis['vocabulary_richness'] < 0.45:
-        feedback.append("- Vocabulary could be more varied. Try using synonyms or more precise terms.")
-    feedback.append("")
-
-    feedback.append(f"🔄 COHERENCE ANALYSIS (Score: {scores['coherence']})")
-    paragraphs = essay_text.split('\n\n')
-    if len(paragraphs) > 1:
-        feedback.append(f"- Your essay has {len(paragraphs)} paragraphs, good for organization.")
-    else:
-        feedback.append("- Consider breaking your essay into distinct paragraphs.")
-    
-    for i, para in enumerate(paragraphs):
-        if len(para.split()) < 20 and i > 0 and i < len(paragraphs)-1:
-            feedback.append(f"- Paragraph {i+1} is quite short. Consider developing it further.")
-    
-    if analysis['transition_count'] < 2:
-        feedback.append("- Add transition words like 'Furthermore' or 'However' to improve flow.")
-    else:
-        feedback.append("- Good use of transition words.")
-    feedback.append("")
-
-    feedback.append(f"📚 CONTENT ANALYSIS (Score: {scores['content']})")
-    evidence_count = sum(1 for w in ['example', 'for instance', 'such as', 'because', 'research'] if w in essay_text.lower())
-    if evidence_count < 2:
-        feedback.append("- Include at least one concrete example to strengthen your argument.")
-    else:
-        feedback.append(f"- Good use of evidence ({evidence_count} instances).")
-    
-    if len(paragraphs) >= 2:
-        intro_words = ['introduction', 'first', 'begin', 'purpose', 'this essay']
-        if not any(w in paragraphs[0].lower() for w in intro_words):
-            feedback.append("- Your first paragraph could more clearly introduce the topic.")
-        conc_words = ['conclusion', 'summary', 'finally', 'in conclusion', 'overall']
-        if not any(w in paragraphs[-1].lower() for w in conc_words):
-            feedback.append("- Your final paragraph could be strengthened with a concluding statement.")
-    feedback.append("")
+        feedback.append(f"  • Detected {len(grammar_errors)} grammar issues; top: {grammar_errors[0]['message']}")
 
     specific = generate_specific_suggestions(essay_text, analysis, scores)
     if specific:
+        feedback.append("")
         feedback.append("✨ SPECIFIC IMPROVEMENTS YOU CAN MAKE")
         for i, s in enumerate(specific[:2]):
             feedback.append(f"{i+1}. {s['title']}: {s['suggestion']}")
@@ -380,10 +420,13 @@ Write only the final feedback paragraph:"""
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
     is_valid, error_msg = is_valid_essay(essay_text)
     if not is_valid:
-        if evaluation_type == "holistic":
-            return {"holistic_score": 0, "level_description": error_msg}, f"⚠️ Invalid Input: {error_msg}"
-        else:
-            return {"grammar": 0, "coherence": 0, "content": 0}, f"⚠️ Invalid Input: {error_msg}"
+        empty_scores = (
+            {"holistic_score": 0, "level_description": error_msg}
+            if evaluation_type == "holistic"
+            else {"main_statement": 0, "organization": 0,
+                  "evidence": 0, "analysis": 0, "grammar": 0}
+        )
+        return empty_scores, f"⚠️ Invalid Input: {error_msg}"
 
     analysis = analyze_essay_content(essay_text)
     rag_context = ""
@@ -404,7 +447,6 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
     feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback)
     return scores, feedback
 
-# ---------- Rubric and Suggestion Guide ----------
 RUBRIC = {
     "grammar": "Correctness of sentence structure, punctuation, spelling, and tense consistency.",
     "coherence": "Logical flow of ideas, use of transition words, paragraph organization, and clarity.",
