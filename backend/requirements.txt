@@ -12,9 +12,6 @@ langchain-core==0.2.43
 
 supabase==1.2.0
 gotrue==1.1.0
-postgrest==0.13.2
-realtime==1.0.0
-storage3==0.5.3
 
 pytesseract==0.3.10
 pillow==10.1.0
