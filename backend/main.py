@@ -13,20 +13,7 @@ from ai_models import test_prompt
 from ocr_jobs import get_job_status
 from auth import get_current_user, security
 from supabase import create_client, Client
-
-# ---------- Google Cloud Vision Credentials ----------
-google_creds_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
-if google_creds_json:
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            f.write(google_creds_json)
-            creds_file = f.name
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = creds_file
-        print("✅ Google Cloud credentials loaded.")
-    except Exception as e:
-        print(f"❌ Failed to set Google credentials: {e}")
-else:
-    print("⚠️ GOOGLE_APPLICATION_CREDENTIALS_JSON not set.")
+from evaluation_graph import run_evaluation   # ✅ LangGraph
 
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
@@ -38,6 +25,7 @@ ALLOWED_ORIGINS = [
     "https://capstoneessayevaluator.web.app",
     "https://essay-evaluator.duckdns.org",
     "https://api.essay-evaluator.duckdns.org",
+    "https://essay-evaluator.duckdns.org",
 ]
 
 app.add_middleware(
@@ -405,7 +393,7 @@ def add_question(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    
+
     data = question.dict()
     data["survey_id"] = survey_id
 
@@ -416,7 +404,7 @@ def add_question(
         .limit(1) \
         .execute()
     max_order = existing.data[0]["order_number"] if existing.data else 0
-    data["order_number"] = max_order + 1   
+    data["order_number"] = max_order + 1
 
     try:
         if supabase_admin:
@@ -425,7 +413,7 @@ def add_question(
             result = user_client.table("survey_questions").insert(data).execute()
     except Exception:
         result = user_client.table("survey_questions").insert(data).execute()
-    
+
     return {"id": result.data[0]["id"]}
 
 @app.get("/surveys/{survey_id}/questions")
@@ -446,7 +434,6 @@ def get_my_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
-    # Check if any answer exists for this user in this survey
     resp = user_client.table("survey_responses") \
         .select("id") \
         .eq("survey_id", survey_id) \
@@ -461,27 +448,23 @@ def get_my_responses(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
-    # Fetch the user's answers for this survey
     answers = user_client.table("survey_responses") \
         .select("*") \
         .eq("survey_id", survey_id) \
         .eq("user_id", user["id"]) \
         .execute()
-    
+
     if not answers.data:
         return {"responses": [], "questions": []}
 
-    # Get question details to display alongside answers
     question_ids = [a["question_id"] for a in answers.data]
     questions = user_client.table("survey_questions") \
         .select("*") \
         .in_("id", question_ids) \
         .execute()
-    
-    # Build a map of question_id -> question details
+
     q_map = {q["id"]: q for q in questions.data}
-    
-    # Combine answers with question info
+
     detailed = []
     for a in answers.data:
         q = q_map.get(a["question_id"], {})
@@ -492,7 +475,7 @@ def get_my_responses(
             "answer": a["answer"],
             "created_at": a["created_at"]
         })
-    
+
     return {"responses": detailed}
 
 @app.put("/questions/{id}")
@@ -559,7 +542,6 @@ def get_survey_responses(
 ):
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
-    # Attempt admin client first (bypasses RLS)
     if supabase_admin:
         try:
             responses = supabase_admin.table("survey_responses") \
@@ -569,7 +551,6 @@ def get_survey_responses(
             return responses.data
         except Exception as e:
             print(f"supabase_admin failed: {e}")
-    # Fallback to authenticated client (RLS applies)
     responses = user_client.table("survey_responses") \
         .select("*") \
         .eq("survey_id", survey_id) \
@@ -662,12 +643,17 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-# ---------- Evaluation ----------
+# ---------- Evaluation (now uses LangGraph) ----------
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest):
     try:
-        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=False)
-        return EvaluationResponse(scores=scores, feedback=feedback)
+        result = run_evaluation(req.text, req.evaluation_type, use_rag=False)
+        if result.get("error"):
+            return EvaluationResponse(
+                scores={"grammar": 0, "coherence": 0, "content": 0},
+                feedback=result.get("feedback") or "Invalid input"
+            )
+        return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
     except Exception as e:
         print(f"❌ Evaluation error: {e}")
         raise HTTPException(500, str(e))
@@ -675,8 +661,13 @@ def evaluate_essay(req: EvaluationRequest):
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
 def evaluate_essay_with_rag(req: EvaluationRequest):
     try:
-        scores, feedback = evaluator.evaluate_essay(req.text, req.evaluation_type, use_rag=True)
-        return EvaluationResponse(scores=scores, feedback=feedback)
+        result = run_evaluation(req.text, req.evaluation_type, use_rag=True)
+        if result.get("error"):
+            return EvaluationResponse(
+                scores={"grammar": 0, "coherence": 0, "content": 0},
+                feedback=result.get("feedback") or "Invalid input"
+            )
+        return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
     except Exception as e:
         print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
