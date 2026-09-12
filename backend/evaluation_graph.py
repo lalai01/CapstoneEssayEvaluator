@@ -1,12 +1,3 @@
-# backend/evaluation_graph.py
-"""
-LangGraph workflow for essay evaluation.
-
-Flow:
-    START → validate → score → rag → feedback → END
-             ↓
-           error → END
-"""
 
 from typing import TypedDict, Optional, Dict, Any
 
@@ -107,19 +98,19 @@ def build_graph():
     wf.add_node("validate", validate_node)
     wf.add_node("score", score_node)
     wf.add_node("rag", rag_node)
-    wf.add_node("generate_feedback", feedback_node)   
-    wf.add_node("error", error_node)
+    wf.add_node("generate_feedback", feedback_node)
+    wf.add_node("handle_error", error_node)
 
     wf.add_edge(START, "validate")
     wf.add_conditional_edges(
         "validate",
-        lambda s: "error" if s.get("error") else "score",
-        {"error": "error", "score": "score"},
+        lambda s: "handle_error" if s.get("error") else "score",
+        {"handle_error": "handle_error", "score": "score"},
     )
     wf.add_edge("score", "rag")
-    wf.add_edge("rag", "generate_feedback")          
-    wf.add_edge("generate_feedback", END)           
-    wf.add_edge("error", END)
+    wf.add_edge("rag", "generate_feedback")
+    wf.add_edge("generate_feedback", END)
+    wf.add_edge("handle_error", END)
 
     return wf.compile()
 
