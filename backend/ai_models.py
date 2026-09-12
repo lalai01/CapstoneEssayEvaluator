@@ -1,27 +1,6 @@
 import os
 import json
 import requests
-from openai import OpenAI
-
-# ---------- OpenAI ----------
-def call_openai(system_prompt, user_prompt, model="gpt-3.5-turbo"):
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY not set")
-    client = OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.3
-    )
-    return {
-        "text": response.choices[0].message.content,
-        "model": model,
-        "provider": "openai"
-    }
 
 # ---------- DeepSeek ----------
 def call_deepseek(system_prompt, user_prompt, model="deepseek-chat"):
@@ -40,7 +19,11 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat"):
         ],
         "temperature": 0.3
     }
-    response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload)
+    response = requests.post(
+        "https://api.deepseek.com/v1/chat/completions",
+        headers=headers,
+        json=payload
+    )
     response.raise_for_status()
     data = response.json()
     return {
@@ -86,7 +69,11 @@ def call_llamacpp(system_prompt, user_prompt, model=None):
         ],
         "temperature": 0.3
     }
-    response = requests.post(f"{llamacpp_url}/chat/completions", json=payload, timeout=120)
+    response = requests.post(
+        f"{llamacpp_url}/chat/completions",
+        json=payload,
+        timeout=120
+    )
     response.raise_for_status()
     data = response.json()
     return {
@@ -98,10 +85,8 @@ def call_llamacpp(system_prompt, user_prompt, model=None):
 # ---------- Router ----------
 def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
     provider = ai_provider.lower()
-    
-    if provider == "openai":
-        return call_openai(system_prompt, user_prompt, model or "gpt-3.5-turbo")
-    elif provider == "deepseek":
+
+    if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat")
     elif provider in ("gemma", "ollama"):
         return call_ollama(system_prompt, user_prompt, model or "gemma2:2b")
