@@ -725,12 +725,31 @@ async def ocr_from_file(file: UploadFile = File(...)):
             except Exception as e:
                 print(f"Correction skipped: {e}")
 
-        # 4. Log training sample
+        # 4. Upload image to Supabase Storage + log training sample
+        image_url = None
         try:
-            supabase.table("ocr_training_data").insert({
+            import uuid as _uuid
+            bucket = supabase.storage.from_("ocr-samples")
+            filename = f"{_uuid.uuid4()}{suffix}"
+            bucket.upload(
+                filename,
+                contents,
+                {"content-type": file.content_type or "application/octet-stream"},
+            )
+            image_url = bucket.get_public_url(filename)
+            print(f"[OCR] image uploaded: {image_url}")
+        except Exception as e:
+            print(f"Failed to upload OCR image: {e}")
+
+        try:
+            row = supabase.table("ocr_training_data").insert({
                 "raw_ocr_text": text,
+                "image_url": image_url,
+                "engine": engine,
                 "accepted": False,
             }).execute()
+            if row.data:
+                print(f"[OCR] logged sample id={row.data[0]['id']}")
         except Exception as e:
             print(f"Failed to log OCR sample: {e}")
 
