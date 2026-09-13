@@ -28,7 +28,7 @@ def preprocess_for_ocr(image_bytes):
     binarized = cv2.adaptiveThreshold(
         enhanced, 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 31, 10
+        cv2.THRESH_BINARY, 51, 15
     )
 
     # Save to temp file
