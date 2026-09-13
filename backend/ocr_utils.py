@@ -1,205 +1,244 @@
+import math
 import cv2
 import numpy as np
-from io import BytesIO
+from PIL import Image
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+import torch
+
+_processor = None
+_model = None
 
 
-def get_priority_engines():
-    """
-    Informational helper. Actual routing happens inside
-    extract_text_from_image_bytes.
-    """
-    engines = []
-    try:
-        import pytesseract  # noqa: F401
-        engines.append("tesseract")
-    except ImportError:
-        pass
-    try:
-        from transformers import TrOCRProcessor  # noqa: F401
-        engines.append("trocr")
-    except ImportError:
-        pass
-    return engines
-
-
-# ---------------------------------------------------------------------------
-# Image quality helpers (used by the router, and available for diagnostics)
-# ---------------------------------------------------------------------------
-def estimate_sharpness(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    return laplacian.var()
-
-
-def estimate_contrast(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return np.std(gray)
-
-
-def detect_skew(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
-    if lines is None:
-        return 0.0
-    angles = []
-    for line in lines:
-        rho, theta = line[0]
-        angle = theta * 180 / np.pi - 90
-        angles.append(angle)
-    median_angle = np.median(angles)
-    return median_angle if abs(median_angle) < 45 else 0.0
-
-
-def is_handwritten(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 30, 100)
-    edge_density = np.sum(edges > 0) / (gray.shape[0] * gray.shape[1])
-    return 0.08 < edge_density < 0.45
-
-
-def assess_handwriting_messiness(image_bytes):
-    """
-    Return a 0..1 score estimating how 'messy' the writing is.
-    Higher = more likely handwriting / harder for a printed-text engine.
-    Returns 0.0 on any error.
-    """
-    try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            return 0.0
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 30, 100)
-        h, w = edges.shape
-        block_h, block_w = h // 4, w // 4
-
-        densities = []
-        for i in range(4):
-            for j in range(4):
-                block = edges[i * block_h:(i + 1) * block_h,
-                              j * block_w:(j + 1) * block_w]
-                if block.size > 0:
-                    densities.append(np.sum(block > 0) / block.size)
-
-        edge_variance = float(np.var(densities)) if densities else 0.0
-
-        _, thresh = cv2.threshold(
-            gray, 0, 255,
-            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+def _load():
+    global _processor, _model
+    if _processor is None:
+        _processor = TrOCRProcessor.from_pretrained(
+            "microsoft/trocr-base-handwritten"
         )
-        contours, _ = cv2.findContours(
-            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        _model = VisionEncoderDecoderModel.from_pretrained(
+            "microsoft/trocr-base-handwritten"
         )
-        small = sum(1 for c in contours if cv2.contourArea(c) < 50)
-        total = len(contours)
-        broken_ratio = small / max(1, total)
-
-        messiness = (edge_variance * 2 + broken_ratio * 1.5) / 3.5
-        return float(min(1.0, messiness))
-    except Exception as e:
-        print(f"assess_handwriting_messiness failed: {e}")
-        return 0.0
+        _model.eval()
 
 
-# ---------------------------------------------------------------------------
-# Unified OCR entry points
-# ---------------------------------------------------------------------------
-def extract_text_from_image(image_path):
-    """Path-based wrapper for backward compatibility."""
-    with open(image_path, "rb") as f:
-        return extract_text_from_image_bytes(f.read())
+def _crop_to_content(gray):
+    """Remove white borders/background so projection sees only text."""
+    _, thresh = cv2.threshold(gray, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
+                              np.ones((3, 3), np.uint8))
+    coords = cv2.findNonZero(thresh)
+    if coords is None:
+        return gray
+    x, y, w, h = cv2.boundingRect(coords)
+    pad = 20
+    x = max(0, x - pad)
+    y = max(0, y - pad)
+    w = min(gray.shape[1] - x, w + 2 * pad)
+    h = min(gray.shape[0] - y, h + 2 * pad)
+    return gray[y:y + h, x:x + w]
 
 
-def extract_text_from_image_bytes(image_bytes):
+def _upscale_if_small(gray, min_height=1200):
+    """Upscale images that are too small for TrOCR's line crops."""
+    h, w = gray.shape
+    if h >= min_height:
+        return gray
+    scale = min_height / h
+    new_w = int(w * scale)
+    return cv2.resize(gray, (new_w, min_height),
+                      interpolation=cv2.INTER_CUBIC)
+
+
+def deskew(gray):
+    """Correct small rotations. Safe no-op if no clear skew."""
+    coords = np.column_stack(np.where(gray < 128))
+    if len(coords) < 100:
+        return gray
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    if abs(angle) < 0.5 or abs(angle) > 15:
+        return gray
+    h, w = gray.shape
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    return cv2.warpAffine(gray, M, (w, h),
+                          flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
+def segment_lines(gray):
     """
-    Unified OCR entry point. Takes raw image bytes and returns
-    (text, confidence, engine).
+    Robust horizontal line segmentation. Returns list of (top, bottom) bands.
 
-    Routes:
-      - handwriting (messiness > 0.2) → TrOCR
-      - printed                       → Tesseract (--oem 1 --psm 6)
+    Strategy:
+      1. Otsu binarize -> ink is white (255), background black (0)
+      2. Morphological opening to remove specks
+      3. Horizontal dilation to connect letters within a line
+      4. Horizontal projection (sum of ink per row)
+      5. Threshold at 40% of max projection -> only real text rows pass
+      6. Group adjacent rows into bands
+      7. Merge bands only if the gap is very small
+      8. Filter out bands shorter than a plausible line height
     """
-    import pytesseract
-    from PIL import Image
+    _, thresh = cv2.threshold(gray, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    try:
-        # --- Decide route ---
-        messiness = assess_handwriting_messiness(image_bytes)
-        print(f"[OCR] messiness = {messiness:.3f}")
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
+                              np.ones((3, 3), np.uint8))
 
-        if messiness > 0.2:
-            try:
-                from handwriting_ocr import ocr_handwriting_image
-                text, conf = ocr_handwriting_image(image_bytes)
-                print(f"[OCR] TrOCR returned {len(text)} chars, conf={conf:.1f}")
-                if text and len(text.strip()) >= 30:
-                    return text, conf, "trocr-handwriting"
-                print("[OCR] TrOCR output too short; falling back to Tesseract")
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"[OCR] TrOCR failed, falling back to Tesseract: {e}")
+    thresh = cv2.dilate(thresh, np.ones((1, 25), np.uint8), iterations=1)
 
-        # --- Printed-text path ---
-        pil = Image.open(BytesIO(image_bytes))
-        text = pytesseract.image_to_string(pil, config="--oem 1 --psm 6")
+    proj = thresh.sum(axis=1).astype(np.float32)
 
-        if not text or not text.strip():
-            return "", 0.0, "tesseract"
+    kernel = np.ones(5) / 5
+    proj_smooth = np.convolve(proj, kernel, mode="same")
 
-        data = pytesseract.image_to_data(pil,
-                                         output_type=pytesseract.Output.DICT)
-        conf_values = []
-        for c, t in zip(data["conf"], data.get("text", [])):
-            try:
-                v = float(c)
-            except (TypeError, ValueError):
-                continue
-            if v >= 0 and t and t.strip():
-                conf_values.append(v)
+    if proj_smooth.max() == 0:
+        return []
 
-        conf = sum(conf_values) / len(conf_values) if conf_values else 0.0
-        return text, conf, "tesseract"
-    except Exception as e:
-        print(f"extract_text_from_image_bytes failed: {e}")
-        return "", 0.0, "tesseract"
+    thresh_val = proj_smooth.max() * 0.4
+
+    above = proj_smooth > thresh_val
+    bands = []
+    start = None
+    for i, a in enumerate(above):
+        if a and start is None:
+            start = i
+        elif not a and start is not None:
+            bands.append((start, i - 1))
+            start = None
+    if start is not None:
+        bands.append((start, len(above) - 1))
+
+    if not bands:
+        return []
+
+    raw_count = len(bands)
+
+    if len(bands) > 1:
+        heights = [b - a for a, b in bands]
+        median_h = float(np.median(heights))
+        min_gap = min(12, int(0.3 * median_h))
+        merged = [bands[0]]
+        for a, b in bands[1:]:
+            prev_a, prev_b = merged[-1]
+            if a - prev_b < min_gap:
+                merged[-1] = (prev_a, b)
+            else:
+                merged.append((a, b))
+        bands = merged
+
+    min_h = max(15, gray.shape[0] // 100)
+    bands = [(a, b) for a, b in bands if (b - a) >= min_h]
+
+    print(f"[TrOCR] segment_lines: {raw_count} raw bands, "
+          f"{len(bands)} after merge+filter")
+    return bands
 
 
-# ---------------------------------------------------------------------------
-# Other document formats
-# ---------------------------------------------------------------------------
-def extract_docx_text(docx_bytes):
-    """Read text directly from a .docx file. No OCR involved."""
-    from docx import Document
-    doc = Document(BytesIO(docx_bytes))
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n\n".join(paragraphs)
-
-
-def extract_pdf_text_or_route(pdf_bytes):
+def _transcribe_batch(pil_images):
     """
-    Returns one of:
-      ("text",   full_text)                 → PDF had a text layer
-      ("images", [page_png_bytes, ...])     → scanned PDF, pages to OCR
+    Transcribe a batch of line crops in one forward pass.
+    Returns (list_of_texts, list_of_confidences).
     """
-    import fitz  # PyMuPDF
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pixel_values = _processor(
+        images=pil_images, return_tensors="pt"
+    ).pixel_values
 
-    # 1. Check for an embedded text layer
-    total_text = ""
-    for page in doc:
-        total_text += page.get_text()
+    with torch.no_grad():
+        outputs = _model.generate(
+            pixel_values,
+            max_new_tokens=128,
+            output_scores=True,
+            return_dict_in_generate=True,
+        )
 
-    if len(total_text.strip()) > 100:
-        doc.close()
-        return "text", total_text
+    texts = _processor.batch_decode(
+        outputs.sequences, skip_special_tokens=True
+    )
 
-    # 2. Scanned — render pages to PNG for OCR
-    page_images = []
-    for page_num in range(len(doc)):
-        pix = doc[page_num].get_pixmap(dpi=200)
-        page_images.append(pix.tobytes("png"))
-    doc.close()
-    return "images", page_images
+    # Per-sequence confidence via geometric mean of per-token probabilities
+    confidences = []
+    scores = outputs.scores  # tuple of (batch, vocab) per generation step
+    for seq_idx, ids in enumerate(outputs.sequences):
+        probs = []
+        for i, s in enumerate(scores):
+            if i + 1 >= len(ids):
+                break
+            p = torch.softmax(s[seq_idx], dim=-1)[ids[i + 1]].item()
+            probs.append(p)
+        if probs:
+            gm = math.exp(
+                sum(math.log(p + 1e-9) for p in probs) / len(probs)
+            )
+            confidences.append(gm * 100)
+        else:
+            confidences.append(0.0)
+
+    return texts, confidences
+
+
+def ocr_handwriting_image(image_bytes):
+    """
+    Full-page handwriting OCR:
+      decode → crop to content → deskew → upscale →
+      segment lines → batch-transcribe with TrOCR.
+    """
+    _load()
+
+    arr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        print("[TrOCR] image decode failed")
+        return "", 0.0
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Preprocessing pipeline
+    gray = _crop_to_content(gray)
+    gray = deskew(gray)
+    gray = _upscale_if_small(gray)
+
+    bands = segment_lines(gray)
+    print(f"[TrOCR] segmentation found {len(bands)} line bands")
+
+    if not bands:
+        return "", 0.0
+
+    # Build all crops up front
+    crops = []
+    for (top, bottom) in bands:
+        pad = 8
+        crop = gray[max(0, top - pad):bottom + pad, :]
+        crop = cv2.copyMakeBorder(crop, 10, 10, 10, 10,
+                                  cv2.BORDER_CONSTANT, value=255)
+        crops.append(Image.fromarray(crop).convert("RGB"))
+
+    if not crops:
+        print("[TrOCR] no crops to process")
+        return "", 0.0
+
+    # Batch process — much faster on CPU than looping one at a time
+    BATCH_SIZE = 4   # bump to 8 if you have RAM to spare
+    texts = []
+    confidences = []
+    for i in range(0, len(crops), BATCH_SIZE):
+        batch = crops[i:i + BATCH_SIZE]
+        batch_texts, batch_confs = _transcribe_batch(batch)
+        for t, c in zip(batch_texts, batch_confs):
+            if t.strip():
+                texts.append(t)
+                confidences.append(c)
+
+    if not texts:
+        print("[TrOCR] no lines produced text")
+        return "", 0.0
+
+    full = "\n".join(texts)
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+    print(f"[TrOCR] produced {len(full)} chars across {len(texts)} lines, "
+          f"avg conf={avg_conf:.1f}")
+    return full, avg_conf
