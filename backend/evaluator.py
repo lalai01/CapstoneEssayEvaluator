@@ -61,6 +61,32 @@ ANALYTIC_RUBRIC = {
     },
 }
 
+# ---------- Evaluation State ----------
+def get_active_rubric(user_id=None):
+    """
+    Fetch the active rubric for a user from Supabase.
+    Falls back to ANALYTIC_RUBRIC if no custom rubric is found.
+    """
+    try:
+        from supabase_client import supabase
+        if not supabase or not user_id:
+            return ANALYTIC_RUBRIC
+
+        result = supabase.table("rubrics") \
+            .select("criteria") \
+            .eq("user_id", user_id) \
+            .eq("is_active", True) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+
+        if result.data and result.data[0].get("criteria"):
+            return result.data[0]["criteria"]
+    except Exception as e:
+        print(f"Rubric fetch failed: {e}")
+
+    return ANALYTIC_RUBRIC
+
 # ---------- Essay Validation ----------
 def is_valid_essay(text):
     words = text.split()
@@ -182,15 +208,18 @@ def _essay_facts(essay_text):
     }
 
 # ---------- AI-Based Scoring (with Heuristic Fallback) ----------
-def ai_score_all_criteria(essay_text, model="llama3.2:3b"):
+def ai_score_all_criteria(essay_text, rubric=None, model="llama3.2:3b"):
     """
     Ask the local LLM (via Ollama) to score the essay on all 5 rubric criteria.
     Uses observed ground-truth facts to prevent the model from guessing.
     """
+    if rubric is None:
+        rubric = ANALYTIC_RUBRIC
+        
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
     rubric_block = ""
-    for criterion, levels in ANALYTIC_RUBRIC.items():
+    for criterion, levels in rubric.items():
         rubric_block += f"\n[{criterion}]\n"
         for level in sorted(levels, reverse=True):
             rubric_block += f"  {level}: {levels[level]}\n"
@@ -434,11 +463,10 @@ def _heuristic_scores(essay_text, analysis):
     }
 
 
-def calculate_analytic_scores(essay_text, analysis):
-    """
-    Try AI scoring first (via Ollama). Fall back to heuristics if the LLM fails.
-    """
-    ai = ai_score_all_criteria(essay_text)
+def calculate_analytic_scores(essay_text, analysis, rubric=None):
+    if rubric is None:
+        rubric = ANALYTIC_RUBRIC
+    ai = ai_score_all_criteria(essay_text, rubric=rubric)
     if ai is not None:
         print("✅ AI scoring succeeded")
         return ai
@@ -568,8 +596,11 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
         feedback.append("")
 
     avg = sum(scores.values()) / len(scores)
-    if avg >= 3.5:
-        feedback.append("✅ Overall: This is a strong essay. Focus on refining details to reach the top of the rubric.")
+    if avg >= 3.75:
+        feedback.append("✅ Overall: This essay is at the top of the rubric across all criteria. "
+                        "For further polish, consider refining transitions or adding a counter-argument.")
+    elif avg >= 3.25:
+        feedback.append("✅ Overall: This is a strong essay. Focus on refining the weakest criterion to reach the top of the rubric.")
     elif avg >= 2.5:
         feedback.append("📈 Overall: This essay meets expectations. Work on deepening analysis and evidence.")
     else:
@@ -732,7 +763,8 @@ Write only the final feedback paragraph:"""
 
 
 # ---------- Main Entry Point ----------
-def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
+def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=None):
+
     is_valid, error_msg = is_valid_essay(essay_text)
     if not is_valid:
         if evaluation_type == "holistic":
@@ -757,7 +789,7 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
         rule_feedback = generate_rule_based_holistic_feedback(essay_text, score, analysis, rag_context)
         scores = {"holistic_score": score, "level_description": HOLISTIC_RUBRIC[score]}
     else:
-        scores = calculate_analytic_scores(essay_text, analysis)
+        scores = calculate_analytic_scores(essay_text, analysis, rubric=rubric)
         rule_feedback = generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context)
 
     feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts) 
