@@ -140,26 +140,64 @@ def check_grammar_with_nlp(text):
         })
     return errors
 
+def _essay_facts(essay_text):
+    """
+    Compute ground-truth facts about the essay so the LLM
+    doesn't have to guess them.
+    """
+    paragraphs = [p for p in essay_text.split("\n\n") if p.strip()]
+    word_count = len(essay_text.split())
+    sentences = max(1, len(re.findall(r'[.!?]+', essay_text)))
+
+    # Detect explicit citations like "According to X" or "research by X"
+    cited_patterns = [
+        r"according to [A-Z]",
+        r"research (?:by|from) [A-Z]",
+        r"studies (?:by|from) [A-Z]",
+        r"report (?:by|from) [A-Z]",
+        r"survey (?:by|from) [A-Z]",
+        r"\b(?:19|20)\d{2}\b",   # any year like 2022, 2023
+    ]
+    citation_count = 0
+    for pattern in cited_patterns:
+        citation_count += len(re.findall(pattern, essay_text))
+
+    # Count transitions
+    transition_words = ["however", "therefore", "consequently", "furthermore",
+                        "moreover", "nevertheless", "subsequently",
+                        "additionally", "in conclusion"]
+    transition_count = sum(
+        1 for w in essay_text.lower().split() if w in transition_words
+    )
+
+    return {
+        "paragraph_count": len(paragraphs),
+        "word_count": word_count,
+        "sentence_count": sentences,
+        "citation_count": citation_count,
+        "transition_count": transition_count,
+    }
+
 # ---------- AI-Based Scoring (with Heuristic Fallback) ----------
-def ai_score_all_criteria(essay_text, model="gemma2:2b"):
+def ai_score_all_criteria(essay_text, model="llama3.2:3b"):
     """
     Ask the local LLM (via Ollama) to score the essay on all 5 rubric criteria.
+    Uses observed ground-truth facts to prevent the model from guessing.
     Returns a dict on success, or None on failure.
     """
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
-    # ------------------------------------------------------------------
-    # Build the rubric block from ANALYTIC_RUBRIC
-    # ------------------------------------------------------------------
+    # ---------- Build rubric block from ANALYTIC_RUBRIC ----------
     rubric_block = ""
     for criterion, levels in ANALYTIC_RUBRIC.items():
         rubric_block += f"\n[{criterion}]\n"
         for level in sorted(levels, reverse=True):
             rubric_block += f"  {level}: {levels[level]}\n"
 
-    # ------------------------------------------------------------------
-    # System message
-    # ------------------------------------------------------------------
+    # ---------- Compute ground-truth facts ----------
+    facts = _essay_facts(essay_text)
+
+    # ---------- System message ----------
     system_msg = (
         "You are a strict, experienced essay examiner. "
         "You score decisively and do not default to middle values. "
@@ -168,14 +206,19 @@ def ai_score_all_criteria(essay_text, model="gemma2:2b"):
         "You return ONLY a JSON object and never add explanations."
     )
 
-    # ------------------------------------------------------------------
-    # User prompt with full scoring rules and calibration examples
-    # ------------------------------------------------------------------
+    # ---------- User prompt ----------
     user_msg = f"""Carefully evaluate the essay below against the rubric.
 
 RUBRIC (use these exact descriptors to justify scores):
 
 {rubric_block}
+
+OBSERVED FACTS (do NOT re-count; use these as anchors):
+- Paragraph count: {facts['paragraph_count']}
+- Word count: {facts['word_count']}
+- Sentence count: {facts['sentence_count']}
+- Explicit citations detected: {facts['citation_count']}
+- Transition words used: {facts['transition_count']}
 
 SCORING RULES:
 - Base each score on the rubric wording above, not on personal preference.
@@ -185,19 +228,20 @@ SCORING RULES:
 - Use 2 when the descriptor for 2 clearly applies.
 - Use 1 only when the criterion is essentially missing or broken.
 - If a criterion is strong and another is weak, the scores MUST differ.
-- Award a 4 on evidence if the essay cites at least two specific sources,
-  studies, or named authorities (e.g., "According to the World Bank...").
-- Award a 4 on main_statement if the thesis appears in the first paragraph
+- Award a 4 on evidence if citation_count >= 2 AND the sources are relevant.
+- Award a 4 on main_statement if thesis appears in the first paragraph
   AND is restated or reinforced in the conclusion.
+- Award a 4 on organization if paragraph_count >= 3 AND transition_count >= 3.
 
-CALIBRATION EXAMPLES (use these to anchor scores):
+CALIBRATION EXAMPLES:
 
 Example A - Essay with a clear thesis, three body paragraphs, and 2+ cited
-sources (e.g., "According to UNESCO..."):
+sources:
   main_statement: 4
   organization: 4
   evidence: 4
-  analysis: 3 or 4 (4 only if each piece of evidence is interpreted)
+  analysis: 3 or 4
+  grammar: 3 or 4
 
 Example B - Short single-paragraph essay with a thesis but only one example
 and no cited source:
@@ -205,18 +249,21 @@ and no cited source:
   organization: 2
   evidence: 2
   analysis: 2
+  grammar: 3 or 4
 
 Example C - Multi-paragraph essay with a clear thesis but no concrete evidence:
   main_statement: 3
   organization: 3
   evidence: 1 or 2
   analysis: 2
+  grammar: 3
 
 Example D - Disorganized essay with no thesis and no evidence:
   main_statement: 1
   organization: 1
   evidence: 1
   analysis: 1
+  grammar: 2
 
 Essay:
 \"\"\"
@@ -233,9 +280,7 @@ Return ONLY this JSON object (no explanation, no markdown):
 }}
 """
 
-    # ------------------------------------------------------------------
-    # Send request to Ollama
-    # ------------------------------------------------------------------
+    # ---------- Call Ollama ----------
     try:
         response = requests.post(
             f"{ollama_url}/api/chat",
@@ -248,7 +293,7 @@ Return ONLY this JSON object (no explanation, no markdown):
                 "stream": False,
                 "options": {"temperature": 0.0},
             },
-            timeout=45,
+            timeout=60,
         )
         if response.status_code != 200:
             print(f"Ollama returned status {response.status_code}")
@@ -256,7 +301,7 @@ Return ONLY this JSON object (no explanation, no markdown):
 
         content = response.json().get("message", {}).get("content", "").strip()
 
-        # Strip code fences if the model added them
+        # Strip code fences if any
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
 
