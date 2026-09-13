@@ -91,7 +91,7 @@ def extract_text_from_image_bytes(image_bytes):
         # --- Decide route ---
         messiness = assess_handwriting_messiness(image_bytes)
         print(f"[OCR] messiness = {messiness:.3f}")
-        if messiness > 0.5:
+        if messiness > 0.2:
             try:
                 from handwriting_ocr import ocr_handwriting_image
                 text, conf = ocr_handwriting_image(image_bytes)
