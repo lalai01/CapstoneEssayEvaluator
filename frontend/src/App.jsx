@@ -8,7 +8,7 @@ import LearningFeedback from './components/LearningFeedback';
 import HomePage from './components/HomePage';
 import RateUs from './components/RateUs';
 import AdminSurveys from './components/AdminSurveys';
-import UserSurveys from './components/UserSurveys';   // ✅ New component for users
+import AdminRubrics from './components/AdminRubrics';
 import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
 import { useAuth } from './context/AuthContext';
@@ -32,7 +32,6 @@ function App() {
 
   const isAdmin = user?.role === 'admin' || user?.email === 'admin_essay_capstone@gmail.com';
 
-  // Build the list of tabs dynamically – Surveys tab for all logged‑in users, Admin Surveys only for admins
   const tabs = [
     { id: 'home', label: '🏠 Home' },
     { id: 'evaluate', label: '✍️ Evaluate Essay' },
@@ -40,8 +39,10 @@ function App() {
     { id: 'learning', label: '🧠 Learning KB' },
     { id: 'playground', label: '🧪 AI Playground' },
     { id: 'rateus', label: '⭐ Rate Us' },
-    ...(user ? [{ id: 'surveys', label: '📋 Surveys' }] : []),
-    ...(isAdmin ? [{ id: 'admin', label: '🔧 Admin Surveys' }] : []),
+    ...(isAdmin ? [
+      { id: 'admin', label: '🔧 Admin Surveys' },
+      { id: 'rubrics', label: '📐 Rubrics' },
+    ] : []),
   ];
 
   return (
@@ -136,8 +137,8 @@ function App() {
           {activeTab === 'learning' && <LearningFeedback />}
           {activeTab === 'playground' && <PromptPlayground />}
           {activeTab === 'rateus' && <RateUs />}
-          {activeTab === 'surveys' && <UserSurveys />}
           {activeTab === 'admin' && <AdminSurveys />}
+          {activeTab === 'rubrics' && <AdminRubrics />}
         </div>
       </div>
 
