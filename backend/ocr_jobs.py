@@ -5,7 +5,7 @@ import fitz
 from PIL import Image
 import cv2
 import numpy as np
-from image_preprocess import get_priority_engines
+from ocr_utils import get_priority_engines
 
 jobs = {}
 
