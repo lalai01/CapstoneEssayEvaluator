@@ -149,26 +149,29 @@ def _essay_facts(essay_text):
     word_count = len(essay_text.split())
     sentences = max(1, len(re.findall(r'[.!?]+', essay_text)))
 
-    # Detect explicit citations like "According to X" or "research by X"
+    # Detect explicit citations
     cited_patterns = [
         r"according to [A-Z]",
         r"research (?:by|from) [A-Z]",
         r"studies (?:by|from) [A-Z]",
         r"report (?:by|from) [A-Z]",
         r"survey (?:by|from) [A-Z]",
-        r"\b(?:19|20)\d{2}\b",   # any year like 2022, 2023
+        r"\b(?:19|20)\d{2}\b",
     ]
     citation_count = 0
     for pattern in cited_patterns:
         citation_count += len(re.findall(pattern, essay_text))
 
-    # Count transitions
-    transition_words = ["however", "therefore", "consequently", "furthermore",
-                        "moreover", "nevertheless", "subsequently",
-                        "additionally", "in conclusion"]
-    transition_count = sum(
-        1 for w in essay_text.lower().split() if w in transition_words
-    )
+    # Count transitions (phrase-aware)
+    transition_words = [
+        "however", "therefore", "consequently", "furthermore",
+        "moreover", "nevertheless", "subsequently", "additionally",
+        "first", "second", "third", "finally", "in addition",
+        "for example", "for instance", "in conclusion", "as a result",
+        "on the other hand", "in other words", "more importantly",
+    ]
+    lower_text = essay_text.lower()
+    transition_count = sum(1 for phrase in transition_words if phrase in lower_text)
 
     return {
         "paragraph_count": len(paragraphs),
@@ -473,6 +476,7 @@ def get_paragraph_number(text, offset):
 # ---------- Suggestions ----------
 def generate_specific_suggestions(essay_text, analysis, scores):
     suggestions = []
+
     long_sents = find_long_sentences(essay_text)
     if long_sents:
         sent, length = long_sents[0]
@@ -480,21 +484,24 @@ def generate_specific_suggestions(essay_text, analysis, scores):
         suggestions.append({
             "title": "Long sentence detected",
             "original": truncated,
-            "suggestion": "Break this into shorter sentences. Example: 'Education is the cornerstone of personal and societal development. It empowers individuals with knowledge and critical thinking skills.'"
+            "suggestion": "Break this into shorter sentences for better readability."
         })
-    if analysis['transition_count'] < 2:
+
+    if analysis['transition_count'] == 0:
         suggestions.append({
             "title": "Add transitions",
-            "original": "Limited use of transition words.",
+            "original": "No transition words detected.",
             "suggestion": "Add words like 'Furthermore', 'However', or 'For example' to connect ideas."
         })
+
     vague_found = find_vague_words(essay_text)
     if 'very' in vague_found or 'really' in vague_found:
         suggestions.append({
             "title": "Stronger vocabulary",
-            "original": f"Uses weak modifiers: {', '.join([k for k in vague_found])}",
+            "original": f"Uses weak modifiers: {', '.join(vague_found.keys())}",
             "suggestion": "Replace 'very important' with 'crucial' or 'essential' for stronger impact."
         })
+
     return suggestions
 
 
@@ -526,10 +533,10 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
         para_count = len([p for p in essay_text.split('\n\n') if p.strip()])
         if para_count < 3:
             feedback.append("- 💡 Break your argument into at least three paragraphs: introduction, body, conclusion.")
-        if analysis['transition_count'] < 4:
-            feedback.append("- 💡 Use more transitions (e.g., 'Furthermore', 'Therefore', 'In conclusion').")
+        if analysis['transition_count'] == 0:
+            feedback.append("- 💡 Use transitions (e.g., 'Furthermore', 'Therefore', 'In conclusion').")
     feedback.append("")
-
+    
     feedback.append(f"📚 EVIDENCE (Score: {scores['evidence']}/4)")
     feedback.append(f"- {ANALYTIC_RUBRIC['evidence'][scores['evidence']]}")
     if scores['evidence'] < 4:
