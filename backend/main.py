@@ -684,7 +684,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
         try:
             enhanced_path = preprocess_for_ocr(contents)
         except Exception:
-            enhanced_path = tmp_path 
+            enhanced_path = tmp_path
 
         # 2. Extract with automatic engine selection
         candidates = []
@@ -695,22 +695,32 @@ async def ocr_from_file(file: UploadFile = File(...)):
                     candidates.append((len(t.strip()), t, c, e))
             except Exception as ex:
                 print(f"OCR failed on {path}: {ex}")
-        
-        if candidates:
+
+        # Prefer the handwriting engine when it succeeded. Tesseract
+        # produces longer but meaningless output on handwriting, so
+        # "longest wins" is the wrong tiebreaker.
+        trocr_candidates = [c for c in candidates if "trocr" in (c[3] or "")]
+        if trocr_candidates:
+            _, text, confidence, engine = max(trocr_candidates, key=lambda x: x[0])
+        elif candidates:
             _, text, confidence, engine = max(candidates, key=lambda x: x[0])
         else:
             text, confidence, engine = "", 0.0, "tesseract"
 
-        # 3. AI correction (only if text is present and short enough)
-        try:
-            from evaluator import ai_correct_ocr_text
-            if text and len(text.strip()) > 20:
+        print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}")
+
+        # 3. AI correction — only for printed-text output.
+        #    Running it on handwritten output would rewrite it.
+        if engine == "tesseract" and text and len(text.strip()) > 20:
+            try:
+                from evaluator import ai_correct_ocr_text
                 corrected = ai_correct_ocr_text(text)
                 if corrected and corrected.strip():
                     text = corrected
-        except Exception as e:
-            print(f"Correction skipped: {e}")
+            except Exception as e:
+                print(f"Correction skipped: {e}")
 
+        # 4. Log training sample
         try:
             supabase.table("ocr_training_data").insert({
                 "raw_ocr_text": text,
