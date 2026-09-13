@@ -645,9 +645,8 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
 
 
 def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
-    """Rewrite the rule-based feedback into a natural, encouraging paragraph."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-    model = "gemma2:2b"
+    model = "llama3.2:3b"   
 
     if facts is None:
         facts = _essay_facts(essay_text)
@@ -667,35 +666,40 @@ def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=
         f"- Paragraph count: {facts['paragraph_count']}\n"
         f"- Word count: {facts['word_count']}\n"
         f"- Transition count: {facts['transition_count']}\n"
-        f"- Citations detected: {facts['citation_count']}"
+        f"- Citation count: {facts['citation_count']}"
     )
 
     system_msg = (
-        "You are an expert writing coach who provides warm, encouraging, "
-        "actionable feedback. You do NOT invent facts about the essay. "
-        "You ONLY state what is directly supported by the technical analysis "
-        "and observed facts."
+        "You are an expert writing coach. You rewrite technical evaluations "
+        "into warm, encouraging, and actionable feedback for students. "
+        "You MUST NOT add suggestions that contradict the OBSERVED FACTS. "
+        "You MUST NOT invent issues that are not present in the technical analysis. "
+        "You output only the final feedback paragraph."
     )
 
     user_msg = f"""Rewrite the technical analysis below into a single, natural
 feedback paragraph for a student. Preserve all scores, specific issues, and
 suggestions. Use a supportive tone.
 
-FACTS (do NOT contradict these):
+OBSERVED FACTS — DO NOT CONTRADICT:
 {facts_block}
 
-Essay excerpt: {essay_text[:1000]}...
+Rules you MUST obey:
+- If transition_count > 0, do NOT advise adding transitions.
+- If paragraph_count >= 2, do NOT advise breaking the essay into paragraphs.
+- If citation_count >= 2, do NOT advise adding more examples.
+- Only mention issues that appear in the TECHNICAL ANALYSIS below.
+- Do NOT invent new suggestions not present in the technical analysis.
+- Keep the response under 120 words.
+
+Essay excerpt:
+{essay_text[:1000]}
 
 Scores:
 {score_info}
 
 Technical Analysis:
 {rule_feedback[:2000]}
-
-Rules:
-- Do NOT say transitions are missing if transition_count > 0.
-- Do NOT say paragraphs are absent if paragraph_count >= 2.
-- Do NOT invent examples or claims not present in the analysis.
 
 Write only the final feedback paragraph:"""
 
@@ -709,9 +713,9 @@ Write only the final feedback paragraph:"""
                     {"role": "user", "content": user_msg},
                 ],
                 "stream": False,
-                "options": {"temperature": 0.5},
+                "options": {"temperature": 0.4},
             },
-            timeout=45,
+            timeout=60,
         )
         if response.status_code == 200:
             data = response.json()
