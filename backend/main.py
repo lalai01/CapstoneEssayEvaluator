@@ -14,6 +14,7 @@ from ocr_jobs import get_job_status
 from auth import get_current_user, security
 from supabase import create_client, Client
 from evaluation_graph import run_evaluation   # ✅ LangGraph
+from evaluator import get_active_rubric
 
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
@@ -83,14 +84,39 @@ class OCRResponse(BaseModel):
 class KnowledgeEntry(BaseModel):
     title: Optional[str] = None
     essay: str
+
+    # Analytic criteria (1-4)
+    main_statement: Optional[int] = None
+    organization: Optional[int] = None
+    evidence: Optional[int] = None
+    analysis: Optional[int] = None
     grammar: Optional[int] = None
+
+    # Holistic fields
+    holistic_score: Optional[int] = None
+    level_description: Optional[str] = None
+
+    # Legacy fields kept for backward compatibility
     coherence: Optional[int] = None
     content: Optional[int] = None
+
     feedback: str
     eval_type: str
     accepted: bool = False
     satisfaction: int = 5
     teacher_feedback: Optional[str] = None
+
+class RubricCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    criteria: Dict[str, Dict[str, str]]
+    is_active: bool = True
+
+class RubricUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    criteria: Optional[Dict[str, Dict[str, str]]] = None
+    is_active: Optional[bool] = None
 
 class OverrideRequest(BaseModel):
     original_essay: str
@@ -557,6 +583,42 @@ def get_survey_responses(
         .execute()
     return responses.data
 
+# ---------- Admin Rubrics ----------
+@app.post("/rubrics")
+def create_rubric(rubric: RubricCreate,
+                  user: dict = Depends(get_current_user),
+                  user_client: Client = Depends(get_user_client)):
+    data = rubric.dict()
+    data["user_id"] = user["id"]
+    result = user_client.table("rubrics").insert(data).execute()
+    return {"id": result.data[0]["id"]}
+
+@app.get("/rubrics")
+def list_rubrics(user: dict = Depends(get_current_user),
+                 user_client: Client = Depends(get_user_client)):
+    result = user_client.table("rubrics") \
+        .select("*") \
+        .eq("user_id", user["id"]) \
+        .order("created_at", desc=True) \
+        .execute()
+    return result.data
+
+@app.put("/rubrics/{rubric_id}")
+def update_rubric(rubric_id: int,
+                  rubric: RubricUpdate,
+                  user: dict = Depends(get_current_user),
+                  user_client: Client = Depends(get_user_client)):
+    data = {k: v for k, v in rubric.dict().items() if v is not None}
+    user_client.table("rubrics").update(data).eq("id", rubric_id).execute()
+    return {"status": "updated"}
+
+@app.delete("/rubrics/{rubric_id}")
+def delete_rubric(rubric_id: int,
+                  user: dict = Depends(get_current_user),
+                  user_client: Client = Depends(get_user_client)):
+    user_client.table("rubrics").delete().eq("id", rubric_id).execute()
+    return {"status": "deleted"}
+
 # ---------- Saved Essays ----------
 @app.post("/saved-essays")
 def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
@@ -644,9 +706,10 @@ def get_ocr_status(job_id: str):
         )
 
 @app.post("/evaluate", response_model=EvaluationResponse)
-def evaluate_essay(req: EvaluationRequest):
+def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user)):
     try:
-        result = run_evaluation(req.text, req.evaluation_type, use_rag=False)
+        rubric = get_active_rubric(user["id"])
+        result = run_evaluation(req.text, req.evaluation_type, use_rag=False, rubric=rubric)
         if result.get("error"):
             return EvaluationResponse(
                 scores={"main_statement": 0, "organization": 0,
@@ -655,12 +718,15 @@ def evaluate_essay(req: EvaluationRequest):
             )
         return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
     except Exception as e:
+        print(f"❌ Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
+
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
-def evaluate_essay_with_rag(req: EvaluationRequest):
+def evaluate_essay_with_rag(req: EvaluationRequest, user: dict = Depends(get_current_user)):
     try:
-        result = run_evaluation(req.text, req.evaluation_type, use_rag=True)
+        rubric = get_active_rubric(user["id"])
+        result = run_evaluation(req.text, req.evaluation_type, use_rag=True, rubric=rubric)
         if result.get("error"):
             return EvaluationResponse(
                 scores={"main_statement": 0, "organization": 0,
@@ -669,6 +735,7 @@ def evaluate_essay_with_rag(req: EvaluationRequest):
             )
         return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
     except Exception as e:
+        print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
 # ---------- Knowledge Base ----------

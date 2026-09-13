@@ -28,6 +28,7 @@ class EvaluationState(TypedDict, total=False):
     error: Optional[str]
     _analysis: Optional[Dict[str, Any]]
     _validated: Optional[bool]
+    rubric: Optional[Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -43,13 +44,13 @@ def validate_node(state: EvaluationState) -> dict:
 def score_node(state: EvaluationState) -> dict:
     analysis = analyze_essay_content(state["essay_text"])
     if state.get("evaluation_type") == "holistic":
-        score = calculate_holistic_score(state["essay_text"], analysis)
-        scores = {
-            "holistic_score": score,
-            "level_description": HOLISTIC_RUBRIC[score],
-        }
+        ...
     else:
-        scores = calculate_analytic_scores(state["essay_text"], analysis)
+        scores = calculate_analytic_scores(
+            state["essay_text"],
+            analysis,
+            rubric=state.get("rubric"),
+        )
     return {"scores": scores, "_analysis": analysis}
 
 
@@ -122,11 +123,12 @@ evaluation_graph = build_graph()
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool) -> dict:
+def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool, rubric=None) -> dict:
     initial: EvaluationState = {
         "essay_text": essay_text,
         "evaluation_type": evaluation_type,
         "use_rag": use_rag,
+        "rubric": rubric,
         "scores": None,
         "feedback": None,
         "rag_context": None,
