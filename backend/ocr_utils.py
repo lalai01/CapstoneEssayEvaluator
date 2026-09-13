@@ -80,3 +80,47 @@ def assess_handwriting_messiness(image_bytes):
         return min(1.0, messiness)
     except:
         return 0.0
+    
+def extract_text_from_image(image_path):
+    """
+    Extract text with automatic engine selection:
+    1. Preprocess the image
+    2. If handwriting is detected as messy → use TrOCR
+    3. Else → Tesseract with both raw and preprocessed paths
+    """
+    # ---- Try handwriting recognizer for messy images ----
+    try:
+        from image_quality import assess_handwriting_messiness
+        with open(image_path, "rb") as f:
+            contents = f.read()
+        messiness = assess_handwriting_messiness(contents)
+        if messiness > 0.6:
+            from handwriting_ocr import ocr_handwriting_image
+            text = ocr_handwriting_image(contents)
+            if text.strip():
+                return text, 85.0, "trocr_handwriting"
+    except Exception as e:
+        print(f"Handwriting path failed: {e}")
+
+    # ---- Standard Tesseract path with preprocessing ----
+    import pytesseract
+    from PIL import Image
+
+    best_text = ""
+    best_conf = 0.0
+
+    for path in [image_path]:
+        try:
+            img = Image.open(path)
+            text = pytesseract.image_to_string(img)
+            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            conf_values = [float(c) for c in data["conf"] if c != "-1"]
+            conf = sum(conf_values) / len(conf_values) if conf_values else 0
+
+            if len(text.strip()) > len(best_text.strip()) and conf >= best_conf:
+                best_text = text
+                best_conf = conf
+        except Exception as e:
+            print(f"Tesseract failed on {path}: {e}")
+
+    return best_text, best_conf, "tesseract"

@@ -5,7 +5,7 @@ import fitz
 from PIL import Image
 import cv2
 import numpy as np
-from image_quality import get_priority_engines
+from backend.image_preprocess import get_priority_engines
 
 jobs = {}
 
@@ -15,10 +15,8 @@ def extract_pdf_with_engine(pdf_bytes, engine, dpi=150):
     for page_num in range(len(doc)):
         pix = doc[page_num].get_pixmap(dpi=dpi)
         img_bytes = pix.tobytes("png")
-        if engine == 'google_vision':
-            from ocr_utils import extract_with_google_vision
-            text, _, _ = extract_with_google_vision(img_bytes)
-        elif engine == 'paddleocr':
+    
+        if engine == 'paddleocr':
             from ocr_utils import extract_with_paddleocr
             text, _, _ = extract_with_paddleocr(img_bytes)
         elif engine == 'easyocr':
