@@ -125,7 +125,7 @@ export default function PromptPlayground() {
   const [selectedEssaySource, setSelectedEssaySource] = useState('');
 
   // Model state
-  const [primaryProvider, setPrimaryProvider] = useState('openai');
+  const [primaryProvider, setPrimaryProvider] = useState('deepseek');
   const [primaryModel, setPrimaryModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState(
     'You are an expert essay evaluator with years of experience grading academic writing. Your task is to analyze the provided essay and return a JSON object with exactly the following keys: grammar_score (0-100), coherence_score (0-100), content_score (0-100), and feedback (detailed paragraph). Be objective and consistent. Do not include any text outside the JSON object.'
@@ -424,7 +424,6 @@ Return a valid JSON object with exactly these keys:
                 onChange={(e) => setPrimaryProvider(e.target.value)}
                 className="border rounded-lg p-2 bg-white text-gray-800"
               >
-                <option value="openai">OpenAI GPT</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="gemma">Gemma (Ollama)</option>
                 <option value="llamacpp">Llama.cpp (Phi-3.5)</option>
@@ -490,7 +489,6 @@ Return a valid JSON object with exactly these keys:
                   onChange={(e) => setCompareProvider(e.target.value)}
                   className="flex-1 border rounded-lg p-2 bg-white text-gray-800"
                 >
-                  <option value="openai">OpenAI GPT</option>
                   <option value="deepseek">DeepSeek</option>
                   <option value="gemma">Gemma (Ollama)</option>
                   <option value="llamacpp">Llama.cpp (Phi-3.5)</option>
