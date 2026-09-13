@@ -5,8 +5,8 @@ from io import BytesIO
 
 def get_priority_engines():
     """
-    Legacy helper kept for compatibility. The routing now happens inside
-    extract_text_from_image_bytes, so this is informational only.
+    Informational helper. Actual routing happens inside
+    extract_text_from_image_bytes.
     """
     engines = []
     try:
@@ -22,20 +22,47 @@ def get_priority_engines():
     return engines
 
 
-# ... estimate_sharpness, estimate_contrast, detect_skew, is_handwritten,
-#     assess_handwriting_messiness — unchanged, keep as-is ...
+# ---------------------------------------------------------------------------
+# Image quality helpers (used by the router, and available for diagnostics)
+# ---------------------------------------------------------------------------
+def estimate_sharpness(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    return laplacian.var()
 
 
-def extract_text_from_image(image_path):
-    """Path-based wrapper for backward compatibility."""
-    with open(image_path, "rb") as f:
-        return extract_text_from_image_bytes(f.read())
+def estimate_contrast(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return np.std(gray)
+
+
+def detect_skew(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
+    if lines is None:
+        return 0.0
+    angles = []
+    for line in lines:
+        rho, theta = line[0]
+        angle = theta * 180 / np.pi - 90
+        angles.append(angle)
+    median_angle = np.median(angles)
+    return median_angle if abs(median_angle) < 45 else 0.0
+
+
+def is_handwritten(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 30, 100)
+    edge_density = np.sum(edges > 0) / (gray.shape[0] * gray.shape[1])
+    return 0.08 < edge_density < 0.45
+
 
 def assess_handwriting_messiness(image_bytes):
     """
-    Return a 0..1 score estimating how "messy" the writing on the page is.
-    Higher = more likely handwriting / harder to OCR with a printed-text engine.
-    Returns 0.0 on any error (blank image, decode failure, etc.).
+    Return a 0..1 score estimating how 'messy' the writing is.
+    Higher = more likely handwriting / harder for a printed-text engine.
+    Returns 0.0 on any error.
     """
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
@@ -74,14 +101,24 @@ def assess_handwriting_messiness(image_bytes):
     except Exception as e:
         print(f"assess_handwriting_messiness failed: {e}")
         return 0.0
-    
+
+
+# ---------------------------------------------------------------------------
+# Unified OCR entry points
+# ---------------------------------------------------------------------------
+def extract_text_from_image(image_path):
+    """Path-based wrapper for backward compatibility."""
+    with open(image_path, "rb") as f:
+        return extract_text_from_image_bytes(f.read())
+
+
 def extract_text_from_image_bytes(image_bytes):
     """
     Unified OCR entry point. Takes raw image bytes and returns
     (text, confidence, engine).
 
     Routes:
-      - handwriting (messiness > 0.5) → TrOCR
+      - handwriting (messiness > 0.2) → TrOCR
       - printed                       → Tesseract (--oem 1 --psm 6)
     """
     import pytesseract
@@ -91,14 +128,15 @@ def extract_text_from_image_bytes(image_bytes):
         # --- Decide route ---
         messiness = assess_handwriting_messiness(image_bytes)
         print(f"[OCR] messiness = {messiness:.3f}")
+
         if messiness > 0.2:
             try:
                 from handwriting_ocr import ocr_handwriting_image
                 text, conf = ocr_handwriting_image(image_bytes)
                 print(f"[OCR] TrOCR returned {len(text)} chars, conf={conf:.1f}")
-                if text and text.strip():
+                if text and len(text.strip()) >= 30:
                     return text, conf, "trocr-handwriting"
-                print(f"[OCR] TrOCR returned empty; falling back to Tesseract")
+                print("[OCR] TrOCR output too short; falling back to Tesseract")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -111,7 +149,8 @@ def extract_text_from_image_bytes(image_bytes):
         if not text or not text.strip():
             return "", 0.0, "tesseract"
 
-        data = pytesseract.image_to_data(pil, output_type=pytesseract.Output.DICT)
+        data = pytesseract.image_to_data(pil,
+                                         output_type=pytesseract.Output.DICT)
         conf_values = []
         for c, t in zip(data["conf"], data.get("text", [])):
             try:
@@ -128,6 +167,9 @@ def extract_text_from_image_bytes(image_bytes):
         return "", 0.0, "tesseract"
 
 
+# ---------------------------------------------------------------------------
+# Other document formats
+# ---------------------------------------------------------------------------
 def extract_docx_text(docx_bytes):
     """Read text directly from a .docx file. No OCR involved."""
     from docx import Document
@@ -161,4 +203,3 @@ def extract_pdf_text_or_route(pdf_bytes):
         page_images.append(pix.tobytes("png"))
     doc.close()
     return "images", page_images
-
