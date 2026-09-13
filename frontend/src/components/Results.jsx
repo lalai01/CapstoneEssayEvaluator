@@ -1,8 +1,151 @@
-import React, { useState } from 'react';
+import React from 'react';
 import toast from 'react-hot-toast';
+import { jsPDF } from 'jspdf';
 import { saveKnowledge, saveOverride } from '../api';
 import { useAuth } from '../context/AuthContext';
 
+// ============================================================
+// Scoring helpers
+// ============================================================
+
+// Weights used for the weighted score
+const CRITERIA_WEIGHTS = {
+  main_statement: 1.0,
+  organization: 1.0,
+  evidence: 1.5,
+  analysis: 1.5,
+  grammar: 1.0,
+};
+
+// Fixed-order list of criteria
+const CRITERIA = [
+  { key: 'main_statement', label: 'Main Statement' },
+  { key: 'organization',   label: 'Organization' },
+  { key: 'evidence',       label: 'Evidence' },
+  { key: 'analysis',       label: 'Analysis' },
+  { key: 'grammar',        label: 'Grammar' },
+];
+
+// Total possible points (5 criteria × 4 points each = 20)
+const MAX_TOTAL = CRITERIA.length * 4; // 20
+
+// ---------- Total (unweighted) ----------
+function getTotalScore(scores) {
+  if (!scores) return 0;
+  return CRITERIA.reduce((sum, { key }) => {
+    const v = scores[key];
+    return sum + (typeof v === 'number' ? v : 0);
+  }, 0);
+}
+
+// ---------- Average (unweighted) ----------
+function getAverage(scores) {
+  if (!scores) return 0;
+  const values = CRITERIA
+    .map(({ key }) => scores[key])
+    .filter(v => typeof v === 'number');
+  if (values.length === 0) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+// ---------- Weighted total ----------
+function getWeightedTotal(scores) {
+  if (!scores) return 0;
+  let weightedSum = 0;
+  let totalWeight = 0;
+  for (const [key, weight] of Object.entries(CRITERIA_WEIGHTS)) {
+    const v = scores[key];
+    if (typeof v === 'number') {
+      weightedSum += v * weight;
+      totalWeight += weight;
+    }
+  }
+  return totalWeight > 0 ? weightedSum / totalWeight : 0;
+}
+
+// ---------- Grade label from 1–4 scale ----------
+function gradeLabel(score) {
+  if (score >= 3.5) return { label: 'Excellent', color: 'text-emerald-600', bg: 'bg-emerald-50 border-emerald-200' };
+  if (score >= 2.5) return { label: 'Good', color: 'text-blue-600', bg: 'bg-blue-50 border-blue-200' };
+  if (score >= 1.5) return { label: 'Developing', color: 'text-amber-600', bg: 'bg-amber-50 border-amber-200' };
+  return { label: 'Beginning', color: 'text-red-600', bg: 'bg-red-50 border-red-200' };
+}
+
+// ---------- Color for individual 1–4 score ----------
+function getScoreColor(value) {
+  if (value >= 3.5) return 'text-emerald-600';
+  if (value >= 2.5) return 'text-blue-600';
+  if (value >= 1.5) return 'text-amber-600';
+  return 'text-red-600';
+}
+
+// ============================================================
+// PDF Export
+// ============================================================
+function exportEvaluationPDF({ title, essayText, feedback, scores, evalType, userEmail }) {
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 40;
+  let y = margin;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text('Essay Evaluation Report', margin, y);
+  y += 24;
+
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Title: ${title || 'Untitled Essay'}`, margin, y); y += 16;
+  doc.text(`Evaluator: ${userEmail || 'Anonymous'}`, margin, y); y += 16;
+  doc.text(`Evaluation Type: ${evalType}`, margin, y); y += 16;
+  doc.text(`Date: ${new Date().toLocaleString()}`, margin, y); y += 24;
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Scores', margin, y); y += 18;
+  doc.setFont('helvetica', 'normal');
+
+  if (evalType === 'holistic') {
+    doc.text(`Holistic Score: ${scores.holistic_score}/5`, margin, y); y += 16;
+    doc.text(`Level: ${scores.level_description || ''}`, margin, y); y += 24;
+  } else {
+    CRITERIA.forEach(({ key, label }) => {
+      const v = scores[key];
+      doc.text(`${label}: ${typeof v === 'number' ? v : '—'}/4`, margin, y);
+      y += 16;
+    });
+    y += 8;
+
+    const total = getTotalScore(scores);
+    const avg = getAverage(scores);
+    const weighted = getWeightedTotal(scores);
+    const grade = gradeLabel(weighted);
+
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Total: ${total} / ${MAX_TOTAL}`, margin, y); y += 16;
+    doc.text(`Average: ${avg.toFixed(2)} / 4`, margin, y); y += 16;
+    doc.text(`Weighted: ${weighted.toFixed(2)} / 4 (${grade.label})`, margin, y); y += 24;
+    doc.setFont('helvetica', 'normal');
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Feedback', margin, y); y += 18;
+  doc.setFont('helvetica', 'normal');
+  const feedbackLines = doc.splitTextToSize(feedback || '', pageWidth - margin * 2);
+  doc.text(feedbackLines, margin, y);
+  y += feedbackLines.length * 14 + 16;
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Essay Text', margin, y); y += 18;
+  doc.setFont('helvetica', 'normal');
+  const essayLines = doc.splitTextToSize(essayText || '', pageWidth - margin * 2);
+  doc.text(essayLines, margin, y);
+
+  doc.save(`evaluation-${(title || 'essay').replace(/\s+/g, '_')}.pdf`);
+}
+
+// ============================================================
+// Main Component
+// ============================================================
 export default function Results({
   scores,
   feedback,
@@ -18,26 +161,6 @@ export default function Results({
   setSuggestedChanges,
 }) {
   const { user } = useAuth();
-  const [satisfaction, setSatisfaction] = useState(5); // default, will be overridden dynamically
-
-  // Calculate dynamic satisfaction based on overall score
-  const computeSatisfaction = () => {
-    if (!scores) return 5;
-    if (evalType === 'holistic') {
-      // Map holistic 1-5 to 1-10
-      return scores.holistic_score * 2;
-    } else {
-      const avg = (scores.grammar + scores.coherence + scores.content) / 3;
-      return Math.round(avg / 10);
-    }
-  };
-
-  // Update satisfaction whenever scores change
-  React.useEffect(() => {
-    if (scores) {
-      setSatisfaction(computeSatisfaction());
-    }
-  }, [scores, evalType]);
 
   const handleSaveToKB = async () => {
     if (!essayText || !scores) {
@@ -48,13 +171,17 @@ export default function Results({
       const payload = {
         title: essayTitle?.trim() || 'Untitled Essay',
         essay: essayText,
-        grammar: evalType === 'holistic' ? 0 : scores.grammar,
-        coherence: evalType === 'holistic' ? 0 : scores.coherence,
-        content: evalType === 'holistic' ? 0 : scores.content,
+        main_statement: evalType === 'holistic' ? null : scores.main_statement,
+        organization:   evalType === 'holistic' ? null : scores.organization,
+        evidence:       evalType === 'holistic' ? null : scores.evidence,
+        analysis:       evalType === 'holistic' ? null : scores.analysis,
+        grammar:        evalType === 'holistic' ? null : scores.grammar,
+        holistic_score: evalType === 'holistic' ? scores.holistic_score : null,
+        level_description: evalType === 'holistic' ? scores.level_description : null,
         feedback: feedback,
         eval_type: evalType,
         accepted: true,
-        satisfaction: satisfaction,
+        satisfaction: 5,
         teacher_feedback: null,
       };
       await saveKnowledge(payload);
@@ -86,7 +213,6 @@ export default function Results({
         teacher_feedback: teacherFeedback,
         suggested_changes: suggestedChanges,
         accepted: false,
-        satisfaction: satisfaction,   // ✅ include satisfaction in override
       });
       toast.success('Override saved to learning knowledge base!');
       setShowOverrideModal(false);
@@ -95,6 +221,7 @@ export default function Results({
     }
   };
 
+  // ---------- Loading / Empty states ----------
   if (loading) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 flex flex-col items-center justify-center">
@@ -109,32 +236,32 @@ export default function Results({
       <div className="glass-card rounded-2xl shadow-xl p-12 text-center animate-fade-in">
         <div className="text-6xl mb-4">📝</div>
         <h3 className="text-xl font-semibold text-gray-700">Ready for evaluation</h3>
-        <p className="text-gray-500 mt-2">Enter an essay or upload a document, then click Evaluate.</p>
+        <p className="text-gray-500 mt-2">
+          Enter an essay or upload a document, then click Evaluate.
+        </p>
       </div>
     );
   }
 
-  const getScoreColor = (score) => {
-    if (score >= 85) return 'text-emerald-600';
-    if (score >= 70) return 'text-blue-600';
-    return 'text-amber-600';
-  };
-
-  const avgScore =
-    evalType === 'analytic'
-      ? Math.round((scores.grammar + scores.coherence + scores.content) / 3)
-      : null;
-
-  // Extract RAG section if present (same as before)
+  // ---------- RAG Section Extraction ----------
   let ragContent = '';
   let mainFeedback = feedback;
   if (feedback && feedback.includes('[RAG_INSIGHTS_START]')) {
     const ragMatch = feedback.match(/\[RAG_INSIGHTS_START\]([\s\S]*?)\[RAG_INSIGHTS_END\]/);
     if (ragMatch) {
       ragContent = ragMatch[1].trim();
-      mainFeedback = feedback.replace(/\[RAG_INSIGHTS_START\][\s\S]*?\[RAG_INSIGHTS_END\]/, '').trim();
+      mainFeedback = feedback.replace(
+        /\[RAG_INSIGHTS_START\][\s\S]*?\[RAG_INSIGHTS_END\]/,
+        ''
+      ).trim();
     }
   }
+
+  // ---------- Precompute analytic summary ----------
+  const total = getTotalScore(scores);
+  const average = getAverage(scores);
+  const weighted = getWeightedTotal(scores);
+  const grade = gradeLabel(weighted);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -144,10 +271,11 @@ export default function Results({
           Evaluation Scores
         </h2>
 
+        {/* ============ Holistic ============ */}
         {evalType === 'holistic' ? (
           <div className="text-center mb-6">
             <div className="text-sm text-gray-600 mb-2">Holistic Score</div>
-            <div className={`text-6xl font-bold ${getScoreColor(scores.holistic_score * 20)}`}>
+            <div className={`text-6xl font-bold ${getScoreColor(scores.holistic_score)}`}>
               {scores.holistic_score}/5
             </div>
             <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-700">
@@ -156,64 +284,105 @@ export default function Results({
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-4 text-center">
-              <div className="score-card bg-gradient-to-br from-blue-50 to-white p-4 rounded-xl shadow">
-                <div className="text-sm text-gray-600 font-medium">Grammar</div>
-                <div className={`text-4xl font-bold ${getScoreColor(scores.grammar)}`}>{scores.grammar}</div>
-                <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-                  <div
-                    className="bg-blue-500 h-1.5 rounded-full"
-                    style={{ width: `${scores.grammar}%` }}
-                  />
+            {/* ============ Scoring Result Card ============ */}
+            <div className={`rounded-2xl border p-6 mb-6 ${grade.bg}`}>
+              <div className="text-sm uppercase tracking-wide text-gray-600 mb-2 text-center">
+                Scoring Result
+              </div>
+
+              <div className="flex justify-center items-baseline gap-3 mb-2">
+                <div className={`text-6xl font-extrabold ${grade.color}`}>
+                  {total}
+                </div>
+                <div className="text-3xl font-bold text-gray-400">
+                  / {MAX_TOTAL}
                 </div>
               </div>
-              <div className="score-card bg-gradient-to-br from-emerald-50 to-white p-4 rounded-xl shadow">
-                <div className="text-sm text-gray-600 font-medium">Coherence</div>
-                <div className={`text-4xl font-bold ${getScoreColor(scores.coherence)}`}>{scores.coherence}</div>
-                <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-                  <div
-                    className="bg-emerald-500 h-1.5 rounded-full"
-                    style={{ width: `${scores.coherence}%` }}
-                  />
+
+              <div className={`text-2xl font-bold text-center ${grade.color}`}>
+                {grade.label}
+              </div>
+
+              <div className="mt-4 grid grid-cols-3 gap-3 text-center text-sm">
+                <div className="bg-white/70 rounded-lg py-2">
+                  <div className="text-gray-600">Average</div>
+                  <div className={`font-bold text-lg ${grade.color}`}>
+                    {average.toFixed(2)}<span className="text-xs text-gray-400">/4</span>
+                  </div>
+                </div>
+                <div className="bg-white/70 rounded-lg py-2">
+                  <div className="text-gray-600">Weighted</div>
+                  <div className={`font-bold text-lg ${grade.color}`}>
+                    {weighted.toFixed(2)}<span className="text-xs text-gray-400">/4</span>
+                  </div>
+                </div>
+                <div className="bg-white/70 rounded-lg py-2">
+                  <div className="text-gray-600">Percentage</div>
+                  <div className={`font-bold text-lg ${grade.color}`}>
+                    {Math.round((total / MAX_TOTAL) * 100)}%
+                  </div>
                 </div>
               </div>
-              <div className="score-card bg-gradient-to-br from-purple-50 to-white p-4 rounded-xl shadow">
-                <div className="text-sm text-gray-600 font-medium">Content</div>
-                <div className={`text-4xl font-bold ${getScoreColor(scores.content)}`}>{scores.content}</div>
-                <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-                  <div
-                    className="bg-purple-500 h-1.5 rounded-full"
-                    style={{ width: `${scores.content}%` }}
-                  />
-                </div>
+
+              <div className="mt-3 text-xs text-gray-500 text-center">
+                Weighted average applied: Evidence and Analysis carry 1.5× weight.
               </div>
             </div>
-            <div className="mt-5 pt-4 border-t border-gray-100">
-              <div className="text-sm text-gray-600">Overall Score</div>
-              <div className={`text-3xl font-bold ${getScoreColor(avgScore)}`}>{avgScore}/100</div>
+
+            {/* ============ Individual Criteria ============ */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-center">
+              {CRITERIA.map(({ key, label }) => {
+                const v = scores[key] ?? 0;
+                return (
+                  <div key={key} className="bg-blue-50 p-3 rounded-xl">
+                    <div className="text-xs text-gray-600">{label}</div>
+                    <div className={`text-3xl font-bold ${getScoreColor(v)}`}>
+                      {v}/4
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                      <div
+                        className="bg-blue-500 h-1.5 rounded-full"
+                        style={{ width: `${(v / 4) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </>
         )}
 
-        {/* Satisfaction display (dynamic) */}
-        <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
-          <span>📊 Estimated Satisfaction:</span>
-          <span className="font-semibold">{satisfaction}/10</span>
-        </div>
-
+        {/* ============ Action Buttons ============ */}
         {user ? (
-          <div className="flex gap-3 mt-5">
+          <div className="mt-5 space-y-3">
+            <div className="flex gap-3">
+              <button
+                onClick={handleSaveToKB}
+                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+              >
+                💾 Save to KB
+              </button>
+              <button
+                onClick={handleReject}
+                className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+              >
+                ✏️ Reject & Override
+              </button>
+            </div>
             <button
-              onClick={handleSaveToKB}
-              className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+              onClick={() =>
+                exportEvaluationPDF({
+                  title: essayTitle,
+                  essayText,
+                  feedback: mainFeedback,
+                  scores,
+                  evalType,
+                  userEmail: user?.email,
+                })
+              }
+              className="w-full bg-gradient-to-r from-sky-500 to-cyan-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
             >
-              💾 Save to KB
-            </button>
-            <button
-              onClick={handleReject}
-              className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
-            >
-              ✏️ Reject & Override
+              📄 Download Report (PDF)
             </button>
           </div>
         ) : (
@@ -225,8 +394,10 @@ export default function Results({
         )}
       </div>
 
+      {/* ============ Detailed Feedback ============ */}
       <div className="glass-card rounded-2xl shadow-xl p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">📖 Detailed Feedback</h2>
+
         {ragContent && (
           <details className="mb-4 bg-purple-50 p-3 rounded-lg border border-purple-200">
             <summary className="font-semibold text-purple-800 cursor-pointer">
@@ -235,17 +406,19 @@ export default function Results({
             <div className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">{ragContent}</div>
           </details>
         )}
+
         <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 overflow-y-auto max-h-[400px]">
-          <div className="prose max-w-none text-gray-700 whitespace-pre-wrap">{mainFeedback}</div>
+          <div className="prose max-w-none text-gray-700 whitespace-pre-wrap">
+            {mainFeedback}
+          </div>
         </div>
       </div>
 
-      {/* Override Modal with Satisfaction Input */}
+      {/* ============ Override Modal ============ */}
       {showOverrideModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in">
           <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-2xl font-bold mb-4 text-gray-800">Teacher Override</h3>
-
             <label className="block text-sm font-semibold mb-1">Your Feedback (required)</label>
             <textarea
               rows="4"
@@ -253,7 +426,6 @@ export default function Results({
               value={teacherFeedback}
               onChange={(e) => setTeacherFeedback(e.target.value)}
             />
-
             <label className="block text-sm font-semibold mb-1">Suggested Changes (optional)</label>
             <textarea
               rows="3"
@@ -262,19 +434,6 @@ export default function Results({
               onChange={(e) => setSuggestedChanges(e.target.value)}
               placeholder="What specific changes would improve the essay?"
             />
-
-            <label className="block text-sm font-semibold mb-1">
-              Satisfaction Score (1–10): <span className="font-normal">{satisfaction}</span>
-            </label>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={satisfaction}
-              onChange={(e) => setSatisfaction(parseInt(e.target.value))}
-              className="w-full mb-4"
-            />
-
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setShowOverrideModal(false)}

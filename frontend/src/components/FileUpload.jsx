@@ -1,159 +1,98 @@
-import React, { useRef, useState } from 'react';
-import { uploadFile, pollOcrStatus } from '../api';
+import React, { useState } from 'react';
 import toast from 'react-hot-toast';
+import { uploadFile, pollOcrStatus } from '../api';
 
 export default function FileUpload({ onExtracted }) {
-  const fileInputRef = useRef();
   const [uploading, setUploading] = useState(false);
-  const [preview, setPreview] = useState(null);
   const [fileName, setFileName] = useState('');
-  const [agentLogs, setAgentLogs] = useState([]);
-
-  const addLog = (message, type = 'info') => {
-    setAgentLogs(prev => [...prev, { message, type, timestamp: new Date().toLocaleTimeString() }]);
-  };
-
-  const clearLogs = () => setAgentLogs([]);
+  const [progress, setProgress] = useState('');
 
   const handleFileChange = async (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
+
     setFileName(file.name);
     setUploading(true);
-    clearLogs();
-    addLog(`📁 Received file: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`, 'info');
-
-    if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onloadend = () => setPreview(reader.result);
-      reader.readAsDataURL(file);
-      addLog(`🖼️ Image preview loaded`, 'success');
-    } else if (file.type === 'application/pdf') {
-      setPreview('/pdf-icon.png');
-      addLog(`📄 PDF document detected`, 'info');
-    }
-
-    addLog(`🚀 Sending to OCR server...`, 'info');
+    setProgress('Uploading file...');
 
     try {
       const result = await uploadFile(file);
 
+      // If it's a PDF job, poll for completion
       if (result.job_id) {
-        addLog(`⏳ Async OCR job started. Job ID: ${result.job_id}`, 'info');
-        addLog(`🔄 Polling for results...`, 'info');
-        
+        setProgress('Processing PDF pages...');
         let attempts = 0;
-        const maxAttempts = 90;
-        const interval = setInterval(async () => {
-          attempts++;
-          if (attempts > maxAttempts) {
-            clearInterval(interval);
-            addLog(`❌ OCR timed out after 3 minutes.`, 'error');
-            setUploading(false);
-            toast.error('OCR timed out.');
-            return;
-          }
+        const maxAttempts = 60; // up to 5 minutes
+        while (attempts < maxAttempts) {
+          await new Promise(r => setTimeout(r, 5000));
+          const status = await pollOcrStatus(result.job_id);
 
-          try {
-            const status = await pollOcrStatus(result.job_id);
-            if (status.status === 'processing') {
-              if (status.current_engine) {
-                addLog(`🔄 Trying OCR engine: ${status.current_engine.toUpperCase()}...`, 'info');
-              } else {
-                addLog(`⏳ Still processing... (${attempts}/${maxAttempts})`, 'info');
-              }
-            } else if (status.status === 'completed') {
-              clearInterval(interval);
-              addLog(`✅ OCR completed successfully!`, 'success');
-              addLog(`📝 Extracted text length: ${status.text.length} characters`, 'success');
-              if (status.engine) {
-                addLog(`🔍 Final OCR Engine used: ${status.engine.toUpperCase()}`, 'success');
-              }
-              onExtracted({
-                text: status.text,
-                confidence: status.confidence || 90,
-                method: `PDF OCR (${status.engine || 'unknown'})`,
-                engine: status.engine,
-              });
-              setUploading(false);
-            } else if (status.status === 'failed') {
-              clearInterval(interval);
-              addLog(`❌ OCR failed: ${status.error}`, 'error');
-              toast.error('OCR failed: ' + status.error);
-              setUploading(false);
-            }
-          } catch (pollError) {
-            clearInterval(interval);
-            addLog(`💥 Polling error: ${pollError.message}`, 'error');
-            toast.error('OCR polling failed.');
-            setUploading(false);
+          if (status.status === 'completed') {
+            onExtracted({
+              text: status.text,
+              confidence: status.confidence ?? 90,
+              method: `PDF OCR (${status.engine || 'auto'})`,
+            });
+            toast.success('PDF text extracted');
+            break;
+          } else if (status.status === 'failed') {
+            throw new Error(status.error || 'OCR failed');
+          } else {
+            setProgress(`Processing page (${attempts + 1})...`);
           }
-        }, 2000);
+          attempts++;
+        }
+        if (attempts >= maxAttempts) {
+          throw new Error('OCR timed out');
+        }
       } else {
-        addLog(`✨ OCR completed!`, 'success');
-        addLog(`📊 Confidence: ${result.confidence?.toFixed(1)}%`, 'success');
-        addLog(`🔍 OCR Engine used: ${result.engine?.toUpperCase() || 'unknown'}`, 'success');
-        addLog(`📝 Extracted text length: ${result.text.length} characters`, 'success');
-        onExtracted(result);
-        setUploading(false);
+        // Image or quick response
+        onExtracted({
+          text: result.text,
+          confidence: result.confidence,
+          method: result.method,
+        });
+        toast.success('Text extracted');
       }
     } catch (err) {
-      addLog(`💥 Upload error: ${err.message}`, 'error');
-      toast.error('OCR upload failed: ' + err.message);
+      toast.error('Upload failed: ' + err.message);
+    } finally {
       setUploading(false);
+      setProgress('');
+      setFileName('');
     }
   };
 
   return (
-    <div className="mb-5">
-      <label className="block text-sm font-semibold text-gray-700 mb-2">
-        Upload Image or PDF (auto‑engine selection)
+    <div className="rounded-xl border-2 border-dashed border-blue-300 bg-blue-50/50 p-6 text-center">
+      <input
+        type="file"
+        accept=".png,.jpg,.jpeg,.bmp,.tiff,.pdf"
+        onChange={handleFileChange}
+        disabled={uploading}
+        className="hidden"
+        id="file-upload-input"
+      />
+      <label
+        htmlFor="file-upload-input"
+        className={`cursor-pointer inline-block px-6 py-3 rounded-xl font-semibold shadow-md transition ${
+          uploading
+            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            : 'bg-blue-600 text-white hover:bg-blue-700'
+        }`}
+      >
+        {uploading ? '⏳ Processing...' : '📂 Browse File'}
       </label>
-      <div className="flex items-center gap-3">
-        <input
-          type="file"
-          accept="image/*,application/pdf"
-          onChange={handleFileChange}
-          ref={fileInputRef}
-          className="hidden"
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current.click()}
-          className="bg-gray-100 hover:bg-gray-200 px-5 py-2 rounded-lg font-medium transition"
-        >
-          📂 Browse
-        </button>
-        <span className="text-sm text-gray-500 truncate">{fileName || 'No file selected'}</span>
-      </div>
-
-      {agentLogs.length > 0 && (
-        <div className="mt-3 rounded-lg border border-gray-300 bg-gray-900 text-gray-100 font-mono text-xs p-3 max-h-48 overflow-y-auto">
-          <div className="flex justify-between items-center mb-2 sticky top-0 bg-gray-900 pb-1">
-            <span className="font-bold">🤖 OCR Agent Console</span>
-            <button onClick={clearLogs} className="text-gray-400 hover:text-white text-xs">Clear</button>
-          </div>
-          {agentLogs.map((log, idx) => (
-            <div key={idx} className={`py-0.5 ${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-gray-300'}`}>
-              <span className="text-gray-500">[{log.timestamp}]</span> {log.message}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {uploading && (
-        <p className="text-sm text-blue-500 mt-2 animate-pulse">
-          Processing OCR (check console for details)...
+      <p className="text-xs text-gray-600 mt-3">
+        Supported: PNG, JPG, JPEG, BMP, TIFF, PDF
+      </p>
+      {fileName && (
+        <p className="text-sm text-gray-700 mt-2">
+          Selected: <strong>{fileName}</strong>
         </p>
       )}
-
-      {preview && (
-        <div className="mt-3 rounded-lg border p-2 bg-white">
-          <img src={preview} alt="Preview" className="max-h-40 object-contain mx-auto" />
-          <p className="text-xs text-gray-400 text-center mt-1">
-            Preview – OCR engine will be chosen automatically based on quality
-          </p>
-        </div>
+      {progress && (
+        <p className="text-sm text-blue-700 mt-1">{progress}</p>
       )}
     </div>
   );
