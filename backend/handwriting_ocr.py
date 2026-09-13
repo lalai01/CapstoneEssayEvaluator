@@ -83,28 +83,22 @@ def segment_lines(gray):
       7. Merge bands only if the gap is very small
       8. Filter out bands shorter than a plausible line height
     """
-    # Binarize
     _, thresh = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # Remove noise and shading
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
                               np.ones((3, 3), np.uint8))
 
-    # Connect letters horizontally (helps separate lines vertically)
     thresh = cv2.dilate(thresh, np.ones((1, 25), np.uint8), iterations=1)
 
-    # Horizontal projection
     proj = thresh.sum(axis=1).astype(np.float32)
 
-    # Light smoothing
     kernel = np.ones(5) / 5
     proj_smooth = np.convolve(proj, kernel, mode="same")
 
     if proj_smooth.max() == 0:
         return []
 
-    # Threshold at 40% of the peak -> only real text rows survive
     thresh_val = proj_smooth.max() * 0.4
 
     above = proj_smooth > thresh_val
@@ -124,7 +118,6 @@ def segment_lines(gray):
 
     raw_count = len(bands)
 
-    # Merge bands only if the gap is really small
     if len(bands) > 1:
         heights = [b - a for a, b in bands]
         median_h = float(np.median(heights))
@@ -138,7 +131,6 @@ def segment_lines(gray):
                 merged.append((a, b))
         bands = merged
 
-    # Filter by minimum plausible line height
     min_h = max(15, gray.shape[0] // 100)
     bands = [(a, b) for a, b in bands if (b - a) >= min_h]
 
@@ -147,10 +139,15 @@ def segment_lines(gray):
     return bands
 
 
-def _transcribe_line(pil_image):
-    """Return (text, mean_logprob_confidence_0_to_100)."""
-    pixel_values = _processor(images=pil_image,
-                              return_tensors="pt").pixel_values
+def _transcribe_batch(pil_images):
+    """
+    Transcribe a batch of line crops in one forward pass.
+    Returns (list_of_texts, list_of_confidences).
+    """
+    pixel_values = _processor(
+        images=pil_images, return_tensors="pt"
+    ).pixel_values
+
     with torch.no_grad():
         outputs = _model.generate(
             pixel_values,
@@ -158,26 +155,38 @@ def _transcribe_line(pil_image):
             output_scores=True,
             return_dict_in_generate=True,
         )
-    ids = outputs.sequences[0]
-    text = _processor.batch_decode([ids], skip_special_tokens=True)[0]
 
-    scores = outputs.scores
-    if scores:
+    texts = _processor.batch_decode(
+        outputs.sequences, skip_special_tokens=True
+    )
+
+    # Per-sequence confidence via geometric mean of per-token probabilities
+    confidences = []
+    scores = outputs.scores  # tuple of (batch, vocab) per generation step
+    for seq_idx, ids in enumerate(outputs.sequences):
         probs = []
         for i, s in enumerate(scores):
             if i + 1 >= len(ids):
                 break
-            p = torch.softmax(s[0], dim=-1)[ids[i + 1]].item()
+            p = torch.softmax(s[seq_idx], dim=-1)[ids[i + 1]].item()
             probs.append(p)
         if probs:
-            gm = math.exp(sum(math.log(p + 1e-9) for p in probs) / len(probs))
-            return text, gm * 100
-    return text, 0.0
+            gm = math.exp(
+                sum(math.log(p + 1e-9) for p in probs) / len(probs)
+            )
+            confidences.append(gm * 100)
+        else:
+            confidences.append(0.0)
+
+    return texts, confidences
 
 
 def ocr_handwriting_image(image_bytes):
-    """Full-page handwriting OCR: decode → crop → deskew → upscale →
-       segment → per-line TrOCR."""
+    """
+    Full-page handwriting OCR:
+      decode -> crop to content -> deskew -> upscale ->
+      segment lines -> batch-transcribe with TrOCR.
+    """
     _load()
 
     arr = np.frombuffer(image_bytes, np.uint8)
@@ -188,7 +197,7 @@ def ocr_handwriting_image(image_bytes):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Pipeline
+    # Preprocessing pipeline
     gray = _crop_to_content(gray)
     gray = deskew(gray)
     gray = _upscale_if_small(gray)
@@ -199,28 +208,37 @@ def ocr_handwriting_image(image_bytes):
     if not bands:
         return "", 0.0
 
-    texts = []
-    confidences = []
+    # Build all crops up front
+    crops = []
     for (top, bottom) in bands:
         pad = 8
         crop = gray[max(0, top - pad):bottom + pad, :]
-
-        # Add white margin (TrOCR performs better with breathing room)
         crop = cv2.copyMakeBorder(crop, 10, 10, 10, 10,
                                   cv2.BORDER_CONSTANT, value=255)
-        pil = Image.fromarray(crop).convert("RGB")
+        crops.append(Image.fromarray(crop).convert("RGB"))
 
-        line_text, line_conf = _transcribe_line(pil)
-        if line_text.strip():
-            texts.append(line_text)
-            confidences.append(line_conf)
+    if not crops:
+        print("[TrOCR] no crops to process")
+        return "", 0.0
+
+    # Batch process — much faster on CPU than looping one at a time
+    BATCH_SIZE = 4   # bump to 8 if you have RAM to spare
+    texts = []
+    confidences = []
+    for i in range(0, len(crops), BATCH_SIZE):
+        batch = crops[i:i + BATCH_SIZE]
+        batch_texts, batch_confs = _transcribe_batch(batch)
+        for t, c in zip(batch_texts, batch_confs):
+            if t.strip():
+                texts.append(t)
+                confidences.append(c)
 
     if not texts:
         print("[TrOCR] no lines produced text")
         return "", 0.0
 
     full = "\n".join(texts)
-    avg_conf = sum(confidences) / len(confidences)
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
     print(f"[TrOCR] produced {len(full)} chars across {len(texts)} lines, "
           f"avg conf={avg_conf:.1f}")
     return full, avg_conf
