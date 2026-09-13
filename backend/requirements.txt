@@ -1,35 +1,44 @@
+# ---------- Web framework ----------
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
-python-jose[cryptography]==3.3.0
 pydantic==2.5.0
 python-dotenv==1.0.0
 httpx==0.24.1
 requests==2.31.0
 
+# ---------- Auth ----------
+python-jose[cryptography]==3.3.0
+
+# ---------- LangGraph / LangChain ----------
 langgraph==0.2.28
 langchain-core==0.2.43
 
+# ---------- Supabase ----------
 supabase==1.2.0
 gotrue==1.1.0
 
+# ---------- OCR: printed text + PDF ----------
 pytesseract==0.3.10
 pillow==10.1.0
 pymupdf==1.23.8
 pdf2image==1.16.3
 opencv-python-headless==4.8.1.78
-easyocr==1.7.0
+
+# ---------- OCR: handwriting (TrOCR) ----------
+torch==2.3.1
+transformers==4.44.0
+sentencepiece==0.2.0
+huggingface_hub
+filelock
+safetensors
+
+# ---------- Document formats ----------
 python-docx==1.1.0
 
-torch==2.1.2
-torchvision==0.16.2
-transformers==4.36.2
+# ---------- Data / ML utilities ----------
 scikit-learn==1.3.2
-langdetect==1.0.9
-language-tool-python==2.7.1
-
 numpy==1.24.3
 scipy==1.11.4
 lmdb==1.4.1
-huggingface_hub
-filelock
+langdetect==1.0.9
