@@ -21,8 +21,38 @@ def _load():
         _model.eval()
 
 
+def _crop_to_content(gray):
+    """Remove white borders/background so projection sees only text."""
+    _, thresh = cv2.threshold(gray, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # Remove tiny specks
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
+                              np.ones((3, 3), np.uint8))
+    coords = cv2.findNonZero(thresh)
+    if coords is None:
+        return gray
+    x, y, w, h = cv2.boundingRect(coords)
+    pad = 20
+    x = max(0, x - pad)
+    y = max(0, y - pad)
+    w = min(gray.shape[1] - x, w + 2 * pad)
+    h = min(gray.shape[0] - y, h + 2 * pad)
+    return gray[y:y + h, x:x + w]
+
+
+def _upscale_if_small(gray, min_height=1200):
+    """Upscale images that are too small for TrOCR's line crops."""
+    h, w = gray.shape
+    if h >= min_height:
+        return gray
+    scale = min_height / h
+    new_w = int(w * scale)
+    return cv2.resize(gray, (new_w, min_height),
+                      interpolation=cv2.INTER_CUBIC)
+
+
 def deskew(gray):
-    """Rotate the image to correct small skew angles."""
+    """Correct small rotations. Safe no-op if no clear skew."""
     coords = np.column_stack(np.where(gray < 128))
     if len(coords) < 100:
         return gray
@@ -35,30 +65,37 @@ def deskew(gray):
         return gray
     h, w = gray.shape
     M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
-    return cv2.warpAffine(
-        gray, M, (w, h),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_REPLICATE,
-    )
+    return cv2.warpAffine(gray, M, (w, h),
+                          flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_REPLICATE)
 
 
-def segment_lines(gray, min_height=20, gap_factor=0.5):
+def segment_lines(gray):
     """
-    Robust line segmentation for both clean and messy handwriting.
-    Returns a list of (top, bottom) row bands.
+    Robust horizontal line segmentation. Returns list of (top, bottom) bands.
     """
+    # Binarize
     _, thresh = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Kill isolated specks
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
+                              np.ones((2, 2), np.uint8))
+
+    # Horizontal projection
     proj = thresh.sum(axis=1).astype(np.float32)
 
-    # Smooth the projection to survive gaps in messy writing
-    kernel = np.ones(5) / 5
+    # Smooth heavily to survive gaps in messy writing
+    kernel_size = max(5, gray.shape[0] // 200)
+    kernel = np.ones(kernel_size) / kernel_size
     proj_smooth = np.convolve(proj, kernel, mode="same")
 
     nz = proj_smooth[proj_smooth > 0]
     if len(nz) == 0:
         return []
-    thresh_val = nz.mean() * 0.15
+
+    # Adaptive threshold: relative to mean of nonzero rows
+    thresh_val = nz.mean() * 0.25
 
     above = proj_smooth > thresh_val
     bands = []
@@ -72,11 +109,14 @@ def segment_lines(gray, min_height=20, gap_factor=0.5):
     if start is not None:
         bands.append((start, len(above) - 1))
 
-    # Merge bands separated by less than gap_factor * median height
+    if not bands:
+        return []
+
+    # Merge bands that are close together
     if len(bands) > 1:
         heights = [b - a for a, b in bands]
         median_h = float(np.median(heights))
-        min_gap = gap_factor * median_h
+        min_gap = max(8, int(0.7 * median_h))
         merged = [bands[0]]
         for a, b in bands[1:]:
             prev_a, prev_b = merged[-1]
@@ -86,14 +126,17 @@ def segment_lines(gray, min_height=20, gap_factor=0.5):
                 merged.append((a, b))
         bands = merged
 
-    bands = [(a, b) for a, b in bands if (b - a) >= min_height]
+    # Filter by minimum plausible line height
+    min_h = max(15, gray.shape[0] // 80)
+    bands = [(a, b) for a, b in bands if (b - a) >= min_h]
+
     return bands
 
 
 def _transcribe_line(pil_image):
     """Return (text, mean_logprob_confidence_0_to_100)."""
-    pixel_values = _processor(images=pil_image, return_tensors="pt").pixel_values
-
+    pixel_values = _processor(images=pil_image,
+                              return_tensors="pt").pixel_values
     with torch.no_grad():
         outputs = _model.generate(
             pixel_values,
@@ -101,11 +144,9 @@ def _transcribe_line(pil_image):
             output_scores=True,
             return_dict_in_generate=True,
         )
-
     ids = outputs.sequences[0]
     text = _processor.batch_decode([ids], skip_special_tokens=True)[0]
 
-    # Confidence: geometric mean of per-token probabilities
     scores = outputs.scores
     if scores:
         probs = []
@@ -117,40 +158,55 @@ def _transcribe_line(pil_image):
         if probs:
             gm = math.exp(sum(math.log(p + 1e-9) for p in probs) / len(probs))
             return text, gm * 100
-
     return text, 0.0
 
 
 def ocr_handwriting_image(image_bytes):
-    """Full-page handwriting OCR: deskew → segment → per-line TrOCR."""
+    """Full-page handwriting OCR: decode → crop → deskew → upscale →
+       segment → per-line TrOCR."""
     _load()
 
     arr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
+        print("[TrOCR] image decode failed")
         return "", 0.0
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Pipeline
+    gray = _crop_to_content(gray)
     gray = deskew(gray)
+    gray = _upscale_if_small(gray)
 
     bands = segment_lines(gray)
+    print(f"[TrOCR] segmentation found {len(bands)} line bands")
+
     if not bands:
         return "", 0.0
 
     texts = []
     confidences = []
     for (top, bottom) in bands:
-        pad = 4
-        crop = img[max(0, top - pad):bottom + pad, :]
-        pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        pad = 8
+        crop = gray[max(0, top - pad):bottom + pad, :]
+
+        # Add white margin (TrOCR performs better with breathing room)
+        crop = cv2.copyMakeBorder(crop, 10, 10, 10, 10,
+                                  cv2.BORDER_CONSTANT, value=255)
+        pil = Image.fromarray(crop).convert("RGB")
+
         line_text, line_conf = _transcribe_line(pil)
         if line_text.strip():
             texts.append(line_text)
             confidences.append(line_conf)
 
     if not texts:
+        print("[TrOCR] no lines produced text")
         return "", 0.0
 
     full = "\n".join(texts)
     avg_conf = sum(confidences) / len(confidences)
+    print(f"[TrOCR] produced {len(full)} chars across {len(texts)} lines, "
+          f"avg conf={avg_conf:.1f}")
     return full, avg_conf
