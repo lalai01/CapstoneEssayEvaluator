@@ -674,6 +674,47 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
 
     return "\n".join(feedback)
 
+def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
+    """
+    Use the LLM to fix obvious OCR mistakes while preserving meaning.
+    Returns the corrected text, or the original if the LLM is unavailable.
+    """
+    if not raw_text or len(raw_text.strip()) < 10:
+        return raw_text
+
+    import requests
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+
+    system_msg = (
+        "You are an OCR post-processor. You fix spelling, spacing, and punctuation "
+        "errors caused by OCR without changing the meaning or adding new content. "
+        "Return only the corrected text, nothing else."
+    )
+    user_msg = f"OCR text:\n\"\"\"\n{raw_text[:4000]}\n\"\"\"\n\nCorrected text:"
+
+    try:
+        response = requests.post(
+            f"{ollama_url}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.1},
+            },
+            timeout=45,
+        )
+        if response.status_code == 200:
+            data = response.json()
+            corrected = data.get("message", {}).get("content", "").strip()
+            if corrected and len(corrected) > len(raw_text) * 0.5:
+                return corrected
+    except Exception as e:
+        print(f"AI correction failed: {e}")
+
+    return raw_text
 
 def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")

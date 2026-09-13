@@ -181,6 +181,10 @@ class SurveyResponseSubmit(BaseModel):
     survey_id: int
     answers: Dict[str, str]
 
+class OCRCorrection(BaseModel):
+    sample_id: int
+    corrected_text: str
+
 # ---------- Health ----------
 @app.get("/health")
 def health_check():
@@ -409,7 +413,7 @@ def delete_survey(
         user_client.table("surveys").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
-# ---------- Admin Questions ----------
+#region Admin Survey
 @app.post("/surveys/{survey_id}/questions")
 def add_question(
     survey_id: int,
@@ -540,7 +544,7 @@ def delete_question(
         user_client.table("survey_questions").delete().eq("id", id).execute()
     return {"status": "deleted"}
 
-# ---------- User Survey Responses ----------
+#region User Survey Responses
 @app.post("/surveys/{survey_id}/respond")
 def submit_survey_response(
     survey_id: int,
@@ -583,7 +587,9 @@ def get_survey_responses(
         .execute()
     return responses.data
 
-# ---------- Admin Rubrics ----------
+#end region
+
+#region Admin Rubrics
 @app.post("/rubrics")
 def create_rubric(rubric: RubricCreate,
                   user: dict = Depends(get_current_user),
@@ -619,7 +625,9 @@ def delete_rubric(rubric_id: int,
     user_client.table("rubrics").delete().eq("id", rubric_id).execute()
     return {"status": "deleted"}
 
-# ---------- Saved Essays ----------
+#end region
+
+#region Saved Essays
 @app.post("/saved-essays")
 def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
     try:
@@ -650,30 +658,80 @@ def delete_saved_essay(id: int, user=Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ---------- OCR ----------
+#endregion
+
+#region OCR
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf']:
         raise HTTPException(400, "Unsupported file type")
     contents = await file.read()
+
+    if suffix == '.pdf':
+        from ocr_jobs import start_pdf_ocr_job
+        job_id = start_pdf_ocr_job(contents)
+        return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
+
+    # ---------- Single-image path ----------
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
+
     try:
-        if suffix == '.pdf':
-            from ocr_jobs import start_pdf_ocr_job
-            job_id = start_pdf_ocr_job(contents)
-            return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
-        else:
-            text, confidence, engine = ocr_utils.extract_text_from_image(tmp_path)
-            method = f"Auto-selected OCR ({engine})"
-            return OCRResponse(text=text, confidence=confidence, method=method, engine=engine)
-    except Exception as e:
-        raise HTTPException(500, str(e))
+        # 1. Preprocess
+        from image_preprocess import preprocess_for_ocr
+        try:
+            enhanced_path = preprocess_for_ocr(contents)
+        except Exception:
+            enhanced_path = tmp_path  # fallback
+
+        # 2. Extract with automatic engine selection
+        text, confidence, engine = ocr_utils.extract_text_from_image(enhanced_path)
+
+        # 3. AI correction (only if text is present and short enough)
+        try:
+            from evaluator import ai_correct_ocr_text
+            if text and len(text.strip()) > 20:
+                text = ai_correct_ocr_text(text)
+        except Exception as e:
+            print(f"Correction skipped: {e}")
+
+        try:
+            if user_id_from_token := None:  # optional, skip auth for public OCR
+                pass
+            supabase.table("ocr_training_data").insert({
+                "raw_ocr_text": text,
+                "accepted": False,
+            }).execute()
+        except Exception as e:
+            print(f"Failed to log OCR sample: {e}")
+        
+        return OCRResponse(
+            text=text,
+            confidence=confidence,
+            method=f"Auto-selected OCR ({engine})",
+            engine=engine,
+        )
     finally:
-        if suffix != '.pdf':
+        try:
             os.unlink(tmp_path)
+        except Exception:
+            pass
+        try:
+            if 'enhanced_path' in locals() and enhanced_path != tmp_path:
+                os.unlink(enhanced_path)
+        except Exception:
+            pass
+
+@app.post("/ocr/correct")
+def submit_ocr_correction(correction: OCRCorrection,
+                          user=Depends(get_current_user)):
+    supabase.table("ocr_training_data") \
+        .update({"corrected_text": correction.corrected_text, "accepted": True}) \
+        .eq("id", correction.sample_id) \
+        .execute()
+    return {"status": "saved"}
 
 @app.get("/ocr/status/{job_id}")
 def get_ocr_status(job_id: str):
@@ -738,7 +796,7 @@ def evaluate_essay_with_rag(req: EvaluationRequest, user: dict = Depends(get_cur
         print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
 
-# ---------- Knowledge Base ----------
+#region Knowledge Base
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
@@ -771,8 +829,9 @@ def get_knowledge(id: int, user=Depends(get_current_user)):
     except Exception as e:
         print(f"❌ Error getting knowledge {id}: {e}")
         raise HTTPException(500, str(e))
+    
 
-# ---------- Teacher Override ----------
+#region Teacher Override
 @app.post("/override")
 def save_override(override: OverrideRequest, user=Depends(get_current_user)):
     try:
@@ -795,7 +854,9 @@ def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
         print(f"❌ Error listing learning feedback: {e}")
         raise HTTPException(500, str(e))
 
-# ---------- AI Prompt Testing ----------
+#endregion
+
+#region AI Prompt Testing
 @app.post("/test-prompt", response_model=PromptTestResponse)
 def test_ai_prompt(req: PromptTestRequest):
     try:
@@ -810,7 +871,9 @@ def test_ai_prompt(req: PromptTestRequest):
         print(f"❌ Prompt test error: {e}")
         return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
 
-# ---------- Utility ----------
+#endregion
+
+#region Utility
 @app.get("/rubric")
 def get_rubric():
     return evaluator.RUBRIC
@@ -822,3 +885,5 @@ def get_suggestions():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+#end region
