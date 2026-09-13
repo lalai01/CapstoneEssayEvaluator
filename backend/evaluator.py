@@ -148,19 +148,29 @@ def ai_score_all_criteria(essay_text, model="gemma2:2b"):
     """
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
+    # ------------------------------------------------------------------
+    # Build the rubric block from ANALYTIC_RUBRIC
+    # ------------------------------------------------------------------
     rubric_block = ""
     for criterion, levels in ANALYTIC_RUBRIC.items():
         rubric_block += f"\n[{criterion}]\n"
         for level in sorted(levels, reverse=True):
             rubric_block += f"  {level}: {levels[level]}\n"
 
+    # ------------------------------------------------------------------
+    # System message
+    # ------------------------------------------------------------------
     system_msg = (
         "You are a strict, experienced essay examiner. "
         "You score decisively and do not default to middle values. "
-        "Use the full 1-4 range based on evidence in the essay. "
-        "Return ONLY a JSON object."
+        "You use the full 1-4 range based on concrete evidence in the essay. "
+        "You differentiate scores across criteria when warranted. "
+        "You return ONLY a JSON object and never add explanations."
     )
 
+    # ------------------------------------------------------------------
+    # User prompt with full scoring rules and calibration examples
+    # ------------------------------------------------------------------
     user_msg = f"""Carefully evaluate the essay below against the rubric.
 
 RUBRIC (use these exact descriptors to justify scores):
@@ -175,12 +185,38 @@ SCORING RULES:
 - Use 2 when the descriptor for 2 clearly applies.
 - Use 1 only when the criterion is essentially missing or broken.
 - If a criterion is strong and another is weak, the scores MUST differ.
+- Award a 4 on evidence if the essay cites at least two specific sources,
+  studies, or named authorities (e.g., "According to the World Bank...").
+- Award a 4 on main_statement if the thesis appears in the first paragraph
+  AND is restated or reinforced in the conclusion.
 
-CALIBRATION EXAMPLES (for reference):
-- An essay with a clear thesis, three body paragraphs, and multiple cited
-  examples would score 4 on main_statement and 3-4 on evidence.
-- A one-paragraph opinion piece with no thesis or citations would score 1-2
-  on main_statement and 1 on evidence.
+CALIBRATION EXAMPLES (use these to anchor scores):
+
+Example A - Essay with a clear thesis, three body paragraphs, and 2+ cited
+sources (e.g., "According to UNESCO..."):
+  main_statement: 4
+  organization: 4
+  evidence: 4
+  analysis: 3 or 4 (4 only if each piece of evidence is interpreted)
+
+Example B - Short single-paragraph essay with a thesis but only one example
+and no cited source:
+  main_statement: 3
+  organization: 2
+  evidence: 2
+  analysis: 2
+
+Example C - Multi-paragraph essay with a clear thesis but no concrete evidence:
+  main_statement: 3
+  organization: 3
+  evidence: 1 or 2
+  analysis: 2
+
+Example D - Disorganized essay with no thesis and no evidence:
+  main_statement: 1
+  organization: 1
+  evidence: 1
+  analysis: 1
 
 Essay:
 \"\"\"
@@ -197,6 +233,9 @@ Return ONLY this JSON object (no explanation, no markdown):
 }}
 """
 
+    # ------------------------------------------------------------------
+    # Send request to Ollama
+    # ------------------------------------------------------------------
     try:
         response = requests.post(
             f"{ollama_url}/api/chat",
@@ -212,6 +251,7 @@ Return ONLY this JSON object (no explanation, no markdown):
             timeout=45,
         )
         if response.status_code != 200:
+            print(f"Ollama returned status {response.status_code}")
             return None
 
         content = response.json().get("message", {}).get("content", "").strip()
@@ -220,16 +260,24 @@ Return ONLY this JSON object (no explanation, no markdown):
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
 
+        # Parse and validate
         parsed = json.loads(content)
         required = ["main_statement", "organization", "evidence", "analysis", "grammar"]
         for key in required:
             if key not in parsed:
+                print(f"Missing key in AI response: {key}")
                 return None
             score = int(parsed[key])
             if score < 1 or score > 4:
+                print(f"Out-of-range score for {key}: {score}")
                 return None
             parsed[key] = score
+
         return {k: parsed[k] for k in required}
+
+    except json.JSONDecodeError as e:
+        print(f"AI scoring JSON parse error: {e}")
+        return None
     except Exception as e:
         print(f"AI scoring failed: {e}")
         return None
