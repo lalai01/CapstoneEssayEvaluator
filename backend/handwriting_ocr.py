@@ -25,7 +25,6 @@ def _crop_to_content(gray):
     """Remove white borders/background so projection sees only text."""
     _, thresh = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    # Remove tiny specks
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
                               np.ones((3, 3), np.uint8))
     coords = cv2.findNonZero(thresh)
@@ -73,29 +72,40 @@ def deskew(gray):
 def segment_lines(gray):
     """
     Robust horizontal line segmentation. Returns list of (top, bottom) bands.
+
+    Strategy:
+      1. Otsu binarize -> ink is white (255), background black (0)
+      2. Morphological opening to remove specks
+      3. Horizontal dilation to connect letters within a line
+      4. Horizontal projection (sum of ink per row)
+      5. Threshold at 40% of max projection -> only real text rows pass
+      6. Group adjacent rows into bands
+      7. Merge bands only if the gap is very small
+      8. Filter out bands shorter than a plausible line height
     """
     # Binarize
     _, thresh = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # Kill isolated specks
+    # Remove noise and shading
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,
-                              np.ones((2, 2), np.uint8))
+                              np.ones((3, 3), np.uint8))
+
+    # Connect letters horizontally (helps separate lines vertically)
+    thresh = cv2.dilate(thresh, np.ones((1, 25), np.uint8), iterations=1)
 
     # Horizontal projection
     proj = thresh.sum(axis=1).astype(np.float32)
 
-    # Smooth heavily to survive gaps in messy writing
-    kernel_size = max(5, gray.shape[0] // 200)
-    kernel = np.ones(kernel_size) / kernel_size
+    # Light smoothing
+    kernel = np.ones(5) / 5
     proj_smooth = np.convolve(proj, kernel, mode="same")
 
-    nz = proj_smooth[proj_smooth > 0]
-    if len(nz) == 0:
+    if proj_smooth.max() == 0:
         return []
 
-    # Adaptive threshold: relative to mean of nonzero rows
-    thresh_val = nz.mean() * 0.25
+    # Threshold at 40% of the peak -> only real text rows survive
+    thresh_val = proj_smooth.max() * 0.4
 
     above = proj_smooth > thresh_val
     bands = []
@@ -112,11 +122,13 @@ def segment_lines(gray):
     if not bands:
         return []
 
-    # Merge bands that are close together
+    raw_count = len(bands)
+
+    # Merge bands only if the gap is really small
     if len(bands) > 1:
         heights = [b - a for a, b in bands]
         median_h = float(np.median(heights))
-        min_gap = max(8, int(0.7 * median_h))
+        min_gap = min(12, int(0.3 * median_h))
         merged = [bands[0]]
         for a, b in bands[1:]:
             prev_a, prev_b = merged[-1]
@@ -127,9 +139,11 @@ def segment_lines(gray):
         bands = merged
 
     # Filter by minimum plausible line height
-    min_h = max(15, gray.shape[0] // 80)
+    min_h = max(15, gray.shape[0] // 100)
     bands = [(a, b) for a, b in bands if (b - a) >= min_h]
 
+    print(f"[TrOCR] segment_lines: {raw_count} raw bands, "
+          f"{len(bands)} after merge+filter")
     return bands
 
 
