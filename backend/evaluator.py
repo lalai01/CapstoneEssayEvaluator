@@ -718,7 +718,7 @@ def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
     return raw_text
 
 
-def ai_correct_handwriting_text(raw_text, model="gemma2:2b"):
+def ai_correct_handwriting_text(raw_text, model="llama3.2:3b"):
     """
     Conservative post-correction for handwriting OCR output (TrOCR).
     Fixes only clear nonsense words that are obviously OCR misreads;
@@ -729,6 +729,8 @@ def ai_correct_handwriting_text(raw_text, model="gemma2:2b"):
     """
     if not raw_text or len(raw_text.strip()) < 20:
         return raw_text
+
+    print(f"[handwriting-correct] calling with {len(raw_text)} chars")
 
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
@@ -766,22 +768,30 @@ def ai_correct_handwriting_text(raw_text, model="gemma2:2b"):
             },
             timeout=90,
         )
+        print(f"[handwriting-correct] ollama status={response.status_code}")
+
         if response.status_code == 200:
             corrected = response.json().get(
                 "message", {}
             ).get("content", "").strip()
+            print(f"[handwriting-correct] llama returned {len(corrected)} chars")
+
             # Hallucination guard: reject rewrites that changed length >30%
             if corrected:
                 ratio = len(corrected) / max(1, len(raw_text))
                 if 0.7 <= ratio <= 1.3:
+                    print(f"[handwriting-correct] applied, "
+                          f"{len(raw_text)} -> {len(corrected)}")
                     return corrected
                 print(f"[handwriting-correct] rejected: "
-                      f"length {len(raw_text)} -> {len(corrected)}")
+                      f"{len(raw_text)} -> {len(corrected)} (ratio {ratio:.2f})")
+            else:
+                print("[handwriting-correct] llama returned empty")
     except Exception as e:
         print(f"Handwriting correction failed: {e}")
 
+    print("[handwriting-correct] returning raw (no change)")
     return raw_text
-
 
 def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
