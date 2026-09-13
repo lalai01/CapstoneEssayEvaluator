@@ -29,11 +29,16 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
-# Pre-download TrOCR weights into the image so runtime doesn't need
-# outbound network access on the first handwriting upload.
+# Download TrOCR weights and save a complete copy (including pooler
+# weights) to /opt/trocr. Loading from this local directory avoids the
+# "Some weights were newly initialized" warning and the resulting drop
+# in per-token confidence.
 RUN python -c "from transformers import TrOCRProcessor, VisionEncoderDecoderModel; \
-    TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten'); \
-    VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten')"
+    p = TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten'); \
+    m = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten'); \
+    p.save_pretrained('/opt/trocr'); \
+    m.save_pretrained('/opt/trocr'); \
+    print('TrOCR saved to /opt/trocr')"
 
 COPY . .
 RUN mkdir -p /app/data
