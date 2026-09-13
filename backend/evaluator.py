@@ -764,19 +764,31 @@ Write only the final feedback paragraph:"""
 
 # ---------- Main Entry Point ----------
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=None):
-
     is_valid, error_msg = is_valid_essay(essay_text)
+
+    # ---------- Invalid input ----------
     if not is_valid:
         if evaluation_type == "holistic":
-            return {"holistic_score": 0, "level_description": error_msg}, f"⚠️ Invalid Input: {error_msg}"
-        return {
-            "main_statement": 0, "organization": 0,
-            "evidence": 0, "analysis": 0, "grammar": 0,
-        }, f"⚠️ Invalid Input: {error_msg}"
+            return (
+                {"holistic_score": 0, "level_description": error_msg},
+                f"⚠️ Invalid Input: {error_msg}",
+            )
+        return (
+            {
+                "main_statement": 0,
+                "organization": 0,
+                "evidence": 0,
+                "analysis": 0,
+                "grammar": 0,
+            },
+            f"⚠️ Invalid Input: {error_msg}",
+        )
 
+    # ---------- Analyze ----------
     analysis = analyze_essay_content(essay_text)
-    facts = _essay_facts(essay_text)  
+    facts = _essay_facts(essay_text)
 
+    # ---------- RAG context ----------
     rag_context = ""
     if use_rag:
         try:
@@ -784,15 +796,27 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
         except Exception as e:
             print(f"RAG error: {e}")
 
+    # ---------- Score + feedback ----------
     if evaluation_type == "holistic":
         score = calculate_holistic_score(essay_text, analysis)
-        rule_feedback = generate_rule_based_holistic_feedback(essay_text, score, analysis, rag_context)
-        scores = {"holistic_score": score, "level_description": HOLISTIC_RUBRIC[score]}
+        scores = {
+            "holistic_score": score,
+            "level_description": HOLISTIC_RUBRIC[score],
+        }
+        rule_feedback = generate_rule_based_holistic_feedback(
+            essay_text, score, analysis, rag_context
+        )
     else:
         scores = calculate_analytic_scores(essay_text, analysis, rubric=rubric)
-        rule_feedback = generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context)
+        rule_feedback = generate_rule_based_analytic_feedback(
+            essay_text, scores, analysis, rag_context
+        )
 
-    feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts) 
+    # ---------- AI enhancement ----------
+    feedback = enhance_feedback_with_ai(
+        essay_text, scores, analysis, rule_feedback, facts
+    )
+
     return scores, feedback
 
 
