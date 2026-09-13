@@ -769,6 +769,28 @@ async def ocr_from_file(file: UploadFile = File(...)):
                 os.unlink(enhanced_path)
         except Exception:
             pass
+        
+@app.get("/ocr/pending")
+def list_pending_ocr(
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    try:
+        result = (
+            supabase.table("ocr_training_data")
+            .select("id, image_url, raw_ocr_text, engine, created_at")
+            .eq("accepted", False)
+            .not_.is_("image_url", "null")
+            .order("id", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return result.data
+    except Exception as e:
+        print(f"Failed to fetch pending OCR samples: {e}")
+        raise HTTPException(500, str(e))
 
 @app.post("/ocr/correct")
 def submit_ocr_correction(correction: OCRCorrection,
