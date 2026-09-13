@@ -154,23 +154,46 @@ def ai_score_all_criteria(essay_text, model="gemma2:2b"):
         for level in sorted(levels, reverse=True):
             rubric_block += f"  {level}: {levels[level]}\n"
 
-    system_msg = "You are a strict rubric-based essay evaluator. Return ONLY a JSON object."
-    user_msg = f"""Score the following essay on each criterion using this rubric:
+    system_msg = (
+        "You are a strict, experienced essay examiner. "
+        "You score decisively and do not default to middle values. "
+        "Use the full 1-4 range based on evidence in the essay. "
+        "Return ONLY a JSON object."
+    )
+
+    user_msg = f"""Carefully evaluate the essay below against the rubric.
+
+RUBRIC (use these exact descriptors to justify scores):
 
 {rubric_block}
+
+SCORING RULES:
+- Base each score on the rubric wording above, not on personal preference.
+- Do NOT give the same score to every criterion; differentiate them.
+- Use 4 only when the essay clearly satisfies the top-level descriptor.
+- Use 3 for solid but imperfect work.
+- Use 2 when the descriptor for 2 clearly applies.
+- Use 1 only when the criterion is essentially missing or broken.
+- If a criterion is strong and another is weak, the scores MUST differ.
+
+CALIBRATION EXAMPLES (for reference):
+- An essay with a clear thesis, three body paragraphs, and multiple cited
+  examples would score 4 on main_statement and 3-4 on evidence.
+- A one-paragraph opinion piece with no thesis or citations would score 1-2
+  on main_statement and 1 on evidence.
 
 Essay:
 \"\"\"
 {essay_text[:4000]}
 \"\"\"
 
-Return ONLY this JSON object (no extra text):
+Return ONLY this JSON object (no explanation, no markdown):
 {{
-  "main_statement": <1-4>,
-  "organization": <1-4>,
-  "evidence": <1-4>,
-  "analysis": <1-4>,
-  "grammar": <1-4>
+  "main_statement": <int 1-4>,
+  "organization": <int 1-4>,
+  "evidence": <int 1-4>,
+  "analysis": <int 1-4>,
+  "grammar": <int 1-4>
 }}
 """
 
@@ -192,6 +215,8 @@ Return ONLY this JSON object (no extra text):
             return None
 
         content = response.json().get("message", {}).get("content", "").strip()
+
+        # Strip code fences if the model added them
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
 
