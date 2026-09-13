@@ -709,12 +709,17 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
         print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}")
 
-        # 3. AI correction — only for printed-text output.
-        #    Running it on handwritten output would rewrite it.
-        if engine == "tesseract" and text and len(text.strip()) > 20:
+        # 3. AI correction — different prompts for printed vs handwriting.
+        if text and len(text.strip()) > 20:
             try:
-                from evaluator import ai_correct_ocr_text
-                corrected = ai_correct_ocr_text(text)
+                from evaluator import (
+                    ai_correct_ocr_text,
+                    ai_correct_handwriting_text,
+                )
+                if engine == "tesseract":
+                    corrected = ai_correct_ocr_text(text)
+                else:
+                    corrected = ai_correct_handwriting_text(text)
                 if corrected and corrected.strip():
                     text = corrected
             except Exception as e:

@@ -674,6 +674,7 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
 
     return "\n".join(feedback)
 
+
 def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
     """
     Use the LLM to fix obvious OCR mistakes while preserving meaning.
@@ -715,6 +716,72 @@ def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
         print(f"AI correction failed: {e}")
 
     return raw_text
+
+
+def ai_correct_handwriting_text(raw_text, model="gemma2:2b"):
+    """
+    Conservative post-correction for handwriting OCR output (TrOCR).
+    Fixes only clear nonsense words that are obviously OCR misreads;
+    preserves sentence structure, punctuation, and line breaks.
+
+    Falls back to the raw input on any failure or if the correction
+    changes length too drastically (hallucination guard).
+    """
+    if not raw_text or len(raw_text.strip()) < 20:
+        return raw_text
+
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+
+    system_msg = (
+        "You are a conservative OCR post-processor for handwritten text. "
+        "Rules:\n"
+        "1. Fix only words that are clearly OCR misreads of common English "
+        "words (for example, 'irritation fulstell' should become "
+        "'irrigation system').\n"
+        "2. Do NOT add words that are not present.\n"
+        "3. Do NOT rephrase, summarize, or improve the writing.\n"
+        "4. Do NOT change sentence structure, punctuation, or line breaks.\n"
+        "5. If a word is genuinely ambiguous, leave it unchanged.\n"
+        "6. Return only the corrected text, nothing else."
+    )
+
+    user_msg = (
+        "OCR output:\n"
+        f"\"\"\"\n{raw_text[:4000]}\n\"\"\"\n\n"
+        "Corrected text (same length, same structure, only obvious "
+        "misreads fixed):"
+    )
+
+    try:
+        response = requests.post(
+            f"{ollama_url}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.0},
+            },
+            timeout=90,
+        )
+        if response.status_code == 200:
+            corrected = response.json().get(
+                "message", {}
+            ).get("content", "").strip()
+            # Hallucination guard: reject rewrites that changed length >30%
+            if corrected:
+                ratio = len(corrected) / max(1, len(raw_text))
+                if 0.7 <= ratio <= 1.3:
+                    return corrected
+                print(f"[handwriting-correct] rejected: "
+                      f"length {len(raw_text)} -> {len(corrected)}")
+    except Exception as e:
+        print(f"Handwriting correction failed: {e}")
+
+    return raw_text
+
 
 def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
