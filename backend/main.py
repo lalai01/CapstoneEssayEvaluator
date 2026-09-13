@@ -684,29 +684,41 @@ async def ocr_from_file(file: UploadFile = File(...)):
         try:
             enhanced_path = preprocess_for_ocr(contents)
         except Exception:
-            enhanced_path = tmp_path  # fallback
+            enhanced_path = tmp_path 
 
         # 2. Extract with automatic engine selection
-        text, confidence, engine = ocr_utils.extract_text_from_image(enhanced_path)
+        candidates = []
+        for path in (tmp_path, enhanced_path):
+            try:
+                t, c, e = ocr_utils.extract_text_from_image(path)
+                if t and t.strip():
+                    candidates.append((len(t.strip()), t, c, e))
+            except Exception as ex:
+                print(f"OCR failed on {path}: {ex}")
+        
+        if candidates:
+            _, text, confidence, engine = max(candidates, key=lambda x: x[0])
+        else:
+            text, confidence, engine = "", 0.0, "tesseract"
 
         # 3. AI correction (only if text is present and short enough)
         try:
             from evaluator import ai_correct_ocr_text
             if text and len(text.strip()) > 20:
-                text = ai_correct_ocr_text(text)
+                corrected = ai_correct_ocr_text(text)
+                if corrected and corrected.strip():
+                    text = corrected
         except Exception as e:
             print(f"Correction skipped: {e}")
 
         try:
-            if user_id_from_token := None:  # optional, skip auth for public OCR
-                pass
             supabase.table("ocr_training_data").insert({
                 "raw_ocr_text": text,
                 "accepted": False,
             }).execute()
         except Exception as e:
             print(f"Failed to log OCR sample: {e}")
-        
+
         return OCRResponse(
             text=text,
             confidence=confidence,

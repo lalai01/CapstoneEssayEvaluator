@@ -103,10 +103,9 @@ def assess_handwriting_messiness(image_bytes):
 def extract_text_from_image(image_path):
     """
     Extract text using Tesseract with per-word confidence scoring.
-    Preprocessing is expected to have happened before this call
-    (see image_preprocess.preprocess_for_ocr).
-
-    Returns a tuple: (text, confidence, engine_name)
+    Returns a tuple: (text, confidence, engine_name).
+    If no text is detected, returns ("", 0.0, "tesseract") — never a
+    fake confidence value for empty output.
     """
     import pytesseract
     from PIL import Image
@@ -114,17 +113,24 @@ def extract_text_from_image(image_path):
     try:
         img = Image.open(image_path)
         text = pytesseract.image_to_string(img)
-        data = pytesseract.image_to_data(
-            img, output_type=pytesseract.Output.DICT
-        )
 
+        # No text → don't compute a bogus confidence from empty tokens.
+        if not text or not text.strip():
+            return "", 0.0, "tesseract"
+
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+
+        # Only count confidence for tokens that actually contain text.
+        # Tesseract reports high conf for whitespace/box regions; those
+        # inflate the average and lie about accuracy.
         conf_values = []
-        for c in data["conf"]:
+        tokens = data.get("text", [])
+        for c, t in zip(data["conf"], tokens):
             try:
                 v = float(c)
             except (TypeError, ValueError):
                 continue
-            if v >= 0:
+            if v >= 0 and t and t.strip():
                 conf_values.append(v)
 
         conf = sum(conf_values) / len(conf_values) if conf_values else 0.0
