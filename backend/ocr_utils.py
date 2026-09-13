@@ -90,16 +90,19 @@ def extract_text_from_image_bytes(image_bytes):
     try:
         # --- Decide route ---
         messiness = assess_handwriting_messiness(image_bytes)
-
+        print(f"[OCR] messiness = {messiness:.3f}")
         if messiness > 0.5:
             try:
                 from handwriting_ocr import ocr_handwriting_image
                 text, conf = ocr_handwriting_image(image_bytes)
+                print(f"[OCR] TrOCR returned {len(text)} chars, conf={conf:.1f}")
                 if text and text.strip():
                     return text, conf, "trocr-handwriting"
-                print(f"TrOCR returned empty; falling back to Tesseract")
+                print(f"[OCR] TrOCR returned empty; falling back to Tesseract")
             except Exception as e:
-                print(f"TrOCR failed, falling back to Tesseract: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"[OCR] TrOCR failed, falling back to Tesseract: {e}")
 
         # --- Printed-text path ---
         pil = Image.open(BytesIO(image_bytes))
