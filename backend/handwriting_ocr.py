@@ -12,12 +12,8 @@ _model = None
 def _load():
     global _processor, _model
     if _processor is None:
-        _processor = TrOCRProcessor.from_pretrained(
-            "microsoft/trocr-base-handwritten"
-        )
-        _model = VisionEncoderDecoderModel.from_pretrained(
-            "microsoft/trocr-base-handwritten"
-        )
+        _processor = TrOCRProcessor.from_pretrained("/opt/trocr")
+        _model = VisionEncoderDecoderModel.from_pretrained("/opt/trocr")
         _model.eval()
 
 
