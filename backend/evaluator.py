@@ -183,21 +183,17 @@ def ai_score_all_criteria(essay_text, model="llama3.2:3b"):
     """
     Ask the local LLM (via Ollama) to score the essay on all 5 rubric criteria.
     Uses observed ground-truth facts to prevent the model from guessing.
-    Returns a dict on success, or None on failure.
     """
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
-    # ---------- Build rubric block from ANALYTIC_RUBRIC ----------
     rubric_block = ""
     for criterion, levels in ANALYTIC_RUBRIC.items():
         rubric_block += f"\n[{criterion}]\n"
         for level in sorted(levels, reverse=True):
             rubric_block += f"  {level}: {levels[level]}\n"
 
-    # ---------- Compute ground-truth facts ----------
     facts = _essay_facts(essay_text)
 
-    # ---------- System message ----------
     system_msg = (
         "You are a strict, experienced essay examiner. "
         "You score decisively and do not default to middle values. "
@@ -206,7 +202,6 @@ def ai_score_all_criteria(essay_text, model="llama3.2:3b"):
         "You return ONLY a JSON object and never add explanations."
     )
 
-    # ---------- User prompt ----------
     user_msg = f"""Carefully evaluate the essay below against the rubric.
 
 RUBRIC (use these exact descriptors to justify scores):
@@ -228,10 +223,12 @@ SCORING RULES:
 - Use 2 when the descriptor for 2 clearly applies.
 - Use 1 only when the criterion is essentially missing or broken.
 - If a criterion is strong and another is weak, the scores MUST differ.
-- Award a 4 on evidence if citation_count >= 2 AND the sources are relevant.
-- Award a 4 on main_statement if thesis appears in the first paragraph
-  AND is restated or reinforced in the conclusion.
-- Award a 4 on organization if paragraph_count >= 3 AND transition_count >= 3.
+
+HARD RULES (must be obeyed):
+- If paragraph_count >= 3 AND transition_count >= 3, organization MUST be 4.
+- If citation_count >= 2, evidence MUST be 4.
+- If the thesis appears in the first paragraph AND is restated or
+  reinforced in the conclusion, main_statement MUST be 4.
 
 CALIBRATION EXAMPLES:
 
@@ -280,7 +277,6 @@ Return ONLY this JSON object (no explanation, no markdown):
 }}
 """
 
-    # ---------- Call Ollama ----------
     try:
         response = requests.post(
             f"{ollama_url}/api/chat",
@@ -301,11 +297,9 @@ Return ONLY this JSON object (no explanation, no markdown):
 
         content = response.json().get("message", {}).get("content", "").strip()
 
-        # Strip code fences if any
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
 
-        # Parse and validate
         parsed = json.loads(content)
         required = ["main_statement", "organization", "evidence", "analysis", "grammar"]
         for key in required:
@@ -643,10 +637,13 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
     return "\n".join(feedback)
 
 
-def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback):
+def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
     """Rewrite the rule-based feedback into a natural, encouraging paragraph."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     model = "gemma2:2b"
+
+    if facts is None:
+        facts = _essay_facts(essay_text)
 
     if 'holistic_score' in scores:
         score_info = f"Holistic Score: {scores['holistic_score']}/5\nDescription: {scores.get('level_description', '')}"
@@ -659,14 +656,39 @@ def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback):
             f"Grammar: {scores.get('grammar', 'N/A')}/4"
         )
 
-    system_msg = "You are an expert writing coach who provides warm, encouraging, and actionable feedback to students."
-    user_msg = f"""Rewrite the following technical analysis into a single, natural feedback paragraph. Preserve all scores, specific issues, paragraph numbers, and actionable suggestions. Use a supportive tone.
+    facts_block = (
+        f"- Paragraph count: {facts['paragraph_count']}\n"
+        f"- Word count: {facts['word_count']}\n"
+        f"- Transition count: {facts['transition_count']}\n"
+        f"- Citations detected: {facts['citation_count']}"
+    )
+
+    system_msg = (
+        "You are an expert writing coach who provides warm, encouraging, "
+        "actionable feedback. You do NOT invent facts about the essay. "
+        "You ONLY state what is directly supported by the technical analysis "
+        "and observed facts."
+    )
+
+    user_msg = f"""Rewrite the technical analysis below into a single, natural
+feedback paragraph for a student. Preserve all scores, specific issues, and
+suggestions. Use a supportive tone.
+
+FACTS (do NOT contradict these):
+{facts_block}
 
 Essay excerpt: {essay_text[:1000]}...
 
-Scores: {score_info}
+Scores:
+{score_info}
 
-Technical Analysis: {rule_feedback[:2000]}
+Technical Analysis:
+{rule_feedback[:2000]}
+
+Rules:
+- Do NOT say transitions are missing if transition_count > 0.
+- Do NOT say paragraphs are absent if paragraph_count >= 2.
+- Do NOT invent examples or claims not present in the analysis.
 
 Write only the final feedback paragraph:"""
 
@@ -680,7 +702,7 @@ Write only the final feedback paragraph:"""
                     {"role": "user", "content": user_msg},
                 ],
                 "stream": False,
-                "options": {"temperature": 0.7},
+                "options": {"temperature": 0.5},
             },
             timeout=45,
         )
@@ -710,6 +732,8 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
         }, f"⚠️ Invalid Input: {error_msg}"
 
     analysis = analyze_essay_content(essay_text)
+    facts = _essay_facts(essay_text)  
+
     rag_context = ""
     if use_rag:
         try:
@@ -725,7 +749,7 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True):
         scores = calculate_analytic_scores(essay_text, analysis)
         rule_feedback = generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context)
 
-    feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback)
+    feedback = enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts) 
     return scores, feedback
 
 
