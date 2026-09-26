@@ -80,25 +80,27 @@ class OCRResponse(BaseModel):
     method: str
     page_count: Optional[int] = None
     engine: Optional[str] = None
+    low_confidence: bool = False
 
 class KnowledgeEntry(BaseModel):
     title: Optional[str] = None
     essay: str
 
-    # Analytic criteria (1-4)
     main_statement: Optional[int] = None
     organization: Optional[int] = None
     evidence: Optional[int] = None
     analysis: Optional[int] = None
     grammar: Optional[int] = None
 
-    # Holistic fields
     holistic_score: Optional[int] = None
     level_description: Optional[str] = None
 
-    # Legacy fields kept for backward compatibility
     coherence: Optional[int] = None
     content: Optional[int] = None
+
+    criterion_feedback: Optional[dict] = None
+    grammar_issues: Optional[list] = None
+    recommendations: Optional[list] = None
 
     feedback: str
     eval_type: str
@@ -669,8 +671,9 @@ def delete_saved_essay(id: int, user=Depends(get_current_user)):
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
-    if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf']:
+    if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.docx']:
         raise HTTPException(400, "Unsupported file type")
+
     contents = await file.read()
 
     if suffix == '.pdf':
@@ -678,20 +681,38 @@ async def ocr_from_file(file: UploadFile = File(...)):
         job_id = start_pdf_ocr_job(contents)
         return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
 
-    # ---------- Single-image path ----------
+    if suffix == '.docx':
+        try:
+            text = ocr_utils.extract_docx_text(contents)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to read DOCX: {e}")
+        try:
+            supabase.table("ocr_training_data").insert({
+                "raw_ocr_text": text,
+                "accepted": False,
+                "engine": "python-docx",
+            }).execute()
+        except Exception as e:
+            print(f"Failed to log DOCX sample: {e}")
+        return OCRResponse(
+            text=text,
+            confidence=100.0,
+            method="DOCX text extraction",
+            engine="python-docx",
+            low_confidence=False,
+        )
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
 
     try:
-        # 1. Preprocess
         from image_preprocess import preprocess_for_ocr
         try:
             enhanced_path = preprocess_for_ocr(contents)
         except Exception:
             enhanced_path = tmp_path
 
-        # 2. Extract with automatic engine selection
         candidates = []
         for path in (tmp_path, enhanced_path):
             try:
@@ -701,9 +722,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
             except Exception as ex:
                 print(f"OCR failed on {path}: {ex}")
 
-        # Prefer the handwriting engine when it succeeded. Tesseract
-        # produces longer but meaningless output on handwriting, so
-        # "longest wins" is the wrong tiebreaker.
         trocr_candidates = [c for c in candidates if "trocr" in (c[3] or "")]
         if trocr_candidates:
             _, text, confidence, engine = max(trocr_candidates, key=lambda x: x[0])
@@ -714,7 +732,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
         print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}")
 
-        # 3. AI correction — different prompts for printed vs handwriting.
         if text and len(text.strip()) > 20:
             try:
                 from evaluator import (
@@ -730,7 +747,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
             except Exception as e:
                 print(f"Correction skipped: {e}")
 
-        # 4. Upload image to Supabase Storage + log training sample
         image_url = None
         try:
             import uuid as _uuid
@@ -763,6 +779,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
             confidence=confidence,
             method=f"Auto-selected OCR ({engine})",
             engine=engine,
+            low_confidence=confidence < 60.0,
         )
     finally:
         try:

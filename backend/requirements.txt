@@ -24,7 +24,7 @@ pillow==10.1.0
 pymupdf==1.23.8
 pdf2image==1.16.3
 opencv-python-headless==4.8.1.78
-language-tool-python==2.7.1
+
 # ---------- OCR: handwriting (TrOCR) ----------
 torch==2.3.1
 transformers==4.44.0
@@ -42,3 +42,6 @@ numpy==1.24.3
 scipy==1.11.4
 lmdb==1.4.1
 langdetect==1.0.9
+
+# ---------- Grammar checking ----------
+language-tool-python==2.7.1
