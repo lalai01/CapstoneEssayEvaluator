@@ -676,16 +676,20 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
     contents = await file.read()
 
+    # ---------- PDF: hand off to background job ----------
     if suffix == '.pdf':
         from ocr_jobs import start_pdf_ocr_job
         job_id = start_pdf_ocr_job(contents)
         return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
 
+    # ---------- DOCX: read directly, no OCR ----------
     if suffix == '.docx':
         try:
             text = ocr_utils.extract_docx_text(contents)
         except Exception as e:
             raise HTTPException(500, f"Failed to read DOCX: {e}")
+
+        # No correction — the docx text is already exact.
         try:
             supabase.table("ocr_training_data").insert({
                 "raw_ocr_text": text,
@@ -694,6 +698,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
             }).execute()
         except Exception as e:
             print(f"Failed to log DOCX sample: {e}")
+
         return OCRResponse(
             text=text,
             confidence=100.0,
@@ -702,17 +707,20 @@ async def ocr_from_file(file: UploadFile = File(...)):
             low_confidence=False,
         )
 
+    # ---------- Single-image path ----------
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
 
     try:
+        # 1. Preprocess
         from image_preprocess import preprocess_for_ocr
         try:
             enhanced_path = preprocess_for_ocr(contents)
         except Exception:
             enhanced_path = tmp_path
 
+        # 2. Extract with automatic engine selection
         candidates = []
         for path in (tmp_path, enhanced_path):
             try:
@@ -722,6 +730,9 @@ async def ocr_from_file(file: UploadFile = File(...)):
             except Exception as ex:
                 print(f"OCR failed on {path}: {ex}")
 
+        # Prefer the handwriting engine when it succeeded. Tesseract
+        # produces longer but meaningless output on handwriting, so
+        # "longest wins" is the wrong tiebreaker.
         trocr_candidates = [c for c in candidates if "trocr" in (c[3] or "")]
         if trocr_candidates:
             _, text, confidence, engine = max(trocr_candidates, key=lambda x: x[0])
@@ -732,21 +743,20 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
         print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}")
 
-        if text and len(text.strip()) > 20:
-            try:
-                from evaluator import (
-                    ai_correct_ocr_text,
-                    ai_correct_handwriting_text,
-                )
-                if engine == "tesseract":
-                    corrected = ai_correct_ocr_text(text)
-                else:
-                    corrected = ai_correct_handwriting_text(text)
-                if corrected and corrected.strip():
-                    text = corrected
-            except Exception as e:
-                print(f"Correction skipped: {e}")
+        # ------------------------------------------------------------------
+        # IMPORTANT: OCR extraction is intentionally NOT corrected.
+        #
+        # The evaluator must score the writer's actual text — including
+        # their own grammar mistakes. Any LLM-based "cleanup" here would
+        # rewrite the student's essay before scoring, which invalidates
+        # the evaluation.
+        #
+        # The raw OCR output goes straight into the training-data log and
+        # into the OCRResponse. Users review and correct it in the UI
+        # before running the evaluation.
+        # ------------------------------------------------------------------
 
+        # 3. Upload image to Supabase Storage + log training sample
         image_url = None
         try:
             import uuid as _uuid
@@ -854,6 +864,28 @@ def get_ocr_status(job_id: str):
             status_code=500,
             content={"status": "error", "error": str(e)}
         )
+
+@app.get("/ocr/pending")
+def list_pending_ocr(
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    try:
+        result = (
+            supabase.table("ocr_training_data")
+            .select("id, image_url, raw_ocr_text, engine, created_at")
+            .eq("accepted", False)
+            .not_.is_("image_url", "null")
+            .order("id", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return result.data
+    except Exception as e:
+        print(f"Failed to fetch pending OCR samples: {e}")
+        raise HTTPException(500, str(e))
 
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user)):

@@ -67,7 +67,10 @@ def deskew(gray):
 
 def segment_lines(gray):
     """
-    Robust horizontal line segmentation. Returns list of (top, bottom) bands.
+    Robust horizontal line segmentation.
+    Returns a list of (top, bottom, is_paragraph_break) tuples.
+    `is_paragraph_break` is True when the gap above this band is much
+    larger than the normal line gap — i.e. a blank line between paragraphs.
     """
     _, thresh = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -120,9 +123,28 @@ def segment_lines(gray):
     min_h = max(15, gray.shape[0] // 100)
     bands = [(a, b) for a, b in bands if (b - a) >= min_h]
 
+    # Detect paragraph breaks: a gap above a band that is larger than
+    # ~1.6× the median line gap counts as a paragraph boundary.
+    if len(bands) > 1:
+        gaps = [bands[i][0] - bands[i - 1][1] for i in range(1, len(bands))]
+        median_gap = float(np.median(gaps))
+        paragraph_threshold = max(median_gap * 1.6, median_gap + 12)
+    else:
+        paragraph_threshold = float("inf")
+
+    tagged = []
+    for i, (top, bottom) in enumerate(bands):
+        if i == 0:
+            tagged.append((top, bottom, False))
+        else:
+            gap = top - bands[i - 1][1]
+            is_break = gap >= paragraph_threshold
+            tagged.append((top, bottom, is_break))
+
+    breaks = sum(1 for _, _, b in tagged if b)
     print(f"[TrOCR] segment_lines: {raw_count} raw bands, "
-          f"{len(bands)} after merge+filter")
-    return bands
+          f"{len(tagged)} after merge+filter, {breaks} paragraph breaks")
+    return tagged
 
 
 def _transcribe_batch(pil_images):
@@ -171,6 +193,7 @@ def ocr_handwriting_image(image_bytes):
     Full-page handwriting OCR:
       decode -> crop to content -> deskew -> upscale ->
       segment lines -> batch-transcribe with TrOCR.
+    Preserves paragraph breaks as blank lines.
     """
     _load()
 
@@ -192,13 +215,16 @@ def ocr_handwriting_image(image_bytes):
     if not bands:
         return "", 0.0
 
+    # Build crops and remember each band's paragraph-break flag
     crops = []
-    for (top, bottom) in bands:
+    flags = []
+    for (top, bottom, is_break) in bands:
         pad = 8
         crop = gray[max(0, top - pad):bottom + pad, :]
         crop = cv2.copyMakeBorder(crop, 10, 10, 10, 10,
                                   cv2.BORDER_CONSTANT, value=255)
         crops.append(Image.fromarray(crop).convert("RGB"))
+        flags.append(is_break)
 
     if not crops:
         print("[TrOCR] no crops to process")
@@ -219,8 +245,17 @@ def ocr_handwriting_image(image_bytes):
         print("[TrOCR] no lines produced text")
         return "", 0.0
 
-    full = "\n".join(texts)
+    # Join lines with a single newline, but insert a blank line at
+    # every paragraph break so the extracted text mirrors the page layout.
+    parts = []
+    for idx, t in enumerate(texts):
+        is_break = flags[idx] if idx < len(flags) else False
+        if idx > 0 and is_break:
+            parts.append("")          # blank line → paragraph break
+        parts.append(t)
+
+    full = "\n".join(parts)
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
     print(f"[TrOCR] produced {len(full)} chars across {len(texts)} lines, "
-          f"avg conf={avg_conf:.1f}")
+          f"{sum(1 for f in flags if f)} paragraph breaks, avg conf={avg_conf:.1f}")
     return full, avg_conf
