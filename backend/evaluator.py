@@ -713,8 +713,15 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
 
 def ai_correct_ocr_text(raw_text, provider="deepseek"):
     """
-    Use an LLM to fix obvious OCR mistakes while preserving meaning.
-    Returns the corrected text, or the original if the LLM is unavailable.
+    DISABLED — no longer called from /ocr.
+
+    This function rewrote the student's essay before evaluation, which
+    invalidated the grammar score. It is kept for reference only.
+
+    Do NOT re-enable without a strict character-level-only constraint
+    (e.g., allow fixing 'teh' -> 'the' but not rewriting sentences).
+    The evaluator must score the writer's actual text.
+
     provider: "deepseek" (default) or "ollama"
     """
     if not raw_text or len(raw_text.strip()) < 10:
@@ -771,9 +778,16 @@ def ai_correct_ocr_text(raw_text, provider="deepseek"):
 
 def ai_correct_handwriting_text(raw_text, provider="deepseek"):
     """
-    Conservative post-correction for handwriting OCR output (TrOCR).
-    Falls back to the raw input on failure or if the correction changes
-    length too drastically (hallucination guard).
+    DISABLED — no longer called from /ocr.
+
+    This function was meant to fix character-level OCR misreads, but on
+    garbled handwriting it reconstructed sentences with plausible content
+    that the student never wrote. The evaluator must score the writer's
+    actual text.
+
+    Do NOT re-enable. If character-level cleanup is ever needed, gate it
+    with a strict similarity check (e.g., >= 0.9) so rewrites are rejected.
+
     provider: "deepseek" (default) or "ollama"
     """
     if not raw_text or len(raw_text.strip()) < 20:
