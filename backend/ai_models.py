@@ -67,12 +67,13 @@ def call_llamacpp(system_prompt, user_prompt, model=None):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.3
+        "temperature": 0.3,
+        "max_tokens": 1500
     }
     response = requests.post(
         f"{llamacpp_url}/chat/completions",
         json=payload,
-        timeout=120
+        timeout=300
     )
     response.raise_for_status()
     data = response.json()
