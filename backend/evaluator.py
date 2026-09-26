@@ -211,11 +211,12 @@ def _essay_facts(essay_text):
 def ai_score_all_criteria(essay_text, rubric=None, model="llama3.2:3b"):
     """
     Ask the local LLM (via Ollama) to score the essay on all 5 rubric criteria.
+    Also requests per-criterion feedback, grammar fixes, and recommendations.
     Uses observed ground-truth facts to prevent the model from guessing.
     """
     if rubric is None:
         rubric = ANALYTIC_RUBRIC
-        
+
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
     rubric_block = ""
@@ -227,11 +228,11 @@ def ai_score_all_criteria(essay_text, rubric=None, model="llama3.2:3b"):
     facts = _essay_facts(essay_text)
 
     system_msg = (
-        "You are a strict, experienced essay examiner. "
+        "You are a strict, experienced essay examiner and JSON API. "
         "You score decisively and do not default to middle values. "
         "You use the full 1-4 range based on concrete evidence in the essay. "
         "You differentiate scores across criteria when warranted. "
-        "You return ONLY a JSON object and never add explanations."
+        "You return ONLY a single valid JSON object and nothing else — no prose, no markdown, no code fences."
     )
 
     user_msg = f"""Carefully evaluate the essay below against the rubric.
@@ -266,33 +267,17 @@ CALIBRATION EXAMPLES:
 
 Example A - Essay with a clear thesis, three body paragraphs, and 2+ cited
 sources:
-  main_statement: 4
-  organization: 4
-  evidence: 4
-  analysis: 3 or 4
-  grammar: 3 or 4
+  main_statement: 4, organization: 4, evidence: 4, analysis: 3 or 4, grammar: 3 or 4
 
 Example B - Short single-paragraph essay with a thesis but only one example
 and no cited source:
-  main_statement: 3
-  organization: 2
-  evidence: 2
-  analysis: 2
-  grammar: 3 or 4
+  main_statement: 3, organization: 2, evidence: 2, analysis: 2, grammar: 3 or 4
 
 Example C - Multi-paragraph essay with a clear thesis but no concrete evidence:
-  main_statement: 3
-  organization: 3
-  evidence: 1 or 2
-  analysis: 2
-  grammar: 3
+  main_statement: 3, organization: 3, evidence: 1 or 2, analysis: 2, grammar: 3
 
 Example D - Disorganized essay with no thesis and no evidence:
-  main_statement: 1
-  organization: 1
-  evidence: 1
-  analysis: 1
-  grammar: 2
+  main_statement: 1, organization: 1, evidence: 1, analysis: 1, grammar: 2
 
 Essay:
 \"\"\"
@@ -300,13 +285,41 @@ Essay:
 \"\"\"
 
 Return ONLY this JSON object (no explanation, no markdown):
+
 {{
   "main_statement": <int 1-4>,
   "organization": <int 1-4>,
   "evidence": <int 1-4>,
   "analysis": <int 1-4>,
-  "grammar": <int 1-4>
+  "grammar": <int 1-4>,
+  "criterion_feedback": {{
+    "main_statement": "<2-3 sentences explaining this score>",
+    "organization":   "<2-3 sentences explaining this score>",
+    "evidence":       "<2-3 sentences explaining this score>",
+    "analysis":       "<2-3 sentences explaining this score>",
+    "grammar":        "<2-3 sentences explaining this score>"
+  }},
+  "grammar_issues": [
+    {{
+      "original":    "<text quoted from the essay with an actual error>",
+      "correction":  "<corrected version>",
+      "explanation": "<one-sentence reason>"
+    }}
+  ],
+  "recommendations": [
+    {{
+      "title":      "<short label>",
+      "issue":      "<what is weak in the essay>",
+      "suggestion": "<concrete, actionable fix that references a specific part of the essay>"
+    }}
+  ]
 }}
+
+RULES:
+- If there are no grammar errors, use "grammar_issues": [].
+- Never include a grammar_issues entry where original equals correction.
+- Provide 3–5 recommendations. Each must reference a specific part of the essay.
+- Every criterion_feedback value must be a plain string of 2-3 sentences.
 """
 
     try:
@@ -321,7 +334,7 @@ Return ONLY this JSON object (no explanation, no markdown):
                 "stream": False,
                 "options": {"temperature": 0.0},
             },
-            timeout=60,
+            timeout=120,
         )
         if response.status_code != 200:
             print(f"Ollama returned status {response.status_code}")
@@ -332,7 +345,41 @@ Return ONLY this JSON object (no explanation, no markdown):
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
 
-        parsed = json.loads(content)
+        # Robust JSON extraction — grab the first {...} block
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            if start == -1:
+                raise
+            depth = 0
+            in_string = False
+            escape = False
+            end = -1
+            for i in range(start, len(content)):
+                c = content[i]
+                if escape:
+                    escape = False
+                    continue
+                if c == "\\":
+                    escape = True
+                    continue
+                if c == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end == -1:
+                raise
+            parsed = json.loads(content[start:end + 1])
+
         required = ["main_statement", "organization", "evidence", "analysis", "grammar"]
         for key in required:
             if key not in parsed:
@@ -344,7 +391,19 @@ Return ONLY this JSON object (no explanation, no markdown):
                 return None
             parsed[key] = score
 
-        return {k: parsed[k] for k in required}
+        result = {k: parsed[k] for k in required}
+
+        # Pass through the extra fields if the model provided them
+        cf = parsed.get("criterion_feedback")
+        result["criterion_feedback"] = cf if isinstance(cf, dict) else {}
+
+        gi = parsed.get("grammar_issues")
+        result["grammar_issues"] = gi if isinstance(gi, list) else []
+
+        recs = parsed.get("recommendations")
+        result["recommendations"] = recs if isinstance(recs, list) else []
+
+        return result
 
     except json.JSONDecodeError as e:
         print(f"AI scoring JSON parse error: {e}")
@@ -460,6 +519,9 @@ def _heuristic_scores(essay_text, analysis):
         "evidence": evidence,
         "analysis": analysis_score,
         "grammar": grammar,
+        "criterion_feedback": {},
+        "grammar_issues": [],
+        "recommendations": [],
     }
 
 
@@ -477,7 +539,10 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None):
 # ---------- Holistic Score (mapped from rubric average) ----------
 def calculate_holistic_score(essay_text, analysis):
     analytic = calculate_analytic_scores(essay_text, analysis)
-    avg = sum(analytic.values()) / len(analytic)  # 1.0 – 4.0
+    numeric = {k: v for k, v in analytic.items() if isinstance(v, (int, float))}
+    if not numeric:
+        return 3
+    avg = sum(numeric.values()) / len(numeric)  # 1.0 – 4.0
     if avg >= 3.6:
         return 5
     elif avg >= 3.0:
@@ -564,7 +629,7 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
         if analysis['transition_count'] == 0:
             feedback.append("- 💡 Use transitions (e.g., 'Furthermore', 'Therefore', 'In conclusion').")
     feedback.append("")
-    
+
     feedback.append(f"📚 EVIDENCE (Score: {scores['evidence']}/4)")
     feedback.append(f"- {ANALYTIC_RUBRIC['evidence'][scores['evidence']]}")
     if scores['evidence'] < 4:
@@ -595,7 +660,8 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
             feedback.append(f"{i+1}. {s['title']}: {s['suggestion']}")
         feedback.append("")
 
-    avg = sum(scores.values()) / len(scores)
+    numeric_scores = {k: v for k, v in scores.items() if isinstance(v, (int, float))}
+    avg = sum(numeric_scores.values()) / len(numeric_scores) if numeric_scores else 0
     if avg >= 3.75:
         feedback.append("✅ Overall: This essay is at the top of the rubric across all criteria. "
                         "For further polish, consider refining transitions or adding a counter-argument.")
@@ -793,9 +859,10 @@ def ai_correct_handwriting_text(raw_text, model="llama3.2:3b"):
     print("[handwriting-correct] returning raw (no change)")
     return raw_text
 
+
 def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-    model = "llama3.2:3b"   
+    model = "llama3.2:3b"
 
     if facts is None:
         facts = _essay_facts(essay_text)
@@ -898,6 +965,9 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
                 "evidence": 0,
                 "analysis": 0,
                 "grammar": 0,
+                "criterion_feedback": {},
+                "grammar_issues": [],
+                "recommendations": [],
             },
             f"⚠️ Invalid Input: {error_msg}",
         )
