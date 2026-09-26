@@ -633,9 +633,14 @@ def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
         data["user_id"] = user["id"]
+        print(f"[saved-essays] inserting user_id={user['id']} title={entry.title!r}")
         result = supabase.table("saved_essays").insert(data).execute()
+        print(f"[saved-essays] inserted id={result.data[0]['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[saved-essays] FAILED: {e}")
         raise HTTPException(500, str(e))
 
 @app.get("/saved-essays")
