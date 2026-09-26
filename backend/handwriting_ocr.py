@@ -68,16 +68,6 @@ def deskew(gray):
 def segment_lines(gray):
     """
     Robust horizontal line segmentation. Returns list of (top, bottom) bands.
-
-    Strategy:
-      1. Otsu binarize -> ink is white (255), background black (0)
-      2. Morphological opening to remove specks
-      3. Horizontal dilation to connect letters within a line
-      4. Horizontal projection (sum of ink per row)
-      5. Threshold at 40% of max projection -> only real text rows pass
-      6. Group adjacent rows into bands
-      7. Merge bands only if the gap is very small
-      8. Filter out bands shorter than a plausible line height
     """
     _, thresh = cv2.threshold(gray, 0, 255,
                               cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -156,9 +146,8 @@ def _transcribe_batch(pil_images):
         outputs.sequences, skip_special_tokens=True
     )
 
-    # Per-sequence confidence via geometric mean of per-token probabilities
     confidences = []
-    scores = outputs.scores  # tuple of (batch, vocab) per generation step
+    scores = outputs.scores
     for seq_idx, ids in enumerate(outputs.sequences):
         probs = []
         for i, s in enumerate(scores):
@@ -193,7 +182,6 @@ def ocr_handwriting_image(image_bytes):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Preprocessing pipeline
     gray = _crop_to_content(gray)
     gray = deskew(gray)
     gray = _upscale_if_small(gray)
@@ -204,7 +192,6 @@ def ocr_handwriting_image(image_bytes):
     if not bands:
         return "", 0.0
 
-    # Build all crops up front
     crops = []
     for (top, bottom) in bands:
         pad = 8
@@ -217,8 +204,7 @@ def ocr_handwriting_image(image_bytes):
         print("[TrOCR] no crops to process")
         return "", 0.0
 
-    # Batch process — much faster on CPU than looping one at a time
-    BATCH_SIZE = 4   # bump to 8 if you have RAM to spare
+    BATCH_SIZE = 4
     texts = []
     confidences = []
     for i in range(0, len(crops), BATCH_SIZE):

@@ -2,6 +2,7 @@ import os
 import json
 import requests
 
+
 # ---------- DeepSeek ----------
 def call_deepseek(system_prompt, user_prompt, model="deepseek-chat"):
     api_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -22,7 +23,8 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat"):
     response = requests.post(
         "https://api.deepseek.com/v1/chat/completions",
         headers=headers,
-        json=payload
+        json=payload,
+        timeout=120,
     )
     response.raise_for_status()
     data = response.json()
@@ -32,8 +34,9 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat"):
         "provider": "deepseek"
     }
 
-# ---------- Ollama (Gemma) ----------
-def call_ollama(system_prompt, user_prompt, model="gemma2:2b"):
+
+# ---------- Ollama (Gemma / Llama) ----------
+def call_ollama(system_prompt, user_prompt, model="llama3.2:3b"):
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
     payload = {
         "model": model,
@@ -46,7 +49,7 @@ def call_ollama(system_prompt, user_prompt, model="gemma2:2b"):
             "temperature": 0.3
         }
     }
-    response = requests.post(f"{ollama_url}/api/chat", json=payload)
+    response = requests.post(f"{ollama_url}/api/chat", json=payload, timeout=180)
     response.raise_for_status()
     data = response.json()
     return {
@@ -55,10 +58,13 @@ def call_ollama(system_prompt, user_prompt, model="gemma2:2b"):
         "provider": "ollama"
     }
 
+
 # ---------- Llama.cpp (OpenAI-compatible) ----------
 def call_llamacpp(system_prompt, user_prompt, model=None):
     llamacpp_url = os.environ.get("LLAMACPP_URL", "http://llamacpp:8080/v1")
-    default_model = os.environ.get("LLAMACPP_MODEL", "Phi-3.5-mini-instruct-Q4_K_M.gguf")
+    default_model = os.environ.get(
+        "LLAMACPP_MODEL", "Phi-3.5-mini-instruct-Q4_K_M.gguf"
+    )
     model = model or default_model
 
     payload = {
@@ -68,7 +74,7 @@ def call_llamacpp(system_prompt, user_prompt, model=None):
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 1500
+        "max_tokens": 1500,
     }
     response = requests.post(
         f"{llamacpp_url}/chat/completions",
@@ -83,6 +89,7 @@ def call_llamacpp(system_prompt, user_prompt, model=None):
         "provider": "llamacpp"
     }
 
+
 # ---------- Router ----------
 def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
     provider = ai_provider.lower()
@@ -90,7 +97,7 @@ def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
     if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat")
     elif provider in ("gemma", "ollama"):
-        return call_ollama(system_prompt, user_prompt, model or "gemma2:2b")
+        return call_ollama(system_prompt, user_prompt, model or "llama3.2:3b")
     elif provider == "llamacpp":
         return call_llamacpp(system_prompt, user_prompt, model)
     else:

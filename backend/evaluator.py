@@ -17,7 +17,6 @@ except Exception as e:
     print(f"⚠️ LanguageTool initialization failed: {e}. Grammar checking will be limited to heuristics.")
 
 
-# ---------- Holistic Rubric (5-point scale) ----------
 HOLISTIC_RUBRIC = {
     5: "🌟 Excellent (5/5) – Clear thesis, strong organization, compelling arguments, and virtually no errors. The essay demonstrates mastery of the topic.",
     4: "👍 Good (4/5) – Clear main idea, well-organized, with minor errors that do not impede understanding. Arguments are solid but could be more developed.",
@@ -26,8 +25,6 @@ HOLISTIC_RUBRIC = {
     1: "❌ Poor (1/5) – Hard to follow, no clear structure, many errors. The essay fails to address the topic adequately."
 }
 
-
-# ---------- Analytic Rubric (4-point scale) ----------
 ANALYTIC_RUBRIC = {
     "main_statement": {
         4: "Presents a clear, focused, and defensible thesis that directly addresses the prompt and establishes a strong focus or position.",
@@ -61,12 +58,8 @@ ANALYTIC_RUBRIC = {
     },
 }
 
-# ---------- Evaluation State ----------
+
 def get_active_rubric(user_id=None):
-    """
-    Fetch the active rubric for a user from Supabase.
-    Falls back to ANALYTIC_RUBRIC if no custom rubric is found.
-    """
     try:
         from supabase_client import supabase
         if not supabase or not user_id:
@@ -87,7 +80,7 @@ def get_active_rubric(user_id=None):
 
     return ANALYTIC_RUBRIC
 
-# ---------- Essay Validation ----------
+
 def is_valid_essay(text):
     words = text.split()
     if len(words) < 20:
@@ -104,7 +97,7 @@ def is_valid_essay(text):
         return False, "Input does not appear to be real English text."
     return True, None
 
-# ---------- Content Analysis ----------
+
 def analyze_essay_content(essay_text):
     words = essay_text.split()
     word_count = len(words)
@@ -125,7 +118,7 @@ def analyze_essay_content(essay_text):
         'transition_count': transition_count
     }
 
-# ---------- Helper: Sentence & Word Scans ----------
+
 def find_long_sentences(essay_text, threshold=25):
     sentences = re.split(r'(?<=[.!?])\s+', essay_text)
     long_sentences = []
@@ -147,7 +140,6 @@ def find_vague_words(essay_text):
 
 
 def check_grammar_with_nlp(text):
-    """Return a list of grammar errors with suggestions and context."""
     if tool is None:
         return []
     matches = tool.check(text)
@@ -166,16 +158,12 @@ def check_grammar_with_nlp(text):
         })
     return errors
 
+
 def _essay_facts(essay_text):
-    """
-    Compute ground-truth facts about the essay so the LLM
-    doesn't have to guess them.
-    """
     paragraphs = [p for p in essay_text.split("\n\n") if p.strip()]
     word_count = len(essay_text.split())
     sentences = max(1, len(re.findall(r'[.!?]+', essay_text)))
 
-    # Detect explicit citations
     cited_patterns = [
         r"according to [A-Z]",
         r"research (?:by|from) [A-Z]",
@@ -188,7 +176,6 @@ def _essay_facts(essay_text):
     for pattern in cited_patterns:
         citation_count += len(re.findall(pattern, essay_text))
 
-    # Count transitions (phrase-aware)
     transition_words = [
         "however", "therefore", "consequently", "furthermore",
         "moreover", "nevertheless", "subsequently", "additionally",
@@ -207,13 +194,8 @@ def _essay_facts(essay_text):
         "transition_count": transition_count,
     }
 
-# ---------- AI-Based Scoring (with Heuristic Fallback) ----------
+
 def ai_score_all_criteria(essay_text, rubric=None, model="llama3.2:3b"):
-    """
-    Ask the local LLM (via Ollama) to score the essay on all 5 rubric criteria.
-    Also requests per-criterion feedback, grammar fixes, and recommendations.
-    Uses observed ground-truth facts to prevent the model from guessing.
-    """
     if rubric is None:
         rubric = ANALYTIC_RUBRIC
 
@@ -345,7 +327,6 @@ RULES:
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
 
-        # Robust JSON extraction — grab the first {...} block
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError:
@@ -393,7 +374,6 @@ RULES:
 
         result = {k: parsed[k] for k in required}
 
-        # Pass through the extra fields if the model provided them
         cf = parsed.get("criterion_feedback")
         result["criterion_feedback"] = cf if isinstance(cf, dict) else {}
 
@@ -414,7 +394,6 @@ RULES:
 
 
 def _heuristic_scores(essay_text, analysis):
-    """Rule-based fallback aligned with the 4-point rubric."""
     lower = essay_text.lower()
     paragraphs = [p for p in essay_text.split("\n\n") if p.strip()]
     para_count = len(paragraphs)
@@ -423,7 +402,6 @@ def _heuristic_scores(essay_text, analysis):
     vocab = analysis["vocabulary_richness"]
     avg_sl = analysis["avg_sentence_length"]
 
-    # --- Main Statement / Thesis ---
     thesis_signals = [
         "this essay", "i will argue", "the purpose of this",
         "this paper will", "the thesis", "in this paper",
@@ -444,7 +422,6 @@ def _heuristic_scores(essay_text, analysis):
     else:
         main_statement = 1
 
-    # --- Organization ---
     intro_markers = ["introduction", "first", "begin", "purpose"]
     conclusion_markers = ["conclusion", "summary", "finally",
                           "in conclusion", "to summarize", "overall"]
@@ -462,7 +439,6 @@ def _heuristic_scores(essay_text, analysis):
     else:
         organization = 1
 
-    # --- Evidence ---
     evidence_markers = [
         "for example", "for instance", "such as", "according to",
         "research shows", "studies show", "data", "statistics",
@@ -479,7 +455,6 @@ def _heuristic_scores(essay_text, analysis):
     else:
         evidence = 1
 
-    # --- Analysis ---
     reasoning_markers = [
         "because", "therefore", "thus", "hence", "as a result",
         "this shows", "this means", "this demonstrates", "which means",
@@ -496,7 +471,6 @@ def _heuristic_scores(essay_text, analysis):
     else:
         analysis_score = 1
 
-    # --- Grammar and Mechanics ---
     grammar_errors = check_grammar_with_nlp(essay_text)
     err_count = len(grammar_errors)
     punctuation_issue = bool(
@@ -536,13 +510,12 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None):
     return _heuristic_scores(essay_text, analysis)
 
 
-# ---------- Holistic Score (mapped from rubric average) ----------
 def calculate_holistic_score(essay_text, analysis):
     analytic = calculate_analytic_scores(essay_text, analysis)
     numeric = {k: v for k, v in analytic.items() if isinstance(v, (int, float))}
     if not numeric:
         return 3
-    avg = sum(numeric.values()) / len(numeric)  # 1.0 – 4.0
+    avg = sum(numeric.values()) / len(numeric)
     if avg >= 3.6:
         return 5
     elif avg >= 3.0:
@@ -555,7 +528,6 @@ def calculate_holistic_score(essay_text, analysis):
         return 1
 
 
-# ---------- Paragraph Detection ----------
 def get_paragraph_number(text, offset):
     paragraphs = text.split('\n\n')
     char_count = 0
@@ -566,7 +538,6 @@ def get_paragraph_number(text, offset):
     return 1
 
 
-# ---------- Suggestions ----------
 def generate_specific_suggestions(essay_text, analysis, scores):
     suggestions = []
 
@@ -598,7 +569,6 @@ def generate_specific_suggestions(essay_text, analysis, scores):
     return suggestions
 
 
-# ---------- Feedback Generation ----------
 def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context=""):
     feedback = []
 
@@ -741,16 +711,14 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
     return "\n".join(feedback)
 
 
-def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
+def ai_correct_ocr_text(raw_text, provider="deepseek"):
     """
-    Use the LLM to fix obvious OCR mistakes while preserving meaning.
+    Use an LLM to fix obvious OCR mistakes while preserving meaning.
     Returns the corrected text, or the original if the LLM is unavailable.
+    provider: "deepseek" (default) or "ollama"
     """
     if not raw_text or len(raw_text.strip()) < 10:
         return raw_text
-
-    import requests
-    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
     system_msg = (
         "You are an OCR post-processor. You fix spelling, spacing, and punctuation "
@@ -759,11 +727,25 @@ def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
     )
     user_msg = f"OCR text:\n\"\"\"\n{raw_text[:4000]}\n\"\"\"\n\nCorrected text:"
 
+    if provider == "deepseek":
+        try:
+            from ai_models import call_deepseek
+            result = call_deepseek(system_msg, user_msg, model="deepseek-chat")
+            corrected = (result.get("text") or "").strip()
+            if corrected and len(corrected) > len(raw_text) * 0.5:
+                print(f"[ocr-correct] deepseek applied, "
+                      f"{len(raw_text)} -> {len(corrected)}")
+                return corrected
+            print("[ocr-correct] deepseek returned empty or too short")
+        except Exception as e:
+            print(f"[ocr-correct] deepseek failed, falling back to ollama: {e}")
+
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     try:
         response = requests.post(
             f"{ollama_url}/api/chat",
             json={
-                "model": model,
+                "model": "gemma2:2b",
                 "messages": [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
@@ -777,28 +759,27 @@ def ai_correct_ocr_text(raw_text, model="gemma2:2b"):
             data = response.json()
             corrected = data.get("message", {}).get("content", "").strip()
             if corrected and len(corrected) > len(raw_text) * 0.5:
+                print(f"[ocr-correct] ollama applied, "
+                      f"{len(raw_text)} -> {len(corrected)}")
                 return corrected
     except Exception as e:
-        print(f"AI correction failed: {e}")
+        print(f"[ocr-correct] ollama failed: {e}")
 
+    print("[ocr-correct] returning raw")
     return raw_text
 
 
-def ai_correct_handwriting_text(raw_text, model="llama3.2:3b"):
+def ai_correct_handwriting_text(raw_text, provider="deepseek"):
     """
     Conservative post-correction for handwriting OCR output (TrOCR).
-    Fixes only clear nonsense words that are obviously OCR misreads;
-    preserves sentence structure, punctuation, and line breaks.
-
-    Falls back to the raw input on any failure or if the correction
-    changes length too drastically (hallucination guard).
+    Falls back to the raw input on failure or if the correction changes
+    length too drastically (hallucination guard).
+    provider: "deepseek" (default) or "ollama"
     """
     if not raw_text or len(raw_text.strip()) < 20:
         return raw_text
 
-    print(f"[handwriting-correct] calling with {len(raw_text)} chars")
-
-    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+    print(f"[handwriting-correct] calling with {len(raw_text)} chars, provider={provider}")
 
     system_msg = (
         "You are a conservative OCR post-processor for handwritten text. "
@@ -820,11 +801,36 @@ def ai_correct_handwriting_text(raw_text, model="llama3.2:3b"):
         "misreads fixed):"
     )
 
+    def _accept(corrected, source):
+        if not corrected:
+            print(f"[handwriting-correct] {source} returned empty")
+            return None
+        ratio = len(corrected) / max(1, len(raw_text))
+        if 0.7 <= ratio <= 1.3:
+            print(f"[handwriting-correct] {source} applied, "
+                  f"{len(raw_text)} -> {len(corrected)}")
+            return corrected
+        print(f"[handwriting-correct] {source} rejected: "
+              f"{len(raw_text)} -> {len(corrected)} (ratio {ratio:.2f})")
+        return None
+
+    if provider == "deepseek":
+        try:
+            from ai_models import call_deepseek
+            result = call_deepseek(system_msg, user_msg, model="deepseek-chat")
+            corrected = (result.get("text") or "").strip()
+            accepted = _accept(corrected, "deepseek")
+            if accepted:
+                return accepted
+        except Exception as e:
+            print(f"[handwriting-correct] deepseek failed, falling back to ollama: {e}")
+
+    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     try:
         response = requests.post(
             f"{ollama_url}/api/chat",
             json={
-                "model": model,
+                "model": "llama3.2:3b",
                 "messages": [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
@@ -835,26 +841,15 @@ def ai_correct_handwriting_text(raw_text, model="llama3.2:3b"):
             timeout=90,
         )
         print(f"[handwriting-correct] ollama status={response.status_code}")
-
         if response.status_code == 200:
             corrected = response.json().get(
                 "message", {}
             ).get("content", "").strip()
-            print(f"[handwriting-correct] llama returned {len(corrected)} chars")
-
-            # Hallucination guard: reject rewrites that changed length >30%
-            if corrected:
-                ratio = len(corrected) / max(1, len(raw_text))
-                if 0.7 <= ratio <= 1.3:
-                    print(f"[handwriting-correct] applied, "
-                          f"{len(raw_text)} -> {len(corrected)}")
-                    return corrected
-                print(f"[handwriting-correct] rejected: "
-                      f"{len(raw_text)} -> {len(corrected)} (ratio {ratio:.2f})")
-            else:
-                print("[handwriting-correct] llama returned empty")
+            accepted = _accept(corrected, "ollama")
+            if accepted:
+                return accepted
     except Exception as e:
-        print(f"Handwriting correction failed: {e}")
+        print(f"[handwriting-correct] ollama failed: {e}")
 
     print("[handwriting-correct] returning raw (no change)")
     return raw_text
@@ -947,11 +942,9 @@ Write only the final feedback paragraph:"""
     return rule_feedback
 
 
-# ---------- Main Entry Point ----------
 def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=None):
     is_valid, error_msg = is_valid_essay(essay_text)
 
-    # ---------- Invalid input ----------
     if not is_valid:
         if evaluation_type == "holistic":
             return (
@@ -972,11 +965,9 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
             f"⚠️ Invalid Input: {error_msg}",
         )
 
-    # ---------- Analyze ----------
     analysis = analyze_essay_content(essay_text)
     facts = _essay_facts(essay_text)
 
-    # ---------- RAG context ----------
     rag_context = ""
     if use_rag:
         try:
@@ -984,7 +975,6 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
         except Exception as e:
             print(f"RAG error: {e}")
 
-    # ---------- Score + feedback ----------
     if evaluation_type == "holistic":
         score = calculate_holistic_score(essay_text, analysis)
         scores = {
@@ -1000,7 +990,6 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
             essay_text, scores, analysis, rag_context
         )
 
-    # ---------- AI enhancement ----------
     feedback = enhance_feedback_with_ai(
         essay_text, scores, analysis, rule_feedback, facts
     )
@@ -1008,7 +997,6 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
     return scores, feedback
 
 
-# ---------- Static Rubric & Suggestion Guide (for UI) ----------
 RUBRIC = {
     "main_statement": ANALYTIC_RUBRIC["main_statement"],
     "organization": ANALYTIC_RUBRIC["organization"],
