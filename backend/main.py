@@ -689,7 +689,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(500, f"Failed to read DOCX: {e}")
 
-        # No correction — the docx text is already exact.
         try:
             supabase.table("ocr_training_data").insert({
                 "raw_ocr_text": text,
@@ -730,9 +729,6 @@ async def ocr_from_file(file: UploadFile = File(...)):
             except Exception as ex:
                 print(f"OCR failed on {path}: {ex}")
 
-        # Prefer the handwriting engine when it succeeded. Tesseract
-        # produces longer but meaningless output on handwriting, so
-        # "longest wins" is the wrong tiebreaker.
         trocr_candidates = [c for c in candidates if "trocr" in (c[3] or "")]
         if trocr_candidates:
             _, text, confidence, engine = max(trocr_candidates, key=lambda x: x[0])
@@ -743,20 +739,23 @@ async def ocr_from_file(file: UploadFile = File(...)):
 
         print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}")
 
-        # ------------------------------------------------------------------
-        # IMPORTANT: OCR extraction is intentionally NOT corrected.
-        #
-        # The evaluator must score the writer's actual text — including
-        # their own grammar mistakes. Any LLM-based "cleanup" here would
-        # rewrite the student's essay before scoring, which invalidates
-        # the evaluation.
-        #
-        # The raw OCR output goes straight into the training-data log and
-        # into the OCRResponse. Users review and correct it in the UI
-        # before running the evaluation.
-        # ------------------------------------------------------------------
+        # 3. AI correction — different prompts for printed vs handwriting.
+        if text and len(text.strip()) > 20:
+            try:
+                from evaluator import (
+                    ai_correct_ocr_text,
+                    ai_correct_handwriting_text,
+                )
+                if engine == "tesseract":
+                    corrected = ai_correct_ocr_text(text)
+                else:
+                    corrected = ai_correct_handwriting_text(text)
+                if corrected and corrected.strip():
+                    text = corrected
+            except Exception as e:
+                print(f"Correction skipped: {e}")
 
-        # 3. Upload image to Supabase Storage + log training sample
+        # 4. Upload image to Supabase Storage + log training sample
         image_url = None
         try:
             import uuid as _uuid
@@ -895,7 +894,9 @@ def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user
         if result.get("error"):
             return EvaluationResponse(
                 scores={"main_statement": 0, "organization": 0,
-                        "evidence": 0, "analysis": 0, "grammar": 0},
+                        "evidence": 0, "analysis": 0, "grammar": 0,
+                        "criterion_feedback": {}, "grammar_issues": [],
+                        "recommendations": []},
                 feedback=result.get("feedback") or "Invalid input",
             )
         return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
@@ -912,7 +913,9 @@ def evaluate_essay_with_rag(req: EvaluationRequest, user: dict = Depends(get_cur
         if result.get("error"):
             return EvaluationResponse(
                 scores={"main_statement": 0, "organization": 0,
-                        "evidence": 0, "analysis": 0, "grammar": 0},
+                        "evidence": 0, "analysis": 0, "grammar": 0,
+                        "criterion_feedback": {}, "grammar_issues": [],
+                        "recommendations": []},
                 feedback=result.get("feedback") or "Invalid input",
             )
         return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])

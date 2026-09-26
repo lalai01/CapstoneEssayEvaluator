@@ -58,7 +58,6 @@ def call_ollama(system_prompt, user_prompt, model="llama3.2:3b"):
         "provider": "ollama"
     }
 
-
 # ---------- Llama.cpp (OpenAI-compatible) ----------
 def call_llamacpp(system_prompt, user_prompt, model=None):
     llamacpp_url = os.environ.get("LLAMACPP_URL", "http://llamacpp:8080/v1")

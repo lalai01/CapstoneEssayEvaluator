@@ -113,14 +113,6 @@ def extract_text_from_image(image_path):
 
 
 def extract_text_from_image_bytes(image_bytes):
-    """
-    Unified OCR entry point. Takes raw image bytes and returns
-    (text, confidence, engine).
-
-    Routes:
-      - handwriting (messiness > 0.2) -> TrOCR
-      - printed                       -> Tesseract (--oem 1 --psm 6)
-    """
     import pytesseract
     from PIL import Image
 
@@ -164,6 +156,12 @@ def extract_text_from_image_bytes(image_bytes):
     except Exception as e:
         print(f"extract_text_from_image_bytes failed: {e}")
         return "", 0.0, "tesseract"
+
+
+def extract_text_from_image(image_path):
+    """Path-based wrapper for backward compatibility."""
+    with open(image_path, "rb") as f:
+        return extract_text_from_image_bytes(f.read())
 
 
 # ---------------------------------------------------------------------------

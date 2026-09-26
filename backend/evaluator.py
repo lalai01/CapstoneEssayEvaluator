@@ -515,7 +515,7 @@ def calculate_holistic_score(essay_text, analysis):
     numeric = {k: v for k, v in analytic.items() if isinstance(v, (int, float))}
     if not numeric:
         return 3
-    avg = sum(numeric.values()) / len(numeric)
+    avg = sum(numeric.values()) / len(numeric)  # 1.0 – 4.0
     if avg >= 3.6:
         return 5
     elif avg >= 3.0:

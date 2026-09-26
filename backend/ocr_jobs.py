@@ -27,7 +27,6 @@ def start_pdf_ocr_job(pdf_bytes):
                 jobs[job_id]["status"] = "completed"
                 return
 
-            # Scanned PDF — OCR each page
             all_text = []
             used_engines = set()
             confidences = []
