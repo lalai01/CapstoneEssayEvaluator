@@ -2,6 +2,7 @@
 import re
 import json
 import os
+import difflib
 import requests
 import language_tool_python
 from langdetect import detect, DetectorFactory
@@ -9,12 +10,45 @@ from rag import get_similar_essay_context
 
 DetectorFactory.seed = 0
 
+
 tool = None
 try:
     tool = language_tool_python.LanguageTool('en-US')
     print("✅ LanguageTool initialized successfully.")
 except Exception as e:
     print(f"⚠️ LanguageTool initialization failed: {e}. Grammar checking will be limited to heuristics.")
+
+
+def _accept_correction(raw_text, corrected, source):
+    """
+    Shared guard for LLM OCR correction.
+    Returns the corrected text if it passes both guards, else None.
+
+    Guards:
+      - length ratio between 0.85 and 1.15 (rejects summarization and padding)
+      - difflib similarity ratio >= 0.85 (rejects rewrites)
+    """
+    if not corrected or not corrected.strip():
+        print(f"[{source}] rejected: empty output")
+        return None
+
+    length_ratio = len(corrected) / max(1, len(raw_text))
+    if not (0.85 <= length_ratio <= 1.15):
+        print(f"[{source}] rejected: length ratio {length_ratio:.2f} "
+              f"({len(raw_text)} -> {len(corrected)})")
+        return None
+
+    similarity = difflib.SequenceMatcher(
+        None, raw_text.lower(), corrected.lower()
+    ).ratio()
+    if similarity < 0.85:
+        print(f"[{source}] rejected: similarity {similarity:.2f} < 0.85 "
+              f"(it rewrote too much)")
+        return None
+
+    print(f"[{source}] accepted: {len(raw_text)} -> {len(corrected)} chars, "
+          f"similarity {similarity:.2f}")
+    return corrected
 
 
 HOLISTIC_RUBRIC = {
@@ -713,14 +747,15 @@ def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, 
 
 def ai_correct_ocr_text(raw_text, provider="deepseek"):
     """
-    DISABLED — no longer called from /ocr.
+    Correct character-level OCR misreads in printed-text OCR output.
 
-    This function rewrote the student's essay before evaluation, which
-    invalidated the grammar score. It is kept for reference only.
+    This function is BOUNDED. It must not rewrite the text.
 
-    Do NOT re-enable without a strict character-level-only constraint
-    (e.g., allow fixing 'teh' -> 'the' but not rewriting sentences).
-    The evaluator must score the writer's actual text.
+    Rules:
+      - Only replace tokens that are clearly non-words or visual misreads.
+      - Preserve the writer's spelling, grammar, and punctuation exactly.
+      - Preserve line breaks and blank lines.
+      - Reject the correction if length ratio or similarity fail the guard.
 
     provider: "deepseek" (default) or "ollama"
     """
@@ -728,22 +763,35 @@ def ai_correct_ocr_text(raw_text, provider="deepseek"):
         return raw_text
 
     system_msg = (
-        "You are an OCR post-processor. You fix spelling, spacing, and punctuation "
-        "errors caused by OCR without changing the meaning or adding new content. "
-        "Return only the corrected text, nothing else."
+        "You are a transcription corrector for a printed-text OCR system. "
+        "The OCR engine produced a rough read of a printed document. "
+        "Your ONLY job is to fix characters the OCR clearly misread.\n"
+        "\n"
+        "HARD RULES:\n"
+        "1. Output the SAME WORDS that were printed. Do NOT correct grammar.\n"
+        "2. Do NOT fix spelling, punctuation, or sentence structure.\n"
+        "3. Do NOT add words that aren't there. Do NOT remove words that are.\n"
+        "4. Do NOT paraphrase or change synonyms.\n"
+        "5. Only replace a token when it is clearly a non-word or visual misread.\n"
+        "6. If a token is already a real English word, leave it exactly as-is.\n"
+        "7. Preserve every line break and blank line.\n"
+        "8. Return only the corrected text. No commentary, no preamble."
     )
-    user_msg = f"OCR text:\n\"\"\"\n{raw_text[:4000]}\n\"\"\"\n\nCorrected text:"
+
+    user_msg = (
+        "OCR output:\n"
+        f"\"\"\"\n{raw_text[:4000]}\n\"\"\"\n\n"
+        "Corrected transcription (same words, only fix clear misreads):"
+    )
 
     if provider == "deepseek":
         try:
             from ai_models import call_deepseek
             result = call_deepseek(system_msg, user_msg, model="deepseek-chat")
             corrected = (result.get("text") or "").strip()
-            if corrected and len(corrected) > len(raw_text) * 0.5:
-                print(f"[ocr-correct] deepseek applied, "
-                      f"{len(raw_text)} -> {len(corrected)}")
-                return corrected
-            print("[ocr-correct] deepseek returned empty or too short")
+            accepted = _accept_correction(raw_text, corrected, "ocr-correct")
+            if accepted:
+                return accepted
         except Exception as e:
             print(f"[ocr-correct] deepseek failed, falling back to ollama: {e}")
 
@@ -758,86 +806,79 @@ def ai_correct_ocr_text(raw_text, provider="deepseek"):
                     {"role": "user", "content": user_msg},
                 ],
                 "stream": False,
-                "options": {"temperature": 0.1},
+                "options": {"temperature": 0.0},
             },
             timeout=45,
         )
         if response.status_code == 200:
-            data = response.json()
-            corrected = data.get("message", {}).get("content", "").strip()
-            if corrected and len(corrected) > len(raw_text) * 0.5:
-                print(f"[ocr-correct] ollama applied, "
-                      f"{len(raw_text)} -> {len(corrected)}")
-                return corrected
+            corrected = response.json().get(
+                "message", {}
+            ).get("content", "").strip()
+            accepted = _accept_correction(raw_text, corrected, "ocr-correct")
+            if accepted:
+                return accepted
     except Exception as e:
         print(f"[ocr-correct] ollama failed: {e}")
 
-    print("[ocr-correct] returning raw")
     return raw_text
 
 
 def ai_correct_handwriting_text(raw_text, provider="deepseek"):
     """
-    DISABLED — no longer called from /ocr.
+    Correct character-level OCR misreads in handwriting (TrOCR) output.
 
-    This function was meant to fix character-level OCR misreads, but on
-    garbled handwriting it reconstructed sentences with plausible content
-    that the student never wrote. The evaluator must score the writer's
-    actual text.
+    This function is BOUNDED. It must not rewrite the text.
 
-    Do NOT re-enable. If character-level cleanup is ever needed, gate it
-    with a strict similarity check (e.g., >= 0.9) so rewrites are rejected.
+    Rules:
+      - Only replace tokens that are clearly non-words or visual misreads.
+      - Preserve the writer's spelling, grammar, and punctuation exactly.
+      - Preserve line breaks and blank lines.
+      - Reject the correction if length ratio or similarity fail the guard.
 
     provider: "deepseek" (default) or "ollama"
     """
     if not raw_text or len(raw_text.strip()) < 20:
         return raw_text
 
-    print(f"[handwriting-correct] calling with {len(raw_text)} chars, provider={provider}")
+    print(f"[handwriting-correct] calling with {len(raw_text)} chars, "
+          f"provider={provider}")
 
     system_msg = (
-        "You are a conservative OCR post-processor for handwritten text. "
-        "Rules:\n"
-        "1. Fix only words that are clearly OCR misreads of common English "
-        "words (for example, 'irritation fulstell' should become "
-        "'irrigation system').\n"
-        "2. Do NOT add words that are not present.\n"
-        "3. Do NOT rephrase, summarize, or improve the writing.\n"
-        "4. Do NOT change sentence structure, punctuation, or line breaks.\n"
-        "5. If a word is genuinely ambiguous, leave it unchanged.\n"
-        "6. Return only the corrected text, nothing else."
+        "You are a transcription corrector for a handwritten OCR system. "
+        "The OCR engine produced a rough read of a handwritten page. "
+        "Your ONLY job is to fix characters the OCR clearly misread.\n"
+        "\n"
+        "HARD RULES:\n"
+        "1. Output the SAME WORDS the writer actually wrote. Do NOT correct grammar.\n"
+        "   If the writer wrote 'become worsen', output 'become worsen'.\n"
+        "2. Do NOT fix spelling, punctuation, or sentence structure.\n"
+        "3. Do NOT add words that aren't there. Do NOT remove words that are.\n"
+        "4. Do NOT paraphrase. Do NOT summarize. Do NOT change synonyms.\n"
+        "5. Only replace a token when it is clearly a non-word or visual misread.\n"
+        "6. If a token is already a real English word, leave it exactly as-is.\n"
+        "7. Preserve every line break and blank line.\n"
+        "8. Return only the corrected text. No commentary, no preamble."
     )
 
     user_msg = (
         "OCR output:\n"
         f"\"\"\"\n{raw_text[:4000]}\n\"\"\"\n\n"
-        "Corrected text (same length, same structure, only obvious "
-        "misreads fixed):"
+        "Corrected transcription (same words, only fix clear misreads):"
     )
-
-    def _accept(corrected, source):
-        if not corrected:
-            print(f"[handwriting-correct] {source} returned empty")
-            return None
-        ratio = len(corrected) / max(1, len(raw_text))
-        if 0.7 <= ratio <= 1.3:
-            print(f"[handwriting-correct] {source} applied, "
-                  f"{len(raw_text)} -> {len(corrected)}")
-            return corrected
-        print(f"[handwriting-correct] {source} rejected: "
-              f"{len(raw_text)} -> {len(corrected)} (ratio {ratio:.2f})")
-        return None
 
     if provider == "deepseek":
         try:
             from ai_models import call_deepseek
             result = call_deepseek(system_msg, user_msg, model="deepseek-chat")
             corrected = (result.get("text") or "").strip()
-            accepted = _accept(corrected, "deepseek")
+            accepted = _accept_correction(
+                raw_text, corrected, "handwriting-correct"
+            )
             if accepted:
                 return accepted
         except Exception as e:
-            print(f"[handwriting-correct] deepseek failed, falling back to ollama: {e}")
+            print(f"[handwriting-correct] deepseek failed, falling back to "
+                  f"ollama: {e}")
 
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     try:
@@ -859,7 +900,9 @@ def ai_correct_handwriting_text(raw_text, provider="deepseek"):
             corrected = response.json().get(
                 "message", {}
             ).get("content", "").strip()
-            accepted = _accept(corrected, "ollama")
+            accepted = _accept_correction(
+                raw_text, corrected, "handwriting-correct"
+            )
             if accepted:
                 return accepted
     except Exception as e:
