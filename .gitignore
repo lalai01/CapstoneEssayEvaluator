@@ -47,3 +47,11 @@ venv/
 __pycache__/
 *.pyc
 .env
+
+# ===============================
+# Training data & fine-tuned models
+# ===============================
+backend/training-data/
+backend/trocr-finetuned/
+backend/handwriting_dataset/
+*.zip
