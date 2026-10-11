@@ -3,6 +3,25 @@ import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext({})
 
+// Mirrors backend is_admin(): role "admin" in Supabase user metadata, or an
+// email listed in VITE_ADMIN_EMAILS (comma-separated). Note: Supabase's
+// top-level `user.role` is always "authenticated", so it is not checked.
+const ADMIN_EMAILS = (
+  import.meta.env.VITE_ADMIN_EMAILS || 'admin_essay_capstone@gmail.com,galangec24@gmail.com'
+)
+  .split(',')
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean)
+
+function isAdminUser(user) {
+  if (!user) return false
+  return (
+    user.user_metadata?.role === 'admin' ||
+    user.app_metadata?.role === 'admin' ||
+    ADMIN_EMAILS.includes((user.email || '').toLowerCase())
+  )
+}
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -33,7 +52,7 @@ export const AuthProvider = ({ children }) => {
   const signOut = () => supabase.auth.signOut()
 
   return (
-    <AuthContext.Provider value={{ user, loading, signInWithGoogle, signInWithYahoo, signInWithEmail, signOut }}>
+    <AuthContext.Provider value={{ user, isAdmin: isAdminUser(user), loading, signInWithGoogle, signInWithYahoo, signInWithEmail, signOut }}>
       {children}
     </AuthContext.Provider>
   )

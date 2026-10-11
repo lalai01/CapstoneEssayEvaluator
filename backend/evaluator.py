@@ -93,15 +93,113 @@ ANALYTIC_RUBRIC = {
 }
 
 
-def get_active_rubric(user_id=None):
+DEFAULT_LABELS = {
+    "main_statement": "Main Statement",
+    "organization": "Organization",
+    "evidence": "Evidence",
+    "analysis": "Analysis",
+    "grammar": "Grammar",
+}
+
+DEFAULT_WEIGHTS = {
+    "main_statement": 1.0,
+    "organization": 1.0,
+    "evidence": 1.5,
+    "analysis": 1.5,
+    "grammar": 1.0,
+}
+
+MAX_SCORE_LIMIT = 10
+
+
+def _to_number(value, default, cast=float):
     try:
-        from supabase_client import supabase
-        if not supabase or not user_id:
+        return cast(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_rubric(raw):
+    """
+    Convert any stored rubric into the canonical shape:
+
+        {key: {"label": str, "max_score": int, "weight": float,
+               "levels": {int: descriptor}}}
+
+    Accepts both the legacy shape ({key: {"4": "...", "3": "..."}}) and the
+    admin-configurable shape ({key: {"label", "max_score", "weight", "levels"}}).
+    """
+    if not isinstance(raw, dict) or not raw:
+        raw = ANALYTIC_RUBRIC
+
+    normalized = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+
+        if "levels" in value or "max_score" in value:
+            levels_raw = value.get("levels") or {}
+            label = value.get("label") or DEFAULT_LABELS.get(key) or key.replace("_", " ").title()
+            weight = _to_number(value.get("weight"), DEFAULT_WEIGHTS.get(key, 1.0))
+            max_score = _to_number(value.get("max_score"), None, int)
+        else:
+            levels_raw = value
+            label = DEFAULT_LABELS.get(key) or key.replace("_", " ").title()
+            weight = DEFAULT_WEIGHTS.get(key, 1.0)
+            max_score = None
+
+        levels = {}
+        for level, text in (levels_raw or {}).items():
+            lvl = _to_number(level, None, int)
+            if lvl is not None and isinstance(text, str) and text.strip():
+                levels[lvl] = text.strip()
+
+        if max_score is None:
+            max_score = max(levels) if levels else 4
+        max_score = max(2, min(MAX_SCORE_LIMIT, max_score))
+        levels = {lvl: text for lvl, text in levels.items() if 1 <= lvl <= max_score}
+
+        normalized[key] = {
+            "label": label,
+            "max_score": max_score,
+            "weight": max(0.0, weight),
+            "levels": levels,
+        }
+
+    return normalized or normalize_rubric(ANALYTIC_RUBRIC)
+
+
+def rubric_meta(rubric):
+    """Criteria list sent to the frontend alongside scores."""
+    return [
+        {"key": key, "label": c["label"], "max_score": c["max_score"], "weight": c["weight"]}
+        for key, c in normalize_rubric(rubric).items()
+    ]
+
+
+def descriptor_for(criterion, score):
+    """Descriptor for the exact level, else the nearest defined level below it."""
+    levels = criterion.get("levels") or {}
+    for lvl in range(int(score), 0, -1):
+        if lvl in levels:
+            return levels[lvl]
+    return ""
+
+
+def get_active_rubric(user_id=None):
+    """
+    The rubric admins configured in the Rubric Manager applies system-wide:
+    the most recently created active rubric wins. Falls back to the built-in
+    analytic rubric. `user_id` is kept for call-site compatibility.
+    """
+    try:
+        from supabase_client import supabase, supabase_admin
+        client = supabase_admin or supabase
+        if not client:
             return ANALYTIC_RUBRIC
 
-        result = supabase.table("rubrics") \
+        result = client.table("rubrics") \
             .select("criteria") \
-            .eq("user_id", user_id) \
             .eq("is_active", True) \
             .order("created_at", desc=True) \
             .limit(1) \
@@ -229,57 +327,55 @@ def _essay_facts(essay_text):
     }
 
 
+def _is_default_rubric_shape(criteria):
+    return set(criteria) == set(ANALYTIC_RUBRIC) and all(
+        c["max_score"] == 4 for c in criteria.values()
+    )
+
+
 def ai_score_all_criteria(essay_text, rubric=None, model="llama3.2:3b"):
-    if rubric is None:
-        rubric = ANALYTIC_RUBRIC
+    criteria = normalize_rubric(rubric)
 
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
     rubric_block = ""
-    for criterion, levels in rubric.items():
-        rubric_block += f"\n[{criterion}]\n"
-        for level in sorted(levels, reverse=True):
-            rubric_block += f"  {level}: {levels[level]}\n"
+    for key, c in criteria.items():
+        rubric_block += f"\n[{key}] {c['label']} — score 1 to {c['max_score']}\n"
+        for level in sorted(c["levels"], reverse=True):
+            rubric_block += f"  {level}: {c['levels'][level]}\n"
 
     facts = _essay_facts(essay_text)
 
     system_msg = (
         "You are a strict, experienced essay examiner and JSON API. "
         "You score decisively and do not default to middle values. "
-        "You use the full 1-4 range based on concrete evidence in the essay. "
+        "You use each criterion's full score range based on concrete evidence in the essay. "
         "You differentiate scores across criteria when warranted. "
         "You return ONLY a single valid JSON object and nothing else — no prose, no markdown, no code fences."
     )
 
-    user_msg = f"""Carefully evaluate the essay below against the rubric.
+    hard_rules = []
+    if "organization" in criteria:
+        hard_rules.append(
+            f"- If paragraph_count >= 3 AND transition_count >= 3, organization MUST be "
+            f"{criteria['organization']['max_score']}."
+        )
+    if "evidence" in criteria:
+        hard_rules.append(
+            f"- If citation_count >= 2, evidence MUST be {criteria['evidence']['max_score']}."
+        )
+    if "main_statement" in criteria:
+        hard_rules.append(
+            "- If the thesis appears in the first paragraph AND is restated or\n"
+            "  reinforced in the conclusion, main_statement MUST be "
+            f"{criteria['main_statement']['max_score']}."
+        )
+    hard_rules_block = (
+        "HARD RULES (must be obeyed):\n" + "\n".join(hard_rules) + "\n"
+        if hard_rules else ""
+    )
 
-RUBRIC (use these exact descriptors to justify scores):
-
-{rubric_block}
-
-OBSERVED FACTS (do NOT re-count; use these as anchors):
-- Paragraph count: {facts['paragraph_count']}
-- Word count: {facts['word_count']}
-- Sentence count: {facts['sentence_count']}
-- Explicit citations detected: {facts['citation_count']}
-- Transition words used: {facts['transition_count']}
-
-SCORING RULES:
-- Base each score on the rubric wording above, not on personal preference.
-- Do NOT give the same score to every criterion; differentiate them.
-- Use 4 only when the essay clearly satisfies the top-level descriptor.
-- Use 3 for solid but imperfect work.
-- Use 2 when the descriptor for 2 clearly applies.
-- Use 1 only when the criterion is essentially missing or broken.
-- If a criterion is strong and another is weak, the scores MUST differ.
-
-HARD RULES (must be obeyed):
-- If paragraph_count >= 3 AND transition_count >= 3, organization MUST be 4.
-- If citation_count >= 2, evidence MUST be 4.
-- If the thesis appears in the first paragraph AND is restated or
-  reinforced in the conclusion, main_statement MUST be 4.
-
-CALIBRATION EXAMPLES:
+    calibration_block = """CALIBRATION EXAMPLES:
 
 Example A - Essay with a clear thesis, three body paragraphs, and 2+ cited
 sources:
@@ -294,7 +390,38 @@ Example C - Multi-paragraph essay with a clear thesis but no concrete evidence:
 
 Example D - Disorganized essay with no thesis and no evidence:
   main_statement: 1, organization: 1, evidence: 1, analysis: 1, grammar: 2
+""" if _is_default_rubric_shape(criteria) else ""
 
+    score_lines = "\n".join(
+        f'  "{key}": <int 1-{c["max_score"]}>,' for key, c in criteria.items()
+    )
+    feedback_lines = ",\n".join(
+        f'    "{key}": "<2-3 sentences explaining this score>"' for key in criteria
+    )
+
+    user_msg = f"""Carefully evaluate the essay below against the rubric.
+
+RUBRIC (use these exact descriptors to justify scores; each criterion has its own range):
+
+{rubric_block}
+
+OBSERVED FACTS (do NOT re-count; use these as anchors):
+- Paragraph count: {facts['paragraph_count']}
+- Word count: {facts['word_count']}
+- Sentence count: {facts['sentence_count']}
+- Explicit citations detected: {facts['citation_count']}
+- Transition words used: {facts['transition_count']}
+
+SCORING RULES:
+- Base each score on the rubric wording above, not on personal preference.
+- Do NOT give the same score to every criterion; differentiate them.
+- Use a criterion's maximum only when the essay clearly satisfies its top-level descriptor.
+- Use 1 only when the criterion is essentially missing or broken.
+- Never exceed a criterion's maximum score.
+- If a criterion is strong and another is weak, the scores MUST differ.
+
+{hard_rules_block}
+{calibration_block}
 Essay:
 \"\"\"
 {essay_text[:4000]}
@@ -303,17 +430,9 @@ Essay:
 Return ONLY this JSON object (no explanation, no markdown):
 
 {{
-  "main_statement": <int 1-4>,
-  "organization": <int 1-4>,
-  "evidence": <int 1-4>,
-  "analysis": <int 1-4>,
-  "grammar": <int 1-4>,
+{score_lines}
   "criterion_feedback": {{
-    "main_statement": "<2-3 sentences explaining this score>",
-    "organization":   "<2-3 sentences explaining this score>",
-    "evidence":       "<2-3 sentences explaining this score>",
-    "analysis":       "<2-3 sentences explaining this score>",
-    "grammar":        "<2-3 sentences explaining this score>"
+{feedback_lines}
   }},
   "grammar_issues": [
     {{
@@ -395,18 +514,16 @@ RULES:
                 raise
             parsed = json.loads(content[start:end + 1])
 
-        required = ["main_statement", "organization", "evidence", "analysis", "grammar"]
-        for key in required:
+        result = {}
+        for key, c in criteria.items():
             if key not in parsed:
                 print(f"Missing key in AI response: {key}")
                 return None
             score = int(parsed[key])
-            if score < 1 or score > 4:
-                print(f"Out-of-range score for {key}: {score}")
+            if score < 1 or score > c["max_score"]:
+                print(f"Out-of-range score for {key}: {score} (max {c['max_score']})")
                 return None
-            parsed[key] = score
-
-        result = {k: parsed[k] for k in required}
+            result[key] = score
 
         cf = parsed.get("criterion_feedback")
         result["criterion_feedback"] = cf if isinstance(cf, dict) else {}
@@ -417,6 +534,7 @@ RULES:
         recs = parsed.get("recommendations")
         result["recommendations"] = recs if isinstance(recs, list) else []
 
+        result["criteria_meta"] = rubric_meta(criteria)
         return result
 
     except json.JSONDecodeError as e:
@@ -533,23 +651,60 @@ def _heuristic_scores(essay_text, analysis):
     }
 
 
+def _rescale(score, from_max, to_max):
+    """Map a 1..from_max score onto 1..to_max."""
+    if from_max <= 1:
+        return 1
+    return max(1, min(to_max, round(1 + (score - 1) * (to_max - 1) / (from_max - 1))))
+
+
+def _heuristic_scores_for_rubric(essay_text, analysis, criteria):
+    """
+    Heuristics only know the five built-in criteria (1-4). Known criteria are
+    rescaled to the admin's range; custom criteria get the scaled mean.
+    """
+    base = _heuristic_scores(essay_text, analysis)
+    base_numeric = [base[k] for k in DEFAULT_LABELS]
+    base_mean = sum(base_numeric) / len(base_numeric)
+
+    result = {}
+    for key, c in criteria.items():
+        raw = base.get(key, base_mean)
+        result[key] = _rescale(raw, 4, c["max_score"])
+    result["criterion_feedback"] = {}
+    result["grammar_issues"] = []
+    result["recommendations"] = []
+    result["criteria_meta"] = rubric_meta(criteria)
+    return result
+
+
 def calculate_analytic_scores(essay_text, analysis, rubric=None):
-    if rubric is None:
-        rubric = ANALYTIC_RUBRIC
-    ai = ai_score_all_criteria(essay_text, rubric=rubric)
+    criteria = normalize_rubric(rubric)
+    ai = ai_score_all_criteria(essay_text, rubric=criteria)
     if ai is not None:
         print("✅ AI scoring succeeded")
         return ai
     print("⚠️ AI scoring failed, using heuristics")
-    return _heuristic_scores(essay_text, analysis)
+    return _heuristic_scores_for_rubric(essay_text, analysis, criteria)
 
 
-def calculate_holistic_score(essay_text, analysis):
-    analytic = calculate_analytic_scores(essay_text, analysis)
-    numeric = {k: v for k, v in analytic.items() if isinstance(v, (int, float))}
-    if not numeric:
+def weighted_fraction(scores, rubric=None):
+    """Weighted share of the maximum (0.0–1.0) across the rubric's criteria."""
+    criteria = normalize_rubric(rubric)
+    weighted_sum = total_weight = 0.0
+    for key, c in criteria.items():
+        v = scores.get(key)
+        if isinstance(v, (int, float)) and c["max_score"] > 1:
+            weighted_sum += c["weight"] * (v - 1) / (c["max_score"] - 1)
+            total_weight += c["weight"]
+    return weighted_sum / total_weight if total_weight else 0.0
+
+
+def calculate_holistic_score(essay_text, analysis, rubric=None):
+    analytic = calculate_analytic_scores(essay_text, analysis, rubric=rubric)
+    if not any(isinstance(v, (int, float)) for v in analytic.values()):
         return 3
-    avg = sum(numeric.values()) / len(numeric)  # 1.0 – 4.0
+    avg = 1 + 3 * weighted_fraction(analytic, rubric)  # 1.0 – 4.0 equivalent
     if avg >= 3.6:
         return 5
     elif avg >= 3.0:
@@ -603,7 +758,38 @@ def generate_specific_suggestions(essay_text, analysis, scores):
     return suggestions
 
 
-def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context=""):
+CRITERION_ICONS = {
+    "main_statement": "🧠",
+    "organization": "🧱",
+    "evidence": "📚",
+    "analysis": "🔍",
+    "grammar": "📝",
+}
+
+
+def _criterion_tips(key, essay_text, analysis):
+    if key == "main_statement":
+        return ["Strengthen this by clearly stating your position in the first paragraph "
+                "(e.g., 'This essay argues that…')."]
+    if key == "organization":
+        tips = []
+        para_count = len([p for p in essay_text.split('\n\n') if p.strip()])
+        if para_count < 3:
+            tips.append("Break your argument into at least three paragraphs: introduction, body, conclusion.")
+        if analysis['transition_count'] == 0:
+            tips.append("Use transitions (e.g., 'Furthermore', 'Therefore', 'In conclusion').")
+        return tips
+    if key == "evidence":
+        return ["Include at least one more concrete example, statistic, or reference "
+                "(e.g., 'According to a 2023 study…')."]
+    if key == "analysis":
+        return ["After each piece of evidence, add a sentence that explains what it means "
+                "and how it supports your thesis."]
+    return []
+
+
+def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_context="", rubric=None):
+    criteria = normalize_rubric(rubric)
     feedback = []
 
     if rag_context:
@@ -617,45 +803,25 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
     feedback.append(f"Average sentence length: {analysis['avg_sentence_length']:.1f} words.")
     feedback.append("")
 
-    feedback.append(f"🧠 MAIN STATEMENT / THESIS (Score: {scores['main_statement']}/4)")
-    feedback.append(f"- {ANALYTIC_RUBRIC['main_statement'][scores['main_statement']]}")
-    if scores['main_statement'] < 4:
-        feedback.append("- 💡 Strengthen this by clearly stating your position in the first paragraph "
-                        "(e.g., 'This essay argues that…').")
-    feedback.append("")
-
-    feedback.append(f"🧱 ORGANIZATION (Score: {scores['organization']}/4)")
-    feedback.append(f"- {ANALYTIC_RUBRIC['organization'][scores['organization']]}")
-    if scores['organization'] < 4:
-        para_count = len([p for p in essay_text.split('\n\n') if p.strip()])
-        if para_count < 3:
-            feedback.append("- 💡 Break your argument into at least three paragraphs: introduction, body, conclusion.")
-        if analysis['transition_count'] == 0:
-            feedback.append("- 💡 Use transitions (e.g., 'Furthermore', 'Therefore', 'In conclusion').")
-    feedback.append("")
-
-    feedback.append(f"📚 EVIDENCE (Score: {scores['evidence']}/4)")
-    feedback.append(f"- {ANALYTIC_RUBRIC['evidence'][scores['evidence']]}")
-    if scores['evidence'] < 4:
-        feedback.append("- 💡 Include at least one more concrete example, statistic, or reference "
-                        "(e.g., 'According to a 2023 study…').")
-    feedback.append("")
-
-    feedback.append(f"🔍 ANALYSIS (Score: {scores['analysis']}/4)")
-    feedback.append(f"- {ANALYTIC_RUBRIC['analysis'][scores['analysis']]}")
-    if scores['analysis'] < 4:
-        feedback.append("- 💡 After each piece of evidence, add a sentence that explains what it means "
-                        "and how it supports your thesis.")
-    feedback.append("")
-
-    feedback.append(f"📝 GRAMMAR & MECHANICS (Score: {scores['grammar']}/4)")
-    feedback.append(f"- {ANALYTIC_RUBRIC['grammar'][scores['grammar']]}")
-    grammar_errors = check_grammar_with_nlp(essay_text)
-    if grammar_errors:
-        feedback.append(f"  • Top issue detected: {grammar_errors[0]['message']}")
-        if grammar_errors[0].get('suggestion'):
-            feedback.append(f"    Suggested fix: {grammar_errors[0]['suggestion']}")
-    feedback.append("")
+    for key, c in criteria.items():
+        score = scores.get(key)
+        if not isinstance(score, (int, float)):
+            continue
+        icon = CRITERION_ICONS.get(key, "📌")
+        feedback.append(f"{icon} {c['label'].upper()} (Score: {score}/{c['max_score']})")
+        descriptor = descriptor_for(c, score)
+        if descriptor:
+            feedback.append(f"- {descriptor}")
+        if score < c["max_score"]:
+            for tip in _criterion_tips(key, essay_text, analysis):
+                feedback.append(f"- 💡 {tip}")
+        if key == "grammar":
+            grammar_errors = check_grammar_with_nlp(essay_text)
+            if grammar_errors:
+                feedback.append(f"  • Top issue detected: {grammar_errors[0]['message']}")
+                if grammar_errors[0].get('suggestion'):
+                    feedback.append(f"    Suggested fix: {grammar_errors[0]['suggestion']}")
+        feedback.append("")
 
     specific = generate_specific_suggestions(essay_text, analysis, scores)
     if specific:
@@ -664,8 +830,7 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
             feedback.append(f"{i+1}. {s['title']}: {s['suggestion']}")
         feedback.append("")
 
-    numeric_scores = {k: v for k, v in scores.items() if isinstance(v, (int, float))}
-    avg = sum(numeric_scores.values()) / len(numeric_scores) if numeric_scores else 0
+    avg = 1 + 3 * weighted_fraction(scores, criteria)  # 1.0 – 4.0 equivalent
     if avg >= 3.75:
         feedback.append("✅ Overall: This essay is at the top of the rubric across all criteria. "
                         "For further polish, consider refining transitions or adding a counter-argument.")
@@ -912,7 +1077,7 @@ def ai_correct_handwriting_text(raw_text, provider="deepseek"):
     return raw_text
 
 
-def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None):
+def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None, rubric=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     model = "llama3.2:3b"
 
@@ -922,12 +1087,9 @@ def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=
     if 'holistic_score' in scores:
         score_info = f"Holistic Score: {scores['holistic_score']}/5\nDescription: {scores.get('level_description', '')}"
     else:
-        score_info = (
-            f"Main Statement: {scores.get('main_statement', 'N/A')}/4\n"
-            f"Organization: {scores.get('organization', 'N/A')}/4\n"
-            f"Evidence: {scores.get('evidence', 'N/A')}/4\n"
-            f"Analysis: {scores.get('analysis', 'N/A')}/4\n"
-            f"Grammar: {scores.get('grammar', 'N/A')}/4"
+        score_info = "\n".join(
+            f"{c['label']}: {scores.get(key, 'N/A')}/{c['max_score']}"
+            for key, c in normalize_rubric(rubric).items()
         )
 
     facts_block = (
@@ -1033,7 +1195,7 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
             print(f"RAG error: {e}")
 
     if evaluation_type == "holistic":
-        score = calculate_holistic_score(essay_text, analysis)
+        score = calculate_holistic_score(essay_text, analysis, rubric=rubric)
         scores = {
             "holistic_score": score,
             "level_description": HOLISTIC_RUBRIC[score],
@@ -1044,11 +1206,11 @@ def evaluate_essay(essay_text, evaluation_type="analytic", use_rag=True, rubric=
     else:
         scores = calculate_analytic_scores(essay_text, analysis, rubric=rubric)
         rule_feedback = generate_rule_based_analytic_feedback(
-            essay_text, scores, analysis, rag_context
+            essay_text, scores, analysis, rag_context, rubric=rubric
         )
 
     feedback = enhance_feedback_with_ai(
-        essay_text, scores, analysis, rule_feedback, facts
+        essay_text, scores, analysis, rule_feedback, facts, rubric=rubric
     )
 
     return scores, feedback

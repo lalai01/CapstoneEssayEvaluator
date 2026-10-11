@@ -3,7 +3,7 @@ import { supabase } from './lib/supabase';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-export const apiClient = axios.create({ baseURL: API_BASE });   // ✅ now exported
+export const apiClient = axios.create({ baseURL: API_BASE });
 
 apiClient.interceptors.request.use(
   async (config) => {
@@ -32,7 +32,7 @@ export const uploadFile = async (file) => {
   formData.append('file', file);
   const response = await apiClient.post('/ocr', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120000,
+    timeout: 300000,   // 5 minutes — handwriting OCR is slow on CPU
   });
   return response.data;
 };
@@ -60,18 +60,31 @@ export const deleteSavedEssay = async (id) => {
 
 // ---------- Evaluation ----------
 export const evaluateEssay = async (text, evaluationType = 'analytic') => {
-  const response = await apiClient.post('/evaluate', { text, evaluation_type: evaluationType });
+  const response = await apiClient.post(
+    '/evaluate',
+    { text, evaluation_type: evaluationType },
+    { timeout: 180000 }  // 3 min — extended prompt with criterion_feedback
+  );
   return response.data;
 };
 
 export const evaluateEssayWithRag = async (text, evaluationType = 'analytic') => {
-  const response = await apiClient.post('/evaluate-rag', { text, evaluation_type: evaluationType });
+  const response = await apiClient.post(
+    '/evaluate-rag',
+    { text, evaluation_type: evaluationType },
+    { timeout: 180000 }
+  );
   return response.data;
 };
 
 // ---------- Rubric & Suggestions ----------
 export const getRubric = async () => {
   const response = await apiClient.get('/rubric');
+  return response.data;
+};
+
+export const getActiveRubric = async () => {
+  const response = await apiClient.get('/rubric/active');
   return response.data;
 };
 
@@ -114,6 +127,8 @@ export const testPrompt = async (aiProvider, systemPrompt, userPrompt, model = n
     system_prompt: systemPrompt,
     user_prompt: userPrompt,
     model: model,
+  }, {
+    timeout: 300000,  // 5 min — Phi-3.5 and other local models are slow
   });
   return response.data;
 };
@@ -155,11 +170,10 @@ export const deleteSurvey = async (id) => {
   return response.data;
 };
 
-// 🔥 Proper payload for survey responses
 export const submitSurveyResponse = async (surveyId, answers) => {
   const response = await apiClient.post(`/surveys/${surveyId}/respond`, {
     survey_id: surveyId,
-    answers: answers,      // e.g., { "1": "text", "2": "choice" }
+    answers: answers,
   });
   return response.data;
 };
@@ -208,8 +222,22 @@ export const toggleReaction = async (commentId, reactionType) => {
   return response.data;
 };
 
-// ---------- User's Own Survey Responses (NEW) ----------
+// ---------- User's Own Survey Responses ----------
 export const getMyResponses = async (surveyId) => {
   const response = await apiClient.get(`/surveys/${surveyId}/my-responses`);
+  return response.data;
+};
+
+// ---------- OCR Labeling ----------
+export const listPendingOcr = async (limit = 50) => {
+  const response = await apiClient.get(`/ocr/pending?limit=${limit}`);
+  return response.data;
+};
+
+export const submitOcrCorrection = async (sampleId, correctedText) => {
+  const response = await apiClient.post('/ocr/correct', {
+    sample_id: sampleId,
+    corrected_text: correctedText,
+  });
   return response.data;
 };

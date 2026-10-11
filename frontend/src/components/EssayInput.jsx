@@ -13,11 +13,24 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
   const [ocrInfo, setOcrInfo] = useState(null);
   const [useRag, setUseRag] = useState(true);
 
-  const handleExtracted = (data) => {
-    setExtractedText(data.text);
-    setOcrInfo({ confidence: data.confidence, method: data.method });
-    toast.success(`OCR complete: ${data.confidence.toFixed(1)}% confidence`);
-  };
+    const handleExtracted = (data) => {
+      const text = (data && typeof data.text === 'string') ? data.text : '';
+      const confidence = typeof data?.confidence === 'number' ? data.confidence : 0;
+      const method = data?.method || 'unknown';
+
+      if (!text.trim()) {
+        toast.error('OCR returned no text. Try a clearer image or PDF.');
+        return;
+      }
+
+      setExtractedText(text);
+      setOcrInfo({
+        confidence,
+        method,
+        lowConfidence: !!data.low_confidence,
+      });
+      toast.success(`OCR complete: ${confidence.toFixed(1)}% confidence`);
+    };
 
   const handleEvaluate = async () => {
     const essay = text.trim() || extractedText.trim();
@@ -135,7 +148,7 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
               </button>
             </div>
             <p className="text-xs text-gray-600 mb-2">Confidence: {ocrInfo?.confidence?.toFixed(1)}% | Method: {ocrInfo?.method}</p>
-            <div className="max-h-40 overflow-y-auto text-sm bg-white p-3 rounded border border-blue-100">{extractedText}</div>
+            <div className="max-h-60 overflow-y-auto text-sm bg-white p-3 rounded border border-blue-100 whitespace-pre-wrap">{extractedText}</div>
           </div>
         )}
 

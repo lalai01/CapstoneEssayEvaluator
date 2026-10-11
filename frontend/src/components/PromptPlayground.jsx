@@ -1,74 +1,687 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   testPrompt,
   saveEssay,
   listSavedEssays,
   deleteSavedEssay,
   listKnowledge,
+  getActiveRubric,
+  evaluateEssay,
 } from '../api';
 import { useAuth } from '../context/AuthContext';
+import LoadingIndicator from './LoadingIndicator';
 import toast from 'react-hot-toast';
+import {
+  DEFAULT_CRITERIA,
+  isNum,
+  fractionOf,
+  averageFraction,
+  colorForFraction,
+  errorMessage,
+} from '../lib/scoring';
+import {
+  buildCriteria,
+  consensusScores,
+  computeStats,
+  loadHistory,
+  saveHistory,
+  summarizeHistory,
+  BIAS_THRESHOLD,
+} from '../lib/aiComparison';
 
-function EvaluationDisplay({ result }) {
+// -----------------------------------------------------------------------------
+// Shared helpers
+// -----------------------------------------------------------------------------
+const BAR_COLORS = ['bg-blue-500', 'bg-emerald-500', 'bg-purple-500', 'bg-amber-500', 'bg-pink-500', 'bg-cyan-500', 'bg-orange-500'];
+const TEXT_COLORS = ['text-blue-700', 'text-emerald-700', 'text-purple-700', 'text-amber-700', 'text-pink-700', 'text-cyan-700', 'text-orange-700'];
+
+// The three comparison slots. Each slot has a fixed color so a model is
+// recognizable across the table, statistics and result panels.
+const SLOTS = [
+  { id: 'A', defaultProvider: 'deepseek', badge: 'bg-blue-100 text-blue-800 border-blue-200',       dot: 'bg-blue-500' },
+  { id: 'B', defaultProvider: 'gemma',    badge: 'bg-emerald-100 text-emerald-800 border-emerald-200', dot: 'bg-emerald-500' },
+  { id: 'C', defaultProvider: 'llamacpp', badge: 'bg-purple-100 text-purple-800 border-purple-200', dot: 'bg-purple-500' },
+];
+const SLOT_STYLE = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
+
+const PROVIDER_NAMES = {
+  deepseek: 'DeepSeek',
+  gemma: 'Gemma (Ollama)',
+  ollama: 'Ollama',
+  llamacpp: 'Llama.cpp (Phi-3.5)',
+};
+
+function providerDisplayName(provider, model) {
+  const base = PROVIDER_NAMES[provider] || provider;
+  return model ? `${base} · ${model}` : base;
+}
+
+function fmtPct(v, digits = 0) {
+  return isNum(v) ? `${v.toFixed(digits)}%` : '—';
+}
+
+function fmtSigned(v, digits = 1, suffix = '') {
+  if (!isNum(v)) return '—';
+  const s = v.toFixed(digits);
+  return `${v > 0 ? '+' : ''}${s}${suffix}`;
+}
+
+function fmtScore(v) {
+  if (!isNum(v)) return '—';
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
+
+// Build prompts that ask for the active rubric's criteria and ranges.
+function buildPromptsFromRubric(criteria) {
+  const scoreSchema = criteria
+    .map((c) => `${c.key} (integer 1–${c.max_score}, "${c.label}")`)
+    .join(', ');
+  const keys = criteria.map((c) => c.key).join(', ');
+  const rubricLines = criteria
+    .map((c) => {
+      const levels = Object.entries(c.levels || {})
+        .sort((a, b) => Number(b[0]) - Number(a[0]))
+        .map(([lvl, text]) => `    ${lvl}: ${text}`)
+        .join('\n');
+      return `- ${c.key} — ${c.label} (score 1–${c.max_score})${levels ? `\n${levels}` : ''}`;
+    })
+    .join('\n');
+
+  const system =
+    'You are a strict JSON API. Respond with a SINGLE valid JSON object and NOTHING else. ' +
+    'Do not write any text before or after the JSON. Do not wrap it in code fences. ' +
+    'The response must be parseable by JSON.parse() with no surrounding text. ' +
+    `Schema (exact keys): ${scoreSchema}, ` +
+    'feedback (a 3–5 sentence overall summary string), ' +
+    `criterion_feedback (an object with exactly these keys: ${keys} — each a 2–3 sentence string explaining that specific score), ` +
+    'grammar_issues (an array of objects with "original", "correction", "explanation"), ' +
+    'recommendations (an array of objects with "title", "issue", "suggestion"). ' +
+    'Only include REAL grammar errors where original !== correction; use [] if there are none. ' +
+    'Provide 3–5 recommendations that reference specific parts of the essay. ' +
+    "Each criterion has its own range; never exceed a criterion's maximum. " +
+    'Do not give all criteria the same score; differentiate based on evidence.';
+
+  const scoreLines = criteria.map((c) => `  "${c.key}": <int 1-${c.max_score}>,`).join('\n');
+  const cfLines = criteria.map((c) => `    "${c.key}": "<2-3 sentences explaining this score>"`).join(',\n');
+
+  const user = `Evaluate this essay against the rubric.
+
+RUBRIC:
+${rubricLines}
+
+"""
+{essay}
+"""
+
+Return ONLY a JSON object with this exact shape:
+
+{
+${scoreLines}
+  "feedback": "<3-5 sentence overall summary>",
+  "criterion_feedback": {
+${cfLines}
+  },
+  "grammar_issues": [
+    { "original": "<text quoted from the essay>", "correction": "<fixed>", "explanation": "<one sentence>" }
+  ],
+  "recommendations": [
+    { "title": "<short label>", "issue": "<what is weak>", "suggestion": "<concrete fix referencing the essay>" }
+  ]
+}
+
+Output ONLY the JSON. No text before it, no text after it, no code fences.`;
+
+  return { system, user };
+}
+
+function isDefaultRubric(criteria) {
+  return (
+    criteria.length === DEFAULT_CRITERIA.length &&
+    DEFAULT_CRITERIA.every((d) => criteria.some((c) => c.key === d.key && c.max_score === d.max_score))
+  );
+}
+
+function tryParse(result) {
+  if (!result || result.model === 'error') return null;
   try {
-    let text = result.text || '';
-    text = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-    const parsed = JSON.parse(text);
-    if (parsed.grammar_score !== undefined || parsed.coherence_score !== undefined || parsed.content_score !== undefined) {
-      const avgScore = Math.round((parsed.grammar_score + parsed.coherence_score + parsed.content_score) / 3);
-      const getScoreColor = (score) => {
-        if (score >= 85) return 'text-emerald-600 bg-emerald-50';
-        if (score >= 70) return 'text-blue-600 bg-blue-50';
-        return 'text-amber-600 bg-amber-50';
-      };
-      const ScoreBar = ({ score, label, colorClass }) => (
-        <div className="mb-2">
-          <div className="flex justify-between text-xs mb-1">
-            <span className="font-medium text-gray-700">{label}</span>
-            <span className={`font-bold ${colorClass.split(' ')[0]}`}>{score}</span>
-          </div>
-          <div className="w-full bg-gray-200 rounded-full h-1.5">
-            <div
-              className={`h-1.5 rounded-full ${colorClass.split(' ')[0].replace('text', 'bg')}`}
-              style={{ width: `${score}%` }}
-            />
-          </div>
-        </div>
-      );
-      return (
-        <div className="space-y-4">
-          <div className="text-center p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg">
-            <div className="text-sm text-gray-700">Overall Score</div>
-            <div className={`text-3xl font-bold ${getScoreColor(avgScore).split(' ')[0]}`}>
-              {avgScore}/100
-            </div>
-          </div>
-          <div className="space-y-1">
-            <ScoreBar score={parsed.grammar_score} label="Grammar" colorClass={getScoreColor(parsed.grammar_score)} />
-            <ScoreBar score={parsed.coherence_score} label="Coherence" colorClass={getScoreColor(parsed.coherence_score)} />
-            <ScoreBar score={parsed.content_score} label="Content" colorClass={getScoreColor(parsed.content_score)} />
-          </div>
-          {parsed.feedback && (
-            <div className="mt-4">
-              <h4 className="font-semibold text-gray-800 mb-2 text-sm uppercase tracking-wide">
-                📝 Detailed Feedback
-              </h4>
-              <div className="bg-white p-4 rounded-lg border border-gray-200 text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">
-                {parsed.feedback}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    }
-    return <pre className="whitespace-pre-wrap text-sm font-mono text-gray-800">{text}</pre>;
-  } catch (e) {
-    return <pre className="whitespace-pre-wrap text-sm font-mono text-gray-800">{result.text}</pre>;
+    const parsed = parseResultPayload(result);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
 // -----------------------------------------------------------------------------
-// Model Information Cards (Collapsible)
+// Robust JSON parser
+// -----------------------------------------------------------------------------
+function parseResultPayload(res) {
+  let text = (res && res.text) || '';
+  text = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const start = text.indexOf('{');
+    if (start === -1) throw e;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let end = -1;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end === -1) throw e;
+    return JSON.parse(text.slice(start, end + 1));
+  }
+}
+
+// -----------------------------------------------------------------------------
+// EvaluationDisplay
+// -----------------------------------------------------------------------------
+function EvaluationDisplay({ result, criteria }) {
+    const parsed = tryParse(result);
+    const shown = parsed ? criteria.filter((c) => parsed[c.key] !== undefined) : [];
+
+    if (shown.length === 0) {
+      if (!parsed) console.error('[Playground] JSON parse failed, raw:', result?.text);
+      return (
+        <pre className="whitespace-pre-wrap text-sm font-mono text-gray-800">
+          {result?.text}
+        </pre>
+      );
+    }
+
+    const avg = averageFraction(parsed, shown);
+    const criterionFeedback = parsed.criterion_feedback || {};
+
+    const filteredIssues = Array.isArray(parsed.grammar_issues)
+      ? parsed.grammar_issues.filter(
+          (i) =>
+            i &&
+            typeof i.original === 'string' &&
+            typeof i.correction === 'string' &&
+            i.original.trim().toLowerCase() !==
+              i.correction.trim().toLowerCase()
+        )
+      : [];
+
+    const recommendations = Array.isArray(parsed.recommendations)
+      ? parsed.recommendations.filter(
+          (r) =>
+            r &&
+            typeof r.suggestion === 'string' &&
+            r.suggestion.trim().length > 0
+        )
+      : [];
+
+    return (
+      <div className="space-y-4">
+        {/* Overall score */}
+        <div className="text-center p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg">
+          <div className="text-sm text-gray-700">Overall Average</div>
+          <div className={`text-3xl font-bold ${colorForFraction(avg)}`}>
+            {avg !== null ? `${Math.round(avg * 100)}%` : '—'}
+          </div>
+        </div>
+
+        {/* Per-criterion bars + per-criterion feedback */}
+        <div className="space-y-4">
+          {shown.map(({ key, label, max_score }, idx) => {
+            const value = parsed[key];
+            const percent = isNum(value) ? Math.min(100, (value / max_score) * 100) : 0;
+            const note = criterionFeedback[key];
+            return (
+              <div key={key}>
+                <div className="flex justify-between text-sm mb-1">
+                  <span className={`font-medium ${TEXT_COLORS[idx % TEXT_COLORS.length]}`}>{label}</span>
+                  <span className={`font-bold ${colorForFraction(fractionOf(value, max_score))}`}>
+                    {isNum(value) ? `${value}/${max_score}` : '—'}
+                  </span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div
+                    className={`${BAR_COLORS[idx % BAR_COLORS.length]} h-2 rounded-full transition-all`}
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+                {note && (
+                  <p className="text-xs text-gray-700 mt-2 leading-relaxed pl-1">
+                    {note}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Overall feedback paragraph */}
+        {parsed.feedback && (
+          <div className="mt-4">
+            <h4 className="font-semibold text-gray-800 mb-2 text-sm uppercase tracking-wide">
+              📝 Overall Feedback
+            </h4>
+            <div className="bg-white p-4 rounded-lg border border-gray-200 text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">
+              {parsed.feedback}
+            </div>
+          </div>
+        )}
+
+        {/* Grammar issues */}
+        {filteredIssues.length > 0 && (
+          <div className="mt-4">
+            <h4 className="font-semibold text-gray-800 mb-2 text-sm uppercase tracking-wide">
+              ✏️ Grammar & Mechanics — Specific Fixes ({filteredIssues.length})
+            </h4>
+            <div className="space-y-2">
+              {filteredIssues.map((issue, idx) => (
+                <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 text-sm">
+                  <div className="flex items-start gap-2 mb-1">
+                    <span className="text-red-500 font-bold flex-shrink-0">✗</span>
+                    <span className="text-gray-700 line-through">{issue.original}</span>
+                  </div>
+                  <div className="flex items-start gap-2 mb-1">
+                    <span className="text-emerald-600 font-bold flex-shrink-0">✓</span>
+                    <span className="text-gray-900 font-medium">{issue.correction}</span>
+                  </div>
+                  {issue.explanation && (
+                    <p className="text-xs text-gray-600 mt-1 pl-5 italic">
+                      {issue.explanation}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recommendations */}
+        {recommendations.length > 0 && (
+          <div className="mt-4">
+            <h4 className="font-semibold text-gray-800 mb-2 text-sm uppercase tracking-wide">
+              💡 Recommendations ({recommendations.length})
+            </h4>
+            <div className="space-y-2">
+              {recommendations.map((rec, idx) => (
+                <div
+                  key={idx}
+                  className="bg-amber-50 p-3 rounded-lg border border-amber-200 text-sm"
+                >
+                  <div className="font-semibold text-amber-900 mb-1">
+                    {idx + 1}. {rec.title || 'Improvement'}
+                  </div>
+                  {rec.issue && (
+                    <div className="text-gray-700 mb-1">
+                      <span className="font-medium text-amber-800">Issue:</span>{' '}
+                      {rec.issue}
+                    </div>
+                  )}
+                  {rec.suggestion && (
+                    <div className="text-gray-800">
+                      <span className="font-medium text-amber-800">Try:</span>{' '}
+                      {rec.suggestion}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+}
+
+// -----------------------------------------------------------------------------
+// 3-AI scoring difference table
+// -----------------------------------------------------------------------------
+function SlotBadge({ rater, short = false }) {
+  const style = SLOT_STYLE[rater.id];
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium whitespace-nowrap ${style.badge}`}>
+      <span className={`w-2 h-2 rounded-full ${style.dot}`} />
+      {short ? rater.id : `${rater.id} · ${rater.name}`}
+    </span>
+  );
+}
+
+function diffClass(d, max) {
+  if (!isNum(d) || d === 0) return 'text-gray-500';
+  const big = Math.abs(d) / Math.max(1, max - 1) > 1 / 3;
+  if (d > 0) return big ? 'text-emerald-700 font-bold' : 'text-emerald-600';
+  return big ? 'text-red-600 font-bold' : 'text-red-500';
+}
+
+function ComparisonTable({ raters, stats, reference, referenceLabel, showReference }) {
+  const pairs = stats.pairs;
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+      <h4 className="font-semibold text-gray-800 mb-1">📊 Scoring Difference Table</h4>
+      <p className="text-xs text-gray-500 mb-3">
+        Pairwise columns show row model minus column model. Bold = more than one rubric level apart.
+        Highlighted rows are criteria where the models disagree most.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-gray-600 border-b">
+              <th className="text-left font-medium py-2 pr-2">Criterion</th>
+              {raters.map((r) => (
+                <th key={r.id} className="font-medium px-2 text-center"><SlotBadge rater={r} short /></th>
+              ))}
+              <th className="font-medium px-2 text-center">Consensus</th>
+              <th className="font-medium px-2 text-center">Spread</th>
+              {pairs.map((p) => (
+                <th key={`${p.a.id}${p.b.id}`} className="font-medium px-2 text-center whitespace-nowrap">
+                  {p.a.id}−{p.b.id}
+                </th>
+              ))}
+              {showReference && <th className="font-medium px-2 text-center whitespace-nowrap">{referenceLabel}</th>}
+              <th className="font-medium px-2 text-center whitespace-nowrap">Closest</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.perCriterion.map((c) => {
+              const best = stats.closestPerCriterion[c.key];
+              const bestRater = best && raters.find((r) => r.id === best.id);
+              return (
+                <tr
+                  key={c.key}
+                  className={`border-b border-gray-100 ${c.highDisagreement ? 'bg-amber-50' : ''}`}
+                >
+                  <td className="py-2 pr-2 text-gray-800">
+                    {c.label}
+                    <span className="text-xs text-gray-400 ml-1">/{c.max_score}</span>
+                    {c.highDisagreement && <span className="ml-1 text-xs text-amber-700" title="Models disagree by more than one level">⚠</span>}
+                  </td>
+                  {raters.map((r) => (
+                    <td key={r.id} className="text-center px-2 font-medium text-gray-800">
+                      {fmtScore(r.scores?.[c.key])}
+                    </td>
+                  ))}
+                  <td className="text-center px-2 text-gray-700">{fmtScore(stats.consensus[c.key])}</td>
+                  <td className="text-center px-2 text-gray-700">{c.range === null ? '—' : c.range}</td>
+                  {pairs.map((p) => {
+                    const a = p.a.scores?.[c.key];
+                    const b = p.b.scores?.[c.key];
+                    const d = isNum(a) && isNum(b) ? a - b : null;
+                    return (
+                      <td key={`${p.a.id}${p.b.id}`} className={`text-center px-2 ${diffClass(d, c.max_score)}`}>
+                        {d === null ? '—' : fmtSigned(d, 0)}
+                      </td>
+                    );
+                  })}
+                  {showReference && (
+                    <td className="text-center px-2 text-gray-700">{fmtScore(reference?.[c.key])}</td>
+                  )}
+                  <td className="text-center px-2">
+                    {best?.tie ? <span className="text-xs text-gray-500">tie</span> : bestRater ? <SlotBadge rater={bestRater} short /> : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+            <tr className="font-semibold text-gray-800">
+              <td className="py-2 pr-2">Weighted overall</td>
+              {stats.perRater.map((r) => (
+                <td key={r.id} className="text-center px-2">{fmtPct(r.weighted === null ? null : r.weighted * 100)}</td>
+              ))}
+              <td colSpan={2 + pairs.length + (showReference ? 1 : 0) + 1} />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Statistics: which AI the scoring belongs closest to
+// -----------------------------------------------------------------------------
+function StatisticsPanel({
+  stats, raters, criteria, referenceMode, setReferenceMode, referenceLabel,
+  teacherRef, setTeacherRef, systemRef, onRunSystem, systemLoading, canRunSystem,
+  onLogRun, logged, history, onClearHistory,
+}) {
+  const { closest, tie } = stats;
+  const summary = summarizeHistory(history);
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="font-semibold text-gray-800">📈 Agreement Statistics</h4>
+          <p className="text-xs text-gray-500">
+            Distances are on a 0–100 scale per criterion, so criteria with different ranges are comparable.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1 bg-gray-100 rounded-lg p-1 text-sm" role="tablist" aria-label="Compare against">
+          {[
+            { id: 'consensus', label: 'Consensus' },
+            { id: 'system', label: 'System evaluator' },
+            { id: 'teacher', label: 'Teacher scores' },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              role="tab"
+              aria-selected={referenceMode === opt.id}
+              onClick={() => setReferenceMode(opt.id)}
+              className={`px-3 py-1 rounded-md transition ${
+                referenceMode === opt.id ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {referenceMode === 'consensus' && (
+        <p className="text-xs text-gray-600 bg-gray-50 rounded-lg p-2">
+          Reference = the average of the three models on each criterion. The closest model is the most
+          “central” rater; an outlier sits far from the other two.
+        </p>
+      )}
+
+      {referenceMode === 'system' && (
+        <div className="text-xs text-gray-600 bg-gray-50 rounded-lg p-2 flex flex-wrap items-center gap-2">
+          <span>Reference = this app's own evaluator using the active rubric.</span>
+          {systemRef ? (
+            <span className="text-emerald-700">✓ Scored</span>
+          ) : null}
+          <button
+            onClick={onRunSystem}
+            disabled={systemLoading || !canRunSystem}
+            className="ml-auto bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {systemLoading ? 'Scoring…' : systemRef ? 'Re-score' : 'Score with system evaluator'}
+          </button>
+          {!canRunSystem && <span className="w-full text-amber-700">Log in to use the system evaluator.</span>}
+        </div>
+      )}
+
+      {referenceMode === 'teacher' && (
+        <div className="bg-gray-50 rounded-lg p-3">
+          <p className="text-xs text-gray-600 mb-2">
+            Enter your own scores to see which AI grades most like you.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {criteria.map((c) => (
+              <label key={c.key} className="text-xs text-gray-700">
+                {c.label} <span className="text-gray-400">(1–{c.max_score})</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={c.max_score}
+                  value={teacherRef[c.key] ?? ''}
+                  onChange={(e) => setTeacherRef((prev) => ({
+                    ...prev,
+                    [c.key]: e.target.value === '' ? undefined : Math.max(1, Math.min(c.max_score, Number(e.target.value))),
+                  }))}
+                  className="mt-1 w-full border rounded-md p-1.5 text-sm text-center bg-white"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Headline */}
+      {closest ? (
+        <div className="rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-purple-50 p-4">
+          <div className="text-xs uppercase tracking-wide text-indigo-700 mb-1">Closest to {referenceLabel}</div>
+          <div className="flex flex-wrap items-center gap-3">
+            <SlotBadge rater={closest} />
+            <span className="text-2xl font-bold text-gray-900">{fmtPct(closest.similarity, 1)}</span>
+            <span className="text-sm text-gray-600">similar · avg distance {closest.mae.toFixed(1)} pts</span>
+            {tie && <span className="text-xs text-amber-700">(near-tie with the runner-up)</span>}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500">
+          {referenceMode === 'consensus' ? 'Run at least one model to see statistics.' : 'Provide reference scores to see which AI is closest.'}
+        </p>
+      )}
+
+      {/* Per-model cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {stats.perRater.map((r) => (
+          <div key={r.id} className={`rounded-xl border p-3 ${closest?.id === r.id ? 'border-indigo-300 ring-1 ring-indigo-200' : 'border-gray-200'}`}>
+            <div className="flex items-center justify-between mb-2 gap-2">
+              <SlotBadge rater={r} />
+              <span className={`text-xs px-2 py-0.5 rounded-full ${r.tendency.className}`}>{r.tendency.label}</span>
+            </div>
+            <dl className="grid grid-cols-2 gap-y-1 text-sm">
+              <dt className="text-gray-500">Similarity</dt>
+              <dd className="text-right font-semibold">{fmtPct(r.similarity, 1)}</dd>
+              <dt className="text-gray-500">Avg distance</dt>
+              <dd className="text-right">{isNum(r.mae) ? `${r.mae.toFixed(1)} pts` : '—'}</dd>
+              <dt className="text-gray-500">Bias</dt>
+              <dd className="text-right">{fmtSigned(r.bias, 1, ' pts')}</dd>
+              <dt className="text-gray-500">Weighted score</dt>
+              <dd className="text-right">{fmtPct(isNum(r.weighted) ? r.weighted * 100 : null)}</dd>
+              <dt className="text-gray-500">Criteria closest</dt>
+              <dd className="text-right">{stats.criteriaWon[r.id] || 0}/{criteria.length}</dd>
+              <dt className="text-gray-500" title="Standard deviation of this model's own scores across criteria">Differentiation</dt>
+              <dd className="text-right">{r.differentiation.toFixed(1)}</dd>
+            </dl>
+          </div>
+        ))}
+        {raters.filter((r) => !r.scores).map((r) => (
+          <div key={r.id} className="rounded-xl border border-dashed border-gray-300 p-3 text-sm text-gray-500 flex items-center gap-2">
+            <SlotBadge rater={r} /> no parsable scores
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-gray-500 -mt-2">
+        Bias &gt; +{BIAS_THRESHOLD} pts = Lenient, &lt; −{BIAS_THRESHOLD} pts = Strict, otherwise Balanced.
+        Low differentiation means a model gives nearly the same score to every criterion.
+      </p>
+
+      {/* Pairwise agreement */}
+      {stats.pairs.length > 0 && (
+        <div>
+          <h5 className="text-sm font-semibold text-gray-800 mb-2">Pairwise agreement</h5>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-600 border-b">
+                  <th className="text-left font-medium py-1.5">Pair</th>
+                  <th className="font-medium text-center">Exact match</th>
+                  <th className="font-medium text-center">Within ±1</th>
+                  <th className="font-medium text-center">Avg |diff|</th>
+                  <th className="font-medium text-center" title="Pearson correlation of normalized scores; needs 3+ criteria and variation">Correlation r</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.pairs.map((p) => (
+                  <tr key={`${p.a.id}${p.b.id}`} className="border-b border-gray-100">
+                    <td className="py-1.5"><SlotBadge rater={p.a} short /> vs <SlotBadge rater={p.b} short /></td>
+                    <td className="text-center">{p.n ? `${p.exact}/${p.n} (${Math.round((p.exact / p.n) * 100)}%)` : '—'}</td>
+                    <td className="text-center">{p.n ? `${p.adjacent}/${p.n} (${Math.round((p.adjacent / p.n) * 100)}%)` : '—'}</td>
+                    <td className="text-center">{isNum(p.mae) ? `${p.mae.toFixed(2)} pts` : '—'}</td>
+                    <td className="text-center">{isNum(p.r) ? p.r.toFixed(2) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            All models agree exactly on {stats.allAgreeCount}/{criteria.length} criteria.
+            {stats.perCriterion.some((c) => c.highDisagreement) && (
+              <> Biggest disagreements: {stats.perCriterion.filter((c) => c.highDisagreement).map((c) => c.label).join(', ')}.</>
+            )}
+          </p>
+        </div>
+      )}
+
+      {/* Session history */}
+      <div className="border-t pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h5 className="text-sm font-semibold text-gray-800">Across saved runs (this browser)</h5>
+          <div className="flex gap-2">
+            <button
+              onClick={onLogRun}
+              disabled={!closest || logged}
+              className="text-sm bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {logged ? '✓ Run saved' : '📌 Save this run'}
+            </button>
+            {history.length > 0 && (
+              <button onClick={onClearHistory} className="text-sm text-gray-600 hover:text-red-600 px-2">
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+        {summary.length === 0 ? (
+          <p className="text-xs text-gray-500">
+            Save runs to build up which model your reference (consensus, system or teacher) most often matches.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-600 border-b">
+                  <th className="text-left font-medium py-1.5">Model</th>
+                  <th className="font-medium text-center">Runs</th>
+                  <th className="font-medium text-center">Closest</th>
+                  <th className="font-medium text-center">Avg similarity</th>
+                  <th className="font-medium text-center">Avg bias</th>
+                  <th className="font-medium text-center">Tendency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.map((s, i) => (
+                  <tr key={s.name} className="border-b border-gray-100">
+                    <td className="py-1.5 text-gray-800">{i === 0 && s.closest > 0 ? '🏆 ' : ''}{s.name}</td>
+                    <td className="text-center">{s.runs}</td>
+                    <td className="text-center">{s.closest} ({Math.round(s.closestRate * 100)}%)</td>
+                    <td className="text-center">{fmtPct(s.avgSimilarity, 1)}</td>
+                    <td className="text-center">{fmtSigned(s.avgBias, 1, ' pts')}</td>
+                    <td className="text-center">
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${s.tendency.className}`}>{s.tendency.label}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Model Information Cards
 // -----------------------------------------------------------------------------
 const MODEL_INFO = [
   {
@@ -115,55 +728,118 @@ const MODEL_INFO = [
 export default function PromptPlayground() {
   const { user } = useAuth();
 
-  // UI state
   const [showModelInfo, setShowModelInfo] = useState(true);
 
-  // Essay state
   const [essayText, setEssayText] = useState('');
   const [savedEssays, setSavedEssays] = useState([]);
   const [selectedEssayId, setSelectedEssayId] = useState('');
   const [selectedEssaySource, setSelectedEssaySource] = useState('');
 
-  // Model state
-  const [primaryProvider, setPrimaryProvider] = useState('deepseek');
-  const [primaryModel, setPrimaryModel] = useState('');
+  const [slots, setSlots] = useState(
+    SLOTS.map((s) => ({ id: s.id, provider: s.defaultProvider, model: '' }))
+  );
+  // { [slotId]: { status: 'loading' | 'done' | 'error', result, error, ms, provider, model } }
+  const [runs, setRuns] = useState({});
+  const [runId, setRunId] = useState(0);
+
+  const [rubricCriteria, setRubricCriteria] = useState(DEFAULT_CRITERIA);
+
+  const [referenceMode, setReferenceMode] = useState('consensus');
+  const [teacherRef, setTeacherRef] = useState({});
+  const [systemRef, setSystemRef] = useState(null);
+  const [systemLoading, setSystemLoading] = useState(false);
+  const [history, setHistory] = useState(() => loadHistory());
+  const [loggedRunId, setLoggedRunId] = useState(null);
+
   const [systemPrompt, setSystemPrompt] = useState(
-    'You are an expert essay evaluator with years of experience grading academic writing. Your task is to analyze the provided essay and return a JSON object with exactly the following keys: grammar_score (0-100), coherence_score (0-100), content_score (0-100), and feedback (detailed paragraph). Be objective and consistent. Do not include any text outside the JSON object.'
+    'You are a strict JSON API. Respond with a SINGLE valid JSON object and NOTHING else. ' +
+    'Do not write any text before or after the JSON. Do not wrap it in code fences. Do not add notes, comments, or explanations outside the JSON. ' +
+    'The response must be parseable by JSON.parse() with no surrounding text. ' +
+    'Schema (exact keys): ' +
+    'main_statement, organization, evidence, analysis, grammar (each an integer 1, 2, 3, or 4), ' +
+    'feedback (a 3–5 sentence overall summary string), ' +
+    'criterion_feedback (an object with exactly these keys: main_statement, organization, evidence, analysis, grammar — each a 2–3 sentence string explaining that specific score), ' +
+    'grammar_issues (an array of objects), ' +
+    'recommendations (an array of objects). ' +
+    'Each grammar_issues entry must have exactly these keys: "original" (text quoted from the essay), "correction" (the fixed version), "explanation" (one short sentence). ' +
+    'Each recommendations entry must have exactly these keys: "title" (short label), "issue" (what is weak in the essay), "suggestion" (a concrete, actionable fix). ' +
+    'RULES for grammar_issues: ' +
+    '(a) Only include REAL errors where original !== correction. ' +
+    '(b) Never include an entry where original equals correction. ' +
+    '(c) Never write "no change needed". ' +
+    '(d) If there are no grammar errors, grammar_issues MUST be []. ' +
+    'RULES for recommendations: ' +
+    '(a) Provide 3–5 recommendations tailored to THIS essay. ' +
+    '(b) Each suggestion must reference a specific sentence, paragraph, or claim. ' +
+    '(c) Never repeat the same recommendation twice. ' +
+    '(d) Never give generic advice like "improve your writing". ' +
+    'Use 1 = Beginning, 2 = Developing, 3 = Proficient, 4 = Exemplary. ' +
+    'Do not give all criteria the same score; differentiate based on evidence.'
   );
+
   const [userPromptTemplate, setUserPromptTemplate] = useState(
-    `📄 **Essay to Evaluate**
+    `Evaluate this essay:
+
+"""
 {essay}
+"""
 
----
+Return ONLY a JSON object with this exact shape:
 
-🎯 **Your Task**
-You are an expert essay evaluator. Analyze the essay above and provide a detailed evaluation.
+{
+  "main_statement": <int 1-4>,
+  "organization":   <int 1-4>,
+  "evidence":       <int 1-4>,
+  "analysis":       <int 1-4>,
+  "grammar":        <int 1-4>,
+  "feedback":       "<3-5 sentence overall summary>",
+  "criterion_feedback": {
+    "main_statement": "<2-3 sentences explaining this score>",
+    "organization":   "<2-3 sentences explaining this score>",
+    "evidence":       "<2-3 sentences explaining this score>",
+    "analysis":       "<2-3 sentences explaining this score>",
+    "grammar":        "<2-3 sentences explaining this score>"
+  },
+  "grammar_issues": [
+    {
+      "original":    "<text quoted from the essay with an actual error>",
+      "correction":  "<corrected version>",
+      "explanation": "<one-sentence reason>"
+    }
+  ],
+  "recommendations": [
+    {
+      "title":      "<short label, e.g. 'Strengthen evidence'>",
+      "issue":      "<what is weak in the essay>",
+      "suggestion": "<concrete, actionable fix — quote or point to a specific part of the essay>"
+    }
+  ]
+}
 
-📊 **Required Output Format**
-Return a valid JSON object with exactly these keys:
+CRITICAL RULES:
+- Output ONLY the JSON. No text before it, no text after it, no code fences.
+- Every grammar_issues entry MUST have original ≠ correction.
+- Never include an entry where original equals correction.
+- Never write "no change needed" or "correct as is".
+- If there are no grammar errors, use "grammar_issues": [].
+- Provide 3–5 recommendations. Each must reference a specific part of the essay.
+- criterion_feedback must give a SPECIFIC reason for each score, referencing the essay.
 
-- \`grammar_score\` : integer (0–100) – Grammatical accuracy, sentence structure, punctuation.
-- \`coherence_score\` : integer (0–100) – Logical flow, transitions, organization.
-- \`content_score\` : integer (0–100) – Depth of analysis, evidence, argument strength.
-- \`feedback\` : string – A constructive paragraph with strengths and actionable improvements.
+Example of a CORRECT response:
 
-⚠️ Do not include any text outside the JSON object.`
+{"main_statement": 3, "organization": 4, "evidence": 2, "analysis": 3, "grammar": 3, "feedback": "Your thesis is clear but could be sharper. Organization flows well. Evidence is thin in the second paragraph. Grammar has minor subject-verb agreement issues.", "criterion_feedback": {"main_statement": "The thesis previews both sides but does not take a position, which weakens the argument's focus. Consider stating a clear stance in the introduction.", "organization": "Paragraphing is clear and the essay follows a logical intro-body-conclusion structure. Transitions between paragraphs are smooth.", "evidence": "Most claims are asserted rather than supported. 'Friendship matters' and 'many videos teach things' need concrete examples, statistics, or studies.", "analysis": "The essay lists pros and cons but does not explain why or how these effects occur. Deeper reasoning about causes or implications is missing.", "grammar": "Only minor stylistic weaknesses — no real grammatical errors. Sentences are clear and readable."}, "grammar_issues": [], "recommendations": [{"title": "Strengthen evidence", "issue": "Paragraph 2 makes general claims about accessibility without any concrete data.", "suggestion": "Add a specific statistic or study — e.g., cite a UNESCO report on digital learning access — to ground the claim."}, {"title": "Tighten the conclusion", "issue": "The conclusion restates the intro instead of synthesising the argument.", "suggestion": "End with a forward-looking statement about how schools should adopt technology — connect back to the thesis."}, {"title": "Clarify a key term", "issue": "The phrase 'responsible use' is used twice without definition.", "suggestion": "Define what responsible use means in this context — e.g., verifying sources, limiting screen time, protecting privacy."}]}
+
+Now output the JSON for the essay above. Nothing else.`
   );
 
-  // Results
-  const [primaryResult, setPrimaryResult] = useState(null);
-  const [secondaryResult, setSecondaryResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [loadingSecondary, setLoadingSecondary] = useState(false);
+  useEffect(() => {
+    getActiveRubric()
+      .then((data) => {
+        if (Array.isArray(data?.criteria) && data.criteria.length) setRubricCriteria(data.criteria);
+      })
+      .catch(() => {});
+  }, []);
 
-  // Comparison
-  const [compareProvider, setCompareProvider] = useState('deepseek');
-  const [compareModel, setCompareModel] = useState('');
-  const [showCompareSelect, setShowCompareSelect] = useState(false);
-
-  // -------------------------------------------------------------------------
-  // Load saved essays from BOTH sources
-  // -------------------------------------------------------------------------
   useEffect(() => {
     if (user) {
       loadAllEssays();
@@ -176,7 +852,7 @@ Return a valid JSON object with exactly these keys:
     try {
       const [saved, knowledge] = await Promise.all([
         listSavedEssays().catch(() => []),
-        listKnowledge().catch(() => [])
+        listKnowledge().catch(() => []),
       ]);
 
       const combined = [
@@ -189,7 +865,7 @@ Return a valid JSON object with exactly these keys:
           ...e,
           source: 'kb',
           displayTitle: e.title || `Evaluation #${e.id}`,
-        }))
+        })),
       ];
 
       combined.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -247,7 +923,37 @@ Return a valid JSON object with exactly these keys:
     }
   };
 
-  const handlePrimaryTest = async () => {
+  const updateSlot = (id, patch) => {
+    setSlots((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  };
+
+  const runSlot = async (slot, finalUserPrompt) => {
+    const started = performance.now();
+    setRuns((prev) => ({ ...prev, [slot.id]: { status: 'loading', provider: slot.provider, model: slot.model } }));
+    try {
+      const response = await testPrompt(slot.provider, systemPrompt, finalUserPrompt, slot.model || null);
+      const result = response.result;
+      const failed = result?.model === 'error';
+      setRuns((prev) => ({
+        ...prev,
+        [slot.id]: {
+          status: failed ? 'error' : 'done',
+          result,
+          error: failed ? result.text : null,
+          ms: performance.now() - started,
+          provider: slot.provider,
+          model: slot.model,
+        },
+      }));
+    } catch (err) {
+      setRuns((prev) => ({
+        ...prev,
+        [slot.id]: { status: 'error', error: errorMessage(err), provider: slot.provider, model: slot.model },
+      }));
+    }
+  };
+
+  const handleRunAll = async () => {
     if (!essayText.trim()) {
       toast.error('Please enter essay text.');
       return;
@@ -255,70 +961,109 @@ Return a valid JSON object with exactly these keys:
     if (user) {
       await autoSaveEssay();
     }
-
     const finalUserPrompt = userPromptTemplate.replace('{essay}', essayText);
-    setLoading(true);
-    setPrimaryResult(null);
-    setSecondaryResult(null);
-    setShowCompareSelect(false);
-    try {
-      const response = await testPrompt(
-        primaryProvider,
-        systemPrompt,
-        finalUserPrompt,
-        primaryModel || null
-      );
-      setPrimaryResult(response.result);
-      toast.success(`Primary (${getProviderDisplayName(primaryProvider)}) response received`);
-      setShowCompareSelect(true);
-    } catch (err) {
-      toast.error('Primary test failed: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
+    setRunId((n) => n + 1);
+    setSystemRef(null);
+    // Models run in parallel; each panel fills in as its response arrives.
+    await Promise.allSettled(slots.map((slot) => runSlot(slot, finalUserPrompt)));
+    toast.success('All model runs finished');
   };
 
-  const handleCompareTest = async () => {
+  const handleRerun = (slot) => {
     if (!essayText.trim()) {
-      toast.error('No essay text available.');
+      toast.error('Please enter essay text.');
       return;
     }
-    const finalUserPrompt = userPromptTemplate.replace('{essay}', essayText);
-    setLoadingSecondary(true);
+    setRunId((n) => n + 1);
+    runSlot(slot, userPromptTemplate.replace('{essay}', essayText));
+  };
+
+  const handleRunSystem = async () => {
+    if (!essayText.trim()) {
+      toast.error('Please enter essay text.');
+      return;
+    }
+    setSystemLoading(true);
     try {
-      const response = await testPrompt(
-        compareProvider,
-        systemPrompt,
-        finalUserPrompt,
-        compareModel || null
-      );
-      setSecondaryResult(response.result);
-      toast.success(`Comparison (${getProviderDisplayName(compareProvider)}) response received`);
+      const data = await evaluateEssay(essayText, 'analytic');
+      setSystemRef(data.scores);
+      setLoggedRunId(null);
     } catch (err) {
-      toast.error('Comparison test failed: ' + err.message);
+      toast.error('System evaluation failed: ' + errorMessage(err));
     } finally {
-      setLoadingSecondary(false);
+      setSystemLoading(false);
     }
   };
 
-  const getProviderDisplayName = (provider) => {
-    const names = {
-      deepseek: 'DeepSeek',
-      gemma: 'Gemma (Ollama)',
-      ollama: 'Ollama',
-      llamacpp: 'Llama.cpp (Phi-3.5)',
+  const applyRubricToPrompts = () => {
+    const { system, user: userTemplate } = buildPromptsFromRubric(rubricCriteria);
+    setSystemPrompt(system);
+    setUserPromptTemplate(userTemplate);
+    toast.success('Prompts now ask for the active rubric’s criteria');
+  };
+
+  // ---------- Derived comparison data ----------
+  const raters = useMemo(() => slots.map((slot) => {
+    const run = runs[slot.id];
+    return {
+      id: slot.id,
+      name: providerDisplayName(run?.provider ?? slot.provider, run?.model ?? slot.model),
+      scores: run?.status === 'done' ? tryParse(run.result) : null,
     };
-    return names[provider] || provider;
+  }), [slots, runs]);
+
+  const criteria = useMemo(
+    () => buildCriteria(raters.map((r) => r.scores), rubricCriteria),
+    [raters, rubricCriteria]
+  );
+
+  const consensus = useMemo(() => consensusScores(criteria, raters), [criteria, raters]);
+
+  const reference = referenceMode === 'system' ? systemRef
+    : referenceMode === 'teacher' ? teacherRef
+    : consensus;
+  const referenceLabel = referenceMode === 'system' ? 'System evaluator'
+    : referenceMode === 'teacher' ? 'Teacher'
+    : 'Consensus';
+
+  const stats = useMemo(
+    () => ({ ...computeStats(criteria, raters, reference), consensus }),
+    [criteria, raters, reference, consensus]
+  );
+
+  const anyRun = Object.keys(runs).length > 0;
+  const anyLoading = Object.values(runs).some((r) => r.status === 'loading');
+  const scoredCount = raters.filter((r) => r.scores).length;
+  const logKey = `${runId}:${referenceMode}:${JSON.stringify(reference ?? {})}`;
+
+  const handleLogRun = () => {
+    if (!stats.closest) return;
+    const entry = {
+      at: new Date().toISOString(),
+      reference: referenceMode,
+      closest: stats.tie ? null : stats.closest.name,
+      models: stats.perRater.map((r) => ({ name: r.name, mae: r.mae, bias: r.bias })),
+    };
+    const next = [...history, entry];
+    setHistory(next);
+    saveHistory(next);
+    setLoggedRunId(logKey);
+    toast.success('Run added to statistics');
+  };
+
+  const handleClearHistory = () => {
+    if (!confirm('Clear saved comparison statistics?')) return;
+    setHistory([]);
+    saveHistory([]);
   };
 
   return (
-    <div className="glass-card rounded-2xl shadow-xl p-6 animate-fade-in">
+    <div className="glass-card rounded-2xl shadow-xl p-6 animate-fade-in bg-white/90 backdrop-blur-md">
       <h2 className="text-2xl font-bold text-gray-800 mb-2">🧪 AI Prompt Playground</h2>
       <p className="text-gray-600 mb-4">
         Test and compare different AI models with custom prompts. Essays are saved automatically.
       </p>
 
-      {/* Collapsible Model Information Panel */}
       <div className="mb-5 border border-gray-200 rounded-xl overflow-hidden">
         <button
           onClick={() => setShowModelInfo(!showModelInfo)}
@@ -359,7 +1104,6 @@ Return a valid JSON object with exactly these keys:
         )}
       </div>
 
-      {/* Essay Management */}
       {user ? (
         <div className="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
           <div className="flex flex-wrap items-end gap-3">
@@ -390,11 +1134,6 @@ Return a valid JSON object with exactly these keys:
                     ? 'bg-red-100 text-red-700 hover:bg-red-200'
                     : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                 }`}
-                title={
-                  selectedEssaySource === 'kb'
-                    ? 'Knowledge Base entries cannot be deleted from here'
-                    : 'Delete draft'
-                }
               >
                 🗑️ Delete
               </button>
@@ -414,57 +1153,12 @@ Return a valid JSON object with exactly these keys:
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Controls */}
+        {/* Left: essay + prompts */}
         <div className="space-y-4">
-          <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
-            <h3 className="font-semibold text-blue-800 mb-2">🎯 Primary Model</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <select
-                value={primaryProvider}
-                onChange={(e) => setPrimaryProvider(e.target.value)}
-                className="border rounded-lg p-2 bg-white text-gray-800"
-              >
-                <option value="deepseek">DeepSeek</option>
-                <option value="gemma">Gemma (Ollama)</option>
-                <option value="llamacpp">Llama.cpp (Phi-3.5)</option>
-              </select>
-              <input
-                type="text"
-                value={primaryModel}
-                onChange={(e) => setPrimaryModel(e.target.value)}
-                placeholder="Model (optional)"
-                className="border rounded-lg p-2 bg-white text-gray-800"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block font-semibold text-gray-800 mb-1">🤖 System Prompt</label>
-            <textarea
-              rows="3"
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              className="w-full border rounded-xl p-2 bg-gray-50 text-gray-800"
-            />
-          </div>
-
-          <div>
-            <label className="block font-semibold text-gray-800 mb-1">
-              📋 User Prompt Template
-              <span className="text-sm font-normal ml-1">(use {'{essay}'})</span>
-            </label>
-            <textarea
-              rows="5"
-              value={userPromptTemplate}
-              onChange={(e) => setUserPromptTemplate(e.target.value)}
-              className="w-full border rounded-xl p-2 bg-gray-50 font-mono text-sm text-gray-800"
-            />
-          </div>
-
           <div>
             <label className="block font-semibold text-gray-800 mb-1">📄 Essay to Evaluate</label>
             <textarea
-              rows="8"
+              rows="10"
               value={essayText}
               onChange={(e) => setEssayText(e.target.value)}
               className="w-full border rounded-xl p-2 bg-gray-50 text-gray-800"
@@ -472,148 +1166,216 @@ Return a valid JSON object with exactly these keys:
             />
           </div>
 
-          <button
-            onClick={handlePrimaryTest}
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-xl font-semibold shadow-md hover:shadow-lg transition disabled:opacity-50"
-          >
-            {loading ? <div className="spinner mx-auto w-5 h-5"></div> : '🚀 Run Primary Evaluation'}
-          </button>
+          {!isDefaultRubric(rubricCriteria) && (
+            <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-900 flex flex-wrap items-center gap-2">
+              <span>
+                📐 The active rubric has {rubricCriteria.length} criteria
+                ({rubricCriteria.map((c) => `${c.label} 1–${c.max_score}`).join(', ')}).
+              </span>
+              <button
+                onClick={applyRubricToPrompts}
+                className="ml-auto bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700"
+              >
+                Use it in the prompts
+              </button>
+            </div>
+          )}
 
-          {showCompareSelect && primaryResult && (
-            <div className="mt-4 p-4 bg-amber-50 rounded-xl border border-amber-200">
-              <h3 className="font-semibold text-amber-800 mb-2">🔍 Get Second Opinion</h3>
-              <div className="flex gap-2">
-                <select
-                  value={compareProvider}
-                  onChange={(e) => setCompareProvider(e.target.value)}
-                  className="flex-1 border rounded-lg p-2 bg-white text-gray-800"
-                >
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="gemma">Gemma (Ollama)</option>
-                  <option value="llamacpp">Llama.cpp (Phi-3.5)</option>
-                </select>
-                <input
-                  type="text"
-                  value={compareModel}
-                  onChange={(e) => setCompareModel(e.target.value)}
-                  placeholder="Model"
-                  className="w-32 border rounded-lg p-2 bg-white text-gray-800"
+          <details className="border border-gray-200 rounded-xl">
+            <summary className="cursor-pointer p-3 bg-gray-50 hover:bg-gray-100 font-semibold text-gray-700 rounded-xl">
+              ⚙️ Advanced: Edit Prompts
+            </summary>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block font-semibold text-gray-800 mb-1">🤖 System Prompt</label>
+                <textarea
+                  rows="4"
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  className="w-full border rounded-xl p-2 bg-gray-50 text-gray-800"
                 />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-gray-800 mb-1">
+                  📋 User Prompt Template
+                  <span className="text-sm font-normal ml-1">(use {'{essay}'})</span>
+                </label>
+                <textarea
+                  rows="6"
+                  value={userPromptTemplate}
+                  onChange={(e) => setUserPromptTemplate(e.target.value)}
+                  className="w-full border rounded-xl p-2 bg-gray-50 font-mono text-sm text-gray-800"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-gray-500 flex-1">
+                  These prompts apply to all three models. Edit only if you understand the required
+                  JSON output format.
+                </p>
                 <button
-                  onClick={handleCompareTest}
-                  disabled={loadingSecondary}
-                  className="bg-amber-600 text-white px-4 py-2 rounded-lg hover:bg-amber-700 transition disabled:opacity-50"
+                  onClick={applyRubricToPrompts}
+                  className="text-xs border border-indigo-300 text-indigo-700 px-2 py-1 rounded-md hover:bg-indigo-50"
                 >
-                  {loadingSecondary ? '...' : 'Compare'}
+                  Rebuild from active rubric
                 </button>
               </div>
             </div>
-          )}
+          </details>
         </div>
 
-        {/* Right: Results */}
+        {/* Right: the three models */}
         <div className="space-y-4">
-          <div>
-            <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
-              <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-sm">
-                Primary: {getProviderDisplayName(primaryProvider)}
-              </span>
-            </h3>
-            <div className="bg-gray-50 rounded-xl border p-4 min-h-[200px] max-h-[400px] overflow-auto">
-              {primaryResult ? (
-                <EvaluationDisplay result={primaryResult} />
-              ) : (
-                <p className="text-gray-500 text-center mt-16">Run primary evaluation to see results.</p>
-              )}
-            </div>
-          </div>
-
-          {secondaryResult && (
-            <div>
-              <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
-                <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
-                  Comparison: {getProviderDisplayName(compareProvider)}
-                </span>
-              </h3>
-              <div className="bg-gray-50 rounded-xl border p-4 min-h-[200px] max-h-[400px] overflow-auto">
-                <EvaluationDisplay result={secondaryResult} />
-              </div>
-            </div>
-          )}
-
-          {primaryResult && secondaryResult && (() => {
-            try {
-              const parseResult = (res) => {
-                let text = res.text || '';
-                text = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-                return JSON.parse(text);
-              };
-              const primary = parseResult(primaryResult);
-              const secondary = parseResult(secondaryResult);
-              if (primary.grammar_score && secondary.grammar_score) {
-                const diffColor = (val) =>
-                  val > 0 ? 'text-green-600' : val < 0 ? 'text-red-500' : 'text-gray-600';
+          <div className="bg-blue-50 p-4 rounded-xl border border-blue-200">
+            <h3 className="font-semibold text-blue-800 mb-1">🎯 Models to Compare</h3>
+            <p className="text-xs text-blue-900/70 mb-3">
+              All three receive the same prompts and run in parallel.
+            </p>
+            <div className="space-y-2">
+              {slots.map((slot) => {
+                const style = SLOT_STYLE[slot.id];
+                const run = runs[slot.id];
+                const parsedOk = run?.status === 'done' && tryParse(run.result) !== null;
                 return (
-                  <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-                    <h4 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                      <span>📊 Score Comparison</span>
-                      <span className="text-xs font-normal text-gray-600">
-                        ({getProviderDisplayName(primaryProvider)} vs {getProviderDisplayName(compareProvider)})
-                      </span>
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-4 gap-2 text-sm">
-                        <div className="font-medium text-gray-700">Category</div>
-                        <div className="font-medium text-gray-700 text-center">Primary</div>
-                        <div className="font-medium text-gray-700 text-center">Compare</div>
-                        <div className="font-medium text-gray-700 text-center">Diff</div>
-                      </div>
-                      {['grammar', 'coherence', 'content'].map((cat) => {
-                        const pScore = primary[`${cat}_score`];
-                        const sScore = secondary[`${cat}_score`];
-                        const difference = pScore - sScore;
-                        return (
-                          <div key={cat} className="grid grid-cols-4 gap-2 text-sm border-t border-gray-100 pt-2">
-                            <div className="text-gray-800 capitalize">{cat}</div>
-                            <div className="text-center font-medium text-gray-800">{pScore}</div>
-                            <div className="text-center font-medium text-gray-800">{sScore}</div>
-                            <div className={`text-center font-medium ${diffColor(difference)}`}>
-                              {difference > 0 ? `+${difference}` : difference}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                  <div key={slot.id} className="flex flex-wrap items-center gap-2 bg-white rounded-lg border p-2">
+                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold border ${style.badge}`}>
+                      {slot.id}
+                    </span>
+                    <select
+                      value={slot.provider}
+                      onChange={(e) => updateSlot(slot.id, { provider: e.target.value })}
+                      className="flex-1 min-w-[140px] border rounded-lg p-2 bg-white text-gray-800 text-sm"
+                      aria-label={`Provider for model ${slot.id}`}
+                    >
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="gemma">Gemma (Ollama)</option>
+                      <option value="ollama">Llama 3.2 (Ollama)</option>
+                      <option value="llamacpp">Llama.cpp (Phi-3.5)</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={slot.model}
+                      onChange={(e) => updateSlot(slot.id, { model: e.target.value })}
+                      placeholder="Model (optional)"
+                      className="w-36 border rounded-lg p-2 bg-white text-gray-800 text-sm"
+                      aria-label={`Model name for ${slot.id}`}
+                    />
+                    <span className="w-20 text-xs text-right">
+                      {run?.status === 'loading' && <span className="text-blue-600">running…</span>}
+                      {run?.status === 'done' && (
+                        <span className={parsedOk ? 'text-emerald-600' : 'text-amber-600'}>
+                          {parsedOk ? '✓' : '⚠ not JSON'} {run.ms ? `${(run.ms / 1000).toFixed(0)}s` : ''}
+                        </span>
+                      )}
+                      {run?.status === 'error' && <span className="text-red-600">✕ failed</span>}
+                    </span>
+                    <button
+                      onClick={() => handleRerun(slot)}
+                      disabled={run?.status === 'loading'}
+                      className="text-sm text-gray-600 hover:text-gray-900 px-1 disabled:opacity-40"
+                      title="Run only this model"
+                      aria-label={`Re-run model ${slot.id}`}
+                    >
+                      ↻
+                    </button>
                   </div>
                 );
-              }
-            } catch (e) {
-              return null;
-            }
-            return null;
-          })()}
-
-          {/* AI Reference Guide Panel */}
-          <div className="mt-6">
-            <details className="cursor-pointer group">
-              <summary className="font-semibold text-gray-700 flex items-center gap-2">
-                <span>🤖 How to Use AI as a Reference (Not a Replacement)</span>
-                <span className="text-xs text-gray-400 group-open:hidden">click to expand</span>
-              </summary>
-              <div className="mt-3 p-4 bg-amber-50 rounded-lg border border-amber-200 text-sm text-gray-700 space-y-2">
-                <p><strong>🧠 AI is a tool to assist your judgment, not replace it.</strong></p>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>Use AI-generated scores and feedback as a <strong>second opinion</strong> to identify potential weaknesses.</li>
-                  <li>Always review the suggestions critically; your expertise as an educator is paramount.</li>
-                  <li>Compare results from different models to see variations in emphasis (some may focus more on grammar, others on coherence).</li>
-                  <li>When overriding, your feedback becomes part of the learning system, helping future evaluations improve.</li>
-                </ul>
-                <p className="italic mt-2">💡 Best practice: Use AI feedback to start a conversation with students about their writing, not to give a final grade.</p>
-              </div>
-            </details>
+              })}
+            </div>
           </div>
+
+          <button
+            onClick={handleRunAll}
+            disabled={anyLoading}
+            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-xl font-semibold shadow-md hover:shadow-lg transition disabled:opacity-50"
+          >
+            {anyLoading ? 'Running models…' : '🚀 Run All 3 Models'}
+          </button>
+
+          {anyRun && (
+            <div className="text-sm text-gray-600 bg-gray-50 rounded-xl border p-3">
+              {scoredCount} of {slots.length} models returned parsable scores
+              {criteria.length > 0 && <> on {criteria.length} criteria</>}.
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Comparison + statistics */}
+      {scoredCount > 0 && criteria.length > 0 && (
+        <div className="mt-6 space-y-6">
+          <ComparisonTable
+            raters={raters}
+            stats={stats}
+            reference={reference}
+            referenceLabel={referenceLabel}
+            showReference={referenceMode !== 'consensus'}
+          />
+          <StatisticsPanel
+            stats={stats}
+            raters={raters}
+            criteria={criteria}
+            referenceMode={referenceMode}
+            setReferenceMode={setReferenceMode}
+            referenceLabel={referenceLabel}
+            teacherRef={teacherRef}
+            setTeacherRef={setTeacherRef}
+            systemRef={systemRef}
+            onRunSystem={handleRunSystem}
+            systemLoading={systemLoading}
+            canRunSystem={!!user}
+            onLogRun={handleLogRun}
+            logged={loggedRunId === logKey}
+            history={history}
+            onClearHistory={handleClearHistory}
+          />
+        </div>
+      )}
+
+      {/* Individual results */}
+      {anyRun && (
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {raters.map((rater) => {
+            const run = runs[rater.id];
+            return (
+              <div key={rater.id} className="min-w-0">
+                <h3 className="font-semibold mb-2"><SlotBadge rater={rater} /></h3>
+                <div className="bg-gray-50 rounded-xl border p-4 min-h-[200px] max-h-[600px] overflow-auto">
+                  {!run ? (
+                    <p className="text-gray-500 text-center mt-16">Not run yet.</p>
+                  ) : run.status === 'loading' ? (
+                    <LoadingIndicator message={`Running ${rater.name}…`} />
+                  ) : run.status === 'error' ? (
+                    <p className="text-sm text-red-600 whitespace-pre-wrap">{run.error}</p>
+                  ) : (
+                    <EvaluationDisplay result={run.result} criteria={criteria.length ? criteria : rubricCriteria} />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-6">
+        <details className="cursor-pointer group">
+          <summary className="font-semibold text-gray-700 flex items-center gap-2">
+            <span>🤖 How to Use AI as a Reference (Not a Replacement)</span>
+            <span className="text-xs text-gray-400 group-open:hidden">click to expand</span>
+          </summary>
+          <div className="mt-3 p-4 bg-amber-50 rounded-lg border border-amber-200 text-sm text-gray-700 space-y-2">
+            <p><strong>🧠 AI is a tool to assist your judgment, not replace it.</strong></p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Use AI-generated scores and feedback as a <strong>second opinion</strong> to identify potential weaknesses.</li>
+              <li>Always review the suggestions critically; your expertise as an educator is paramount.</li>
+              <li>Compare results from different models to see variations in emphasis (some may focus more on grammar, others on coherence).</li>
+              <li>Use the <strong>Teacher scores</strong> reference to find which model grades most like you.</li>
+              <li>When overriding, your feedback becomes part of the learning system, helping future evaluations improve.</li>
+            </ul>
+            <p className="italic mt-2">💡 Best practice: Use AI feedback to start a conversation with students about their writing, not to give a final grade.</p>
+          </div>
+        </details>
       </div>
     </div>
   );

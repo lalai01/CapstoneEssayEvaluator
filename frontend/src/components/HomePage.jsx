@@ -5,13 +5,12 @@ export default function HomePage({ setActiveTab }) {
   useEffect(() => {
     const sections = document.querySelectorAll('.scroll-section');
     const observer = new IntersectionObserver(
-      (entries) => {
+      (entries, obs) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
             entry.target.classList.add('visible');
-          } else {
-            // Remove class to allow fade-in again when scrolling back up
-            entry.target.classList.remove('visible');
+            // Once visible, stop watching — no more re-triggers, no flicker.
+            obs.unobserve(entry.target);
           }
         });
       },
@@ -31,12 +30,11 @@ export default function HomePage({ setActiveTab }) {
         <div className="floating-shape shape-4"></div>
       </div>
 
-      {/* Hero Section – with Robot and professional border + color fonts */}
-      <div className="glass-card rounded-3xl shadow-2xl p-8 md:p-12 relative z-10 bg-white/40 backdrop-blur-md border-gradient">
+      {/* ============ HERO SECTION ============ */}
+      <div className="glass-card rounded-3xl shadow-2xl p-8 md:p-12 relative z-10 bg-white/90 backdrop-blur-md border-gradient">
         <div className="flex flex-col lg:flex-row items-center gap-8">
-          {/* Left: Text Content with professional border container */}
           <div className="flex-1 text-center lg:text-left">
-            <div className="hero-text-container p-6 rounded-2xl border border-gray-200/60 bg-white/30 shadow-inner">
+            <div className="hero-text-container p-6 rounded-2xl border border-gray-200/60 bg-white/70 shadow-inner">
               <h1 className="text-4xl md:text-6xl font-bold gradient-text mb-4">
                 AI Essay Evaluator
               </h1>
@@ -60,7 +58,6 @@ export default function HomePage({ setActiveTab }) {
             </div>
           </div>
 
-          {/* Right: Robot Assistant – bigger and slightly lower */}
           <div className="flex-1 flex justify-center mt-8 lg:mt-12">
             <div className="w-80 h-80 md:w-96 md:h-96">
               <RobotAssistant />
@@ -69,8 +66,8 @@ export default function HomePage({ setActiveTab }) {
         </div>
       </div>
 
-      {/* How It Works – 3‑column grid (unchanged, but keep fade-in) */}
-      <div id="how-it-works" className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/40 backdrop-blur-md">
+      {/* ============ HOW IT WORKS ============ */}
+      <div id="how-it-works" className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/90 backdrop-blur-md">
         <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">How It Works</h2>
         <div className="grid md:grid-cols-3 gap-8">
           <div className="text-center p-4">
@@ -91,26 +88,26 @@ export default function HomePage({ setActiveTab }) {
         </div>
       </div>
 
-      {/* Key Features – 4‑column grid */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/40 backdrop-blur-md">
+      {/* ============ KEY FEATURES ============ */}
+      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/90 backdrop-blur-md">
         <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">Key Features</h2>
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="bg-white/50 p-5 rounded-xl hover:shadow-lg transition">
+          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
             <div className="text-3xl mb-3">📄</div>
             <h3 className="font-semibold text-gray-800">OCR & PDF Support</h3>
             <p className="text-sm text-gray-700 mt-1">Extract text from images and PDFs using Google Vision or Tesseract.</p>
           </div>
-          <div className="bg-white/50 p-5 rounded-xl hover:shadow-lg transition">
+          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
             <div className="text-3xl mb-3">🧠</div>
             <h3 className="font-semibold text-gray-800">RAG (Retrieval Augmented)</h3>
             <p className="text-sm text-gray-700 mt-1">Uses past evaluations to enrich feedback – gets smarter over time.</p>
           </div>
-          <div className="bg-white/50 p-5 rounded-xl hover:shadow-lg transition">
+          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
             <div className="text-3xl mb-3">✏️</div>
             <h3 className="font-semibold text-gray-800">Teacher Override</h3>
             <p className="text-sm text-gray-700 mt-1">Reject AI results and add corrections; stored in a learning knowledge base.</p>
           </div>
-          <div className="bg-white/50 p-5 rounded-xl hover:shadow-lg transition">
+          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
             <div className="text-3xl mb-3">🤖</div>
             <h3 className="font-semibold text-gray-800">Multi‑AI Playground</h3>
             <p className="text-sm text-gray-700 mt-1">Test GPT, DeepSeek, Gemma with custom prompts – compare results.</p>
@@ -118,8 +115,8 @@ export default function HomePage({ setActiveTab }) {
         </div>
       </div>
 
-      {/* Why This App Matters – 2‑column grid */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/40 backdrop-blur-md">
+      {/* ============ 🌟 WHY THIS APP MATTERS ============ */}
+      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/90 backdrop-blur-md">
         <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">🌟 Why This App Matters</h2>
         <div className="grid md:grid-cols-2 gap-8">
           <div>
@@ -148,8 +145,8 @@ export default function HomePage({ setActiveTab }) {
         </div>
       </div>
 
-      {/* NLP Methodology & Knowledge Base – 2‑column grid */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 border-l-8 border-purple-500 bg-white/40 backdrop-blur-md">
+      {/* ============ 🧠 NLP METHODOLOGY & KNOWLEDGE BASE ============ */}
+      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 border-l-8 border-purple-500 bg-white/90 backdrop-blur-md">
         <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">🧠 NLP Methodology & Knowledge Base</h2>
         <div className="grid md:grid-cols-2 gap-8">
           <div>
@@ -157,13 +154,13 @@ export default function HomePage({ setActiveTab }) {
               <span className="text-2xl">📐</span> NLP Techniques Used
             </h3>
             <ul className="space-y-3 text-gray-700">
-              <li className="bg-gray-50 p-3 rounded-lg">
+              <li className="bg-gray-100 p-3 rounded-lg">
                 <span className="font-bold text-blue-600">Grammar:</span> Sentence length, punctuation patterns, vocabulary richness – deterministic heuristics, no LLM hallucinations.
               </li>
-              <li className="bg-gray-50 p-3 rounded-lg">
+              <li className="bg-gray-100 p-3 rounded-lg">
                 <span className="font-bold text-green-600">Coherence:</span> Transition word counting, paragraph detection, presence of intro/conclusion keywords.
               </li>
-              <li className="bg-gray-50 p-3 rounded-lg">
+              <li className="bg-gray-100 p-3 rounded-lg">
                 <span className="font-bold text-purple-600">Content:</span> Evidence word spotting ("example", "research"), word count thresholds, vocabulary diversity.
               </li>
             </ul>
@@ -208,8 +205,8 @@ SELECT essay, grammar, coherence, content, teacher_feedback FROM knowledge_base 
         </div>
       </div>
 
-      {/* Data Safety */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 border-l-8 border-green-500 relative z-10 bg-white/40 backdrop-blur-md">
+      {/* ============ YOUR DATA IS SAFE ============ */}
+      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 border-l-8 border-green-500 relative z-10 bg-white/90 backdrop-blur-md">
         <div className="flex items-start gap-4">
           <div className="text-4xl">🔒</div>
           <div>
@@ -228,7 +225,7 @@ SELECT essay, grammar, coherence, content, teacher_feedback FROM knowledge_base 
         </div>
       </div>
 
-      {/* Call to Action */}
+      {/* ============ CALL TO ACTION ============ */}
       <div className="scroll-section text-center py-8 relative z-10">
         <button
           onClick={() => setActiveTab('evaluate')}

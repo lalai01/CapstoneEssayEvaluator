@@ -1,10 +1,10 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 
 // Robot model with document scanning beam
-function Robot({ isHovered }) {
+function Robot() {
   const groupRef = useRef();
   const headRef = useRef();
   const leftArmRef = useRef();
@@ -15,15 +15,14 @@ function Robot({ isHovered }) {
   const leftEyeMatRef = useRef();
   const rightEyeMatRef = useRef();
 
-  // Scanning animation state
-  const [scanPos, setScanPos] = useState(-0.5); // from -0.5 to 0.5
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
 
     // Gentle idle animation
     if (groupRef.current) {
-      groupRef.current.position.y = Math.sin(t * 1.5) * 0.03;
+      // Bob around the centering offset (see the group's initial position).
+      groupRef.current.position.y = -0.75 + Math.sin(t * 1.5) * 0.03;
     }
     if (headRef.current) {
       headRef.current.rotation.z = Math.sin(t * 2) * 0.1;
@@ -67,7 +66,7 @@ function Robot({ isHovered }) {
   });
 
   return (
-    <group ref={groupRef} position={[0, -0.5, 0]}>
+    <group ref={groupRef} position={[0, -0.75, 0]}>
       {/* Body */}
       <mesh position={[0, 0.2, 0]} castShadow receiveShadow>
         <boxGeometry args={[1.2, 1.4, 0.8]} />
@@ -208,12 +207,17 @@ function Robot({ isHovered }) {
   );
 }
 
+// The robot spans roughly x −1.2…1.3 and y −1.25…1.25 (after the group's
+// −0.75 offset), plus a little float/bob animation. The camera sits far
+// enough back that the whole model and its papers stay inside the frame
+// at any canvas size.
 export default function RobotAssistant() {
   return (
-    <div className="w-32 h-32 md:w-40 md:h-40 relative">
+    <div className="w-full h-full min-w-[8rem] min-h-[8rem] relative">
       <Canvas
-        camera={{ position: [0, 0.5, 3.5], fov: 40 }}
-        style={{ background: 'transparent' }}
+        camera={{ position: [0, 0.2, 5.2], fov: 45 }}
+        onCreated={({ camera }) => camera.lookAt(0, 0, 0)}
+        style={{ background: 'transparent', width: '100%', height: '100%' }}
         gl={{ alpha: true, antialias: true }}
       >
         <ambientLight intensity={0.6} />

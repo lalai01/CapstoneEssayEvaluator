@@ -8,7 +8,9 @@ import LearningFeedback from './components/LearningFeedback';
 import HomePage from './components/HomePage';
 import RateUs from './components/RateUs';
 import AdminSurveys from './components/AdminSurveys';
+import UserSurveys from './components/UserSurveys';
 import AdminRubrics from './components/AdminRubrics';
+import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
 import { useAuth } from './context/AuthContext';
@@ -28,9 +30,8 @@ function App() {
 
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  const { user, signOut } = useAuth();
+  const { user, isAdmin, signOut } = useAuth();
 
-  const isAdmin = user?.role === 'admin' || user?.email === 'admin_essay_capstone@gmail.com';
 
   const tabs = [
     { id: 'home', label: '🏠 Home' },
@@ -39,9 +40,11 @@ function App() {
     { id: 'learning', label: '🧠 Learning KB' },
     { id: 'playground', label: '🧪 AI Playground' },
     { id: 'rateus', label: '⭐ Rate Us' },
+    ...(user ? [{ id: 'surveys', label: '📋 Surveys' }] : []),
     ...(isAdmin ? [
       { id: 'admin', label: '🔧 Admin Surveys' },
-      { id: 'rubrics', label: '📐 Rubrics' },
+      { id: 'rubrics', label: '📐 Scoring & Criteria' },
+      { id: 'ocr-labeler', label: '🏷️ OCR Labeler' },
     ] : []),
   ];
 
@@ -137,8 +140,10 @@ function App() {
           {activeTab === 'learning' && <LearningFeedback />}
           {activeTab === 'playground' && <PromptPlayground />}
           {activeTab === 'rateus' && <RateUs />}
+          {activeTab === 'surveys' && <UserSurveys />}
           {activeTab === 'admin' && <AdminSurveys />}
           {activeTab === 'rubrics' && <AdminRubrics />}
+          {activeTab === 'ocr-labeler' && <OcrLabeler />}
         </div>
       </div>
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { listKnowledge, getRubric, getSuggestions } from '../api';
 import { useAuth } from '../context/AuthContext';
+import LoadingIndicator from './LoadingIndicator';
 import toast from 'react-hot-toast';
 
 // ---------- Safe value renderer ----------
@@ -40,7 +41,6 @@ function getDisplayScore(entry) {
   };
 }
 
-// ---------- Color from 1-4 scale ----------
 function colorFrom4Scale(score) {
   if (score === null || score === undefined) return 'text-gray-400';
   if (score >= 3.5) return 'text-emerald-600';
@@ -49,7 +49,6 @@ function colorFrom4Scale(score) {
   return 'text-red-500';
 }
 
-// ---------- Color from 1-5 scale (holistic) ----------
 function colorFrom5Scale(score) {
   if (score === null || score === undefined) return 'text-gray-400';
   if (score >= 4.5) return 'text-emerald-600';
@@ -58,14 +57,32 @@ function colorFrom5Scale(score) {
   return 'text-red-500';
 }
 
-// ---------- Rubric criterion colors (visual distinction) ----------
 const CRITERION_COLORS = {
-  main_statement: { dot: 'bg-blue-400',   bar: 'bg-blue-500',   text: 'text-blue-700' },
+  main_statement: { dot: 'bg-blue-400',    bar: 'bg-blue-500',    text: 'text-blue-700' },
   organization:   { dot: 'bg-emerald-400', bar: 'bg-emerald-500', text: 'text-emerald-700' },
-  evidence:       { dot: 'bg-purple-400', bar: 'bg-purple-500',  text: 'text-purple-700' },
-  analysis:       { dot: 'bg-amber-400',  bar: 'bg-amber-500',   text: 'text-amber-700' },
-  grammar:        { dot: 'bg-pink-400',   bar: 'bg-pink-500',    text: 'text-pink-700' },
+  evidence:       { dot: 'bg-purple-400',  bar: 'bg-purple-500',  text: 'text-purple-700' },
+  analysis:       { dot: 'bg-amber-400',   bar: 'bg-amber-500',   text: 'text-amber-700' },
+  grammar:        { dot: 'bg-pink-400',    bar: 'bg-pink-500',    text: 'text-pink-700' },
 };
+
+// ---------- Filter helpers for rich fields ----------
+function filterGrammarIssues(issues) {
+  if (!Array.isArray(issues)) return [];
+  return issues.filter(
+    (i) =>
+      i &&
+      typeof i.original === 'string' &&
+      typeof i.correction === 'string' &&
+      i.original.trim().toLowerCase() !== i.correction.trim().toLowerCase()
+  );
+}
+
+function filterRecommendations(recs) {
+  if (!Array.isArray(recs)) return [];
+  return recs.filter(
+    (r) => r && typeof r.suggestion === 'string' && r.suggestion.trim().length > 0
+  );
+}
 
 export default function KnowledgeBase() {
   const { user } = useAuth();
@@ -112,7 +129,7 @@ export default function KnowledgeBase() {
 
   if (!user) {
     return (
-      <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
+      <div className="glass-card rounded-2xl shadow-xl p-12 text-center bg-white/90 backdrop-blur-md">
         <div className="text-6xl mb-4">🔒</div>
         <h2 className="text-2xl font-bold text-gray-800 mb-2">Login Required</h2>
         <p className="text-gray-700">Please log in to view your knowledge base.</p>
@@ -122,9 +139,8 @@ export default function KnowledgeBase() {
 
   if (loading) {
     return (
-      <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
-        <div className="animate-spin text-4xl mb-4">⏳</div>
-        <p className="text-gray-700">Loading your knowledge base...</p>
+      <div className="glass-card rounded-2xl shadow-xl p-12 bg-white/90 backdrop-blur-md">
+        <LoadingIndicator message="Loading your knowledge base…" />
       </div>
     );
   }
@@ -132,7 +148,7 @@ export default function KnowledgeBase() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
       {/* ============ Left: entries list ============ */}
-      <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/40 backdrop-blur-md">
+      <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/90 backdrop-blur-md">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-2xl font-bold text-indigo-700">📚 Saved Evaluations</h2>
           <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
@@ -222,7 +238,7 @@ export default function KnowledgeBase() {
       </div>
 
       {/* ============ Right: details ============ */}
-      <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/40 backdrop-blur-md">
+      <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/90 backdrop-blur-md">
         <h2 className="text-2xl font-bold text-indigo-700 mb-4">📋 Evaluation Details</h2>
 
         {selectedEntry ? (
@@ -262,6 +278,7 @@ export default function KnowledgeBase() {
                     const value = selectedEntry[key];
                     const color = CRITERION_COLORS[key];
                     const percent = typeof value === 'number' ? (value / 4) * 100 : 0;
+                    const note = selectedEntry.criterion_feedback?.[key];
                     return (
                       <div key={key}>
                         <div className="flex justify-between text-sm mb-1">
@@ -276,12 +293,16 @@ export default function KnowledgeBase() {
                             style={{ width: `${percent}%` }}
                           />
                         </div>
+                        {note && (
+                          <p className="text-xs text-gray-700 mt-1 leading-relaxed pl-1">
+                            {note}
+                          </p>
+                        )}
                       </div>
                     );
                   })}
                 </div>
 
-                {/* Overall average */}
                 {(() => {
                   const avg = computeAverage(selectedEntry);
                   return (
@@ -319,6 +340,70 @@ export default function KnowledgeBase() {
                 )}
               </div>
             </div>
+
+            {/* Grammar Issues */}
+            {(() => {
+              const issues = filterGrammarIssues(selectedEntry.grammar_issues);
+              if (issues.length === 0) return null;
+              return (
+                <div>
+                  <h4 className="font-semibold text-gray-800 mb-2">
+                    ✏️ Grammar & Mechanics — Specific Fixes ({issues.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {issues.map((issue, idx) => (
+                      <div key={idx} className="bg-white p-3 rounded-lg border border-gray-200 text-sm">
+                        <div className="flex items-start gap-2 mb-1">
+                          <span className="text-red-500 font-bold flex-shrink-0">✗</span>
+                          <span className="text-gray-700 line-through">{issue.original}</span>
+                        </div>
+                        <div className="flex items-start gap-2 mb-1">
+                          <span className="text-emerald-600 font-bold flex-shrink-0">✓</span>
+                          <span className="text-gray-900 font-medium">{issue.correction}</span>
+                        </div>
+                        {issue.explanation && (
+                          <p className="text-xs text-gray-600 mt-1 pl-5 italic">
+                            {issue.explanation}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Recommendations */}
+            {(() => {
+              const recs = filterRecommendations(selectedEntry.recommendations);
+              if (recs.length === 0) return null;
+              return (
+                <div>
+                  <h4 className="font-semibold text-gray-800 mb-2">
+                    💡 Recommendations ({recs.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {recs.map((rec, idx) => (
+                      <div key={idx} className="bg-amber-50 p-3 rounded-lg border border-amber-200 text-sm">
+                        <div className="font-semibold text-amber-900 mb-1">
+                          {idx + 1}. {rec.title || 'Improvement'}
+                        </div>
+                        {rec.issue && (
+                          <div className="text-gray-700 mb-1">
+                            <span className="font-medium text-amber-800">Issue:</span> {rec.issue}
+                          </div>
+                        )}
+                        {rec.suggestion && (
+                          <div className="text-gray-800">
+                            <span className="font-medium text-amber-800">Try:</span> {rec.suggestion}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {selectedEntry.teacher_feedback && (
               <div>
@@ -367,7 +452,7 @@ export default function KnowledgeBase() {
           <details className="cursor-pointer group">
             <summary className="font-semibold text-gray-800 flex items-center gap-2">
               <span>📖 Scoring Rubric</span>
-              <span className="text-xs text-gray-600 group-open:hidden">click to expand</span>
+              <span className="text-xs text-gray-700 group-open:hidden">click to expand</span>
             </summary>
 
             {rubric && typeof rubric === 'object' && (
@@ -403,7 +488,7 @@ export default function KnowledgeBase() {
             <details className="cursor-pointer mt-4 group">
               <summary className="font-semibold text-gray-800 flex items-center gap-2">
                 <span>💡 How to Use This Tool</span>
-                <span className="text-xs text-gray-600 group-open:hidden">click to expand</span>
+                <span className="text-xs text-gray-700 group-open:hidden">click to expand</span>
               </summary>
               <div className="mt-3 space-y-3 pl-2">
                 <div className="bg-indigo-50 p-3 rounded-lg">

@@ -2,3 +2,42 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@keyframes loading-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.animate-loading-bar {
+  animation: loading-bar 1.4s ease-in-out infinite;
+}
+
+@keyframes walk-across {
+  0% {
+    transform: translateX(-10%);
+  }
+  100% {
+    transform: translateX(500%);
+  }
+}
+
+.animate-walk-across {
+  animation: walk-across 6s linear infinite;
+}
+
+/* Indeterminate progress bar */
+@keyframes loading-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.animate-loading-bar {
+  animation: loading-bar 1.4s ease-in-out infinite;
+}
