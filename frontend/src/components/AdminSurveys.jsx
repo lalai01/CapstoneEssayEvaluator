@@ -16,8 +16,7 @@ const QUESTION_TYPES = [
 ];
 
 export default function AdminSurveys() {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin' || user?.email === 'admin_essay_capstone@gmail.com';
+  const { isAdmin } = useAuth();
 
   // Global state
   const [surveys, setSurveys] = useState([]);

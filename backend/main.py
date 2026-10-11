@@ -108,24 +108,30 @@ class KnowledgeEntry(BaseModel):
     satisfaction: int = 5
     teacher_feedback: Optional[str] = None
 
+# criteria accepts both the legacy shape ({key: {"4": "..."}}) and the
+# configurable shape ({key: {"label", "max_score", "weight", "levels"}}).
 class RubricCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    criteria: Dict[str, Dict[str, str]]
+    criteria: Dict[str, Dict[str, Any]]
     is_active: bool = True
 
 class RubricUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    criteria: Optional[Dict[str, Dict[str, str]]] = None
+    criteria: Optional[Dict[str, Dict[str, Any]]] = None
     is_active: Optional[bool] = None
 
+# original_scores is the full /evaluate `scores` object, which also carries
+# criterion_feedback (dict), grammar_issues / recommendations (lists),
+# level_description (str) and criteria_meta (list) — not just ints.
 class OverrideRequest(BaseModel):
     original_essay: str
-    original_scores: Dict[str, int]
+    original_scores: Dict[str, Any]
+    teacher_scores: Optional[Dict[str, Any]] = None
     teacher_feedback: str
     suggested_changes: Optional[str] = None
-    accepted: bool
+    accepted: bool = False
     satisfaction: Optional[int] = 5
 
 class PromptTestRequest(BaseModel):
@@ -193,7 +199,11 @@ def health_check():
     return {"status": "ok"}
 
 def is_admin(user):
-    admin_emails = os.environ.get("ADMIN_EMAILS", "admin_essay_capstone@gmail.com").split(",")
+    # Default mirrors the frontend's admin check in App.jsx / AdminRubrics.jsx.
+    admin_emails = os.environ.get(
+        "ADMIN_EMAILS", "admin_essay_capstone@gmail.com,galangec24@gmail.com"
+    ).split(",")
+    admin_emails = [e.strip() for e in admin_emails if e.strip()]
     return (user.get("role") == "admin") or (user.get("email") in admin_emails)
 
 # ---------- Comments & Reactions ----------
@@ -592,21 +602,51 @@ def get_survey_responses(
 #end region
 
 #region Admin Rubrics
+def _validate_criteria(criteria: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Normalize admin-submitted criteria into the stored configurable shape."""
+    if not criteria:
+        raise HTTPException(422, "A rubric needs at least one criterion.")
+    normalized = evaluator.normalize_rubric(criteria)
+    if len(normalized) != len(criteria):
+        raise HTTPException(422, "Every criterion must be an object.")
+    for key in normalized:
+        if not key.replace("_", "").isalnum():
+            raise HTTPException(422, f"Invalid criterion key '{key}': use letters, numbers and underscores.")
+    # JSON object keys must be strings.
+    return {
+        key: {**c, "levels": {str(lvl): text for lvl, text in c["levels"].items()}}
+        for key, c in normalized.items()
+    }
+
+def _rubric_client(user_client: Client) -> Client:
+    return supabase_admin or user_client
+
+def _deactivate_other_rubrics(client: Client, keep_id: int):
+    client.table("rubrics").update({"is_active": False}).neq("id", keep_id).eq("is_active", True).execute()
+
 @app.post("/rubrics")
 def create_rubric(rubric: RubricCreate,
                   user: dict = Depends(get_current_user),
                   user_client: Client = Depends(get_user_client)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
     data = rubric.dict()
+    data["criteria"] = _validate_criteria(rubric.criteria)
     data["user_id"] = user["id"]
-    result = user_client.table("rubrics").insert(data).execute()
-    return {"id": result.data[0]["id"]}
+    client = _rubric_client(user_client)
+    result = client.table("rubrics").insert(data).execute()
+    new_id = result.data[0]["id"]
+    if rubric.is_active:
+        _deactivate_other_rubrics(client, new_id)
+    return {"id": new_id}
 
 @app.get("/rubrics")
 def list_rubrics(user: dict = Depends(get_current_user),
                  user_client: Client = Depends(get_user_client)):
-    result = user_client.table("rubrics") \
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    result = _rubric_client(user_client).table("rubrics") \
         .select("*") \
-        .eq("user_id", user["id"]) \
         .order("created_at", desc=True) \
         .execute()
     return result.data
@@ -616,16 +656,36 @@ def update_rubric(rubric_id: int,
                   rubric: RubricUpdate,
                   user: dict = Depends(get_current_user),
                   user_client: Client = Depends(get_user_client)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
     data = {k: v for k, v in rubric.dict().items() if v is not None}
-    user_client.table("rubrics").update(data).eq("id", rubric_id).execute()
+    if "criteria" in data:
+        data["criteria"] = _validate_criteria(rubric.criteria)
+    client = _rubric_client(user_client)
+    client.table("rubrics").update(data).eq("id", rubric_id).execute()
+    if rubric.is_active:
+        _deactivate_other_rubrics(client, rubric_id)
     return {"status": "updated"}
 
 @app.delete("/rubrics/{rubric_id}")
 def delete_rubric(rubric_id: int,
                   user: dict = Depends(get_current_user),
                   user_client: Client = Depends(get_user_client)):
-    user_client.table("rubrics").delete().eq("id", rubric_id).execute()
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    _rubric_client(user_client).table("rubrics").delete().eq("id", rubric_id).execute()
     return {"status": "deleted"}
+
+@app.get("/rubric/active")
+def get_active_rubric_meta():
+    """The rubric evaluations currently use, normalized, for the frontend."""
+    criteria = evaluator.normalize_rubric(get_active_rubric())
+    return {
+        "criteria": [
+            {**meta, "levels": {str(k): v for k, v in criteria[meta["key"]]["levels"].items()}}
+            for meta in evaluator.rubric_meta(criteria)
+        ]
+    }
 
 #end region
 
@@ -864,28 +924,6 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-@app.get("/ocr/pending")
-def list_pending_ocr(
-    limit: int = 50,
-    user: dict = Depends(get_current_user),
-):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
-    try:
-        result = (
-            supabase.table("ocr_training_data")
-            .select("id, image_url, raw_ocr_text, engine, created_at")
-            .eq("accepted", False)
-            .not_.is_("image_url", "null")
-            .order("id", desc=False)
-            .limit(limit)
-            .execute()
-        )
-        return result.data
-    except Exception as e:
-        print(f"Failed to fetch pending OCR samples: {e}")
-        raise HTTPException(500, str(e))
-
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user)):
     try:
@@ -961,15 +999,34 @@ def get_knowledge(id: int, user=Depends(get_current_user)):
 #region Teacher Override
 @app.post("/override")
 def save_override(override: OverrideRequest, user=Depends(get_current_user)):
+    if not override.teacher_feedback.strip():
+        raise HTTPException(422, "Teacher feedback is required.")
+
+    data = override.dict()
+    data["user_id"] = user["id"]
+    teacher_scores = data.pop("teacher_scores", None)
+
     try:
-        data = override.dict()
-        data["user_id"] = user["id"]
-        result = supabase.table("learning_feedback").insert(data).execute()
-        print(f"✅ Override saved for user: {user['id']}")
-        return {"id": result.data[0]["id"]}
+        # Preferred: dedicated column, created with
+        #   alter table learning_feedback add column if not exists teacher_scores jsonb;
+        row = {**data, "teacher_scores": teacher_scores} if teacher_scores else data
+        result = supabase.table("learning_feedback").insert(row).execute()
     except Exception as e:
-        print(f"❌ Error saving override: {e}")
-        raise HTTPException(500, f"Supabase error: {str(e)}")
+        if not teacher_scores or "teacher_scores" not in str(e):
+            print(f"❌ Error saving override: {e}")
+            raise HTTPException(500, f"Supabase error: {str(e)}")
+        # Column not created yet: keep the teacher's scores inside the
+        # original_scores jsonb so nothing is lost.
+        print("⚠️ learning_feedback.teacher_scores column missing; nesting in original_scores")
+        data["original_scores"] = {**data["original_scores"], "teacher_scores": teacher_scores}
+        try:
+            result = supabase.table("learning_feedback").insert(data).execute()
+        except Exception as e2:
+            print(f"❌ Error saving override: {e2}")
+            raise HTTPException(500, f"Supabase error: {str(e2)}")
+
+    print(f"✅ Override saved for user: {user['id']}")
+    return {"id": result.data[0]["id"]}
 
 @app.get("/learning-kb")
 def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):

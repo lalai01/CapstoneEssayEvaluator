@@ -20,8 +20,9 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     def extract_user_info(payload):
         user_id = payload.get("sub")
         email = payload.get("email")
-        # ✅ Extract role from user_metadata (Supabase injects this into the JWT)
-        role = payload.get("user_metadata", {}).get("role")
+        # ✅ Extract role from user_metadata or app_metadata (Supabase injects both into the JWT)
+        role = (payload.get("user_metadata") or {}).get("role") \
+            or (payload.get("app_metadata") or {}).get("role")
         return {"id": user_id, "email": email, "role": role}
 
     # Approach 1: Use the JWT_SECRET directly (works for legacy tokens)

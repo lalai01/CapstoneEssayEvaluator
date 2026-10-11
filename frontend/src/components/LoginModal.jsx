@@ -59,13 +59,14 @@ export default function LoginModal({ isOpen, onClose }) {
               >
                 <span className="text-xl">Y!</span> Continue with Yahoo
               </button>
-              <div className="relative my-2">
-                <hr className="border-gray-300" />
-                <span className="absolute left-1/2 -translate-x-1/2 bg-white px-2 text-xs text-gray-500">or</span>
+              <div className="flex items-center gap-3 text-xs text-gray-500" aria-hidden="true">
+                <span className="flex-1 h-px bg-gray-300" />
+                or
+                <span className="flex-1 h-px bg-gray-300" />
               </div>
               <button
                 onClick={() => setShowAdminForm(true)}
-                className="w-full flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-3 px-4 rounded-xl transition"
+                className="w-full flex items-center justify-center gap-3 bg-gray-100 hover:bg-gray-200 border border-gray-200 text-gray-700 font-medium py-3 px-4 rounded-xl transition shadow-sm"
               >
                 🔐 Admin Login
               </button>
@@ -113,7 +114,7 @@ export default function LoginModal({ isOpen, onClose }) {
               <button
                 type="button"
                 onClick={() => setShowAdminForm(false)}
-                className="w-full text-sm text-indigo-600 hover:underline mt-2"
+                className="w-full text-sm text-indigo-600 hover:underline py-1"
               >
                 ← Back to options
               </button>

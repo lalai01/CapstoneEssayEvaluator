@@ -44,7 +44,15 @@ def validate_node(state: EvaluationState) -> dict:
 def score_node(state: EvaluationState) -> dict:
     analysis = analyze_essay_content(state["essay_text"])
     if state.get("evaluation_type") == "holistic":
-        ...
+        score = calculate_holistic_score(
+            state["essay_text"],
+            analysis,
+            rubric=state.get("rubric"),
+        )
+        scores = {
+            "holistic_score": score,
+            "level_description": HOLISTIC_RUBRIC[score],
+        }
     else:
         scores = calculate_analytic_scores(
             state["essay_text"],
@@ -80,9 +88,11 @@ def feedback_node(state: EvaluationState) -> dict:
             state["scores"],
             analysis,
             state.get("rag_context") or "",
+            rubric=state.get("rubric"),
         )
     enhanced = enhance_feedback_with_ai(
-        state["essay_text"], state["scores"], analysis, rule_feedback
+        state["essay_text"], state["scores"], analysis, rule_feedback,
+        rubric=state.get("rubric"),
     )
     return {"feedback": enhanced}
 

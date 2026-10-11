@@ -134,28 +134,61 @@ def extract_text_from_image_bytes(image_bytes):
                 print(f"[OCR] TrOCR failed, falling back to Tesseract: {e}")
 
         pil = Image.open(BytesIO(image_bytes))
-        text = pytesseract.image_to_string(pil, config="--oem 1 --psm 6")
-
-        if not text or not text.strip():
+        text, conf = tesseract_text_and_confidence(pil)
+        if not text.strip():
             return "", 0.0, "tesseract"
-
-        data = pytesseract.image_to_data(
-            pil, output_type=pytesseract.Output.DICT
-        )
-        conf_values = []
-        for c, t in zip(data["conf"], data.get("text", [])):
-            try:
-                v = float(c)
-            except (TypeError, ValueError):
-                continue
-            if v >= 0 and t and t.strip():
-                conf_values.append(v)
-
-        conf = sum(conf_values) / len(conf_values) if conf_values else 0.0
         return text, conf, "tesseract"
     except Exception as e:
         print(f"extract_text_from_image_bytes failed: {e}")
         return "", 0.0, "tesseract"
+
+
+# English only: one language model keeps Tesseract fast and avoids
+# misreads from other scripts.
+TESSERACT_CONFIG = "-l eng --oem 1 --psm 6"
+
+
+def tesseract_text_and_confidence(pil_image):
+    """
+    One Tesseract pass that yields both the text and the mean word
+    confidence (image_to_string + image_to_data would OCR the page twice).
+    Lines are rebuilt from Tesseract's block/paragraph/line numbering.
+    """
+    import pytesseract
+
+    data = pytesseract.image_to_data(
+        pil_image, config=TESSERACT_CONFIG, output_type=pytesseract.Output.DICT
+    )
+
+    lines = []
+    current_key = None
+    current_words = []
+    last_par = None
+    conf_values = []
+    for i, word in enumerate(data["text"]):
+        if not word or not word.strip():
+            continue
+        try:
+            c = float(data["conf"][i])
+        except (TypeError, ValueError):
+            c = -1
+        if c >= 0:
+            conf_values.append(c)
+
+        par = (data["block_num"][i], data["par_num"][i])
+        key = par + (data["line_num"][i],)
+        if key != current_key:
+            if current_words:
+                lines.append(" ".join(current_words))
+            if last_par is not None and par != last_par:
+                lines.append("")  # paragraph break
+            current_key, current_words, last_par = key, [], par
+        current_words.append(word.strip())
+    if current_words:
+        lines.append(" ".join(current_words))
+
+    conf = sum(conf_values) / len(conf_values) if conf_values else 0.0
+    return "\n".join(lines), conf
 
 
 def extract_text_from_image(image_path):
@@ -175,26 +208,37 @@ def extract_docx_text(docx_bytes):
     return "\n\n".join(paragraphs)
 
 
-def extract_pdf_text_or_route(pdf_bytes):
+# Pages with at least this many characters in their text layer are read
+# directly; anything less is treated as a scanned page and OCR'd.
+MIN_TEXT_LAYER_CHARS = 50
+PDF_RENDER_DPI = 200
+
+
+def split_pdf_pages(pdf_bytes):
     """
-    Returns one of:
-      ("text",   full_text)                 -> PDF had a text layer
-      ("images", [page_png_bytes, ...])     -> scanned PDF, pages to OCR
+    Decide per page whether OCR is needed, so a PDF that mixes typed and
+    scanned pages only OCRs the scanned ones.
+
+    Returns a list in page order of:
+      ("text",  page_text)   -> page has a usable text layer (instant)
+      ("image", png_bytes)   -> scanned/handwritten page to OCR
+    Blank pages are skipped.
     """
     import fitz  # PyMuPDF
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-    total_text = ""
-    for page in doc:
-        total_text += page.get_text()
-
-    if len(total_text.strip()) > 100:
+    pages = []
+    try:
+        for page in doc:
+            text = page.get_text()
+            if len(text.strip()) >= MIN_TEXT_LAYER_CHARS:
+                pages.append(("text", text.strip()))
+                continue
+            # Grayscale render: a third of the data of RGB and all the OCR
+            # engines convert to grayscale anyway.
+            pix = page.get_pixmap(dpi=PDF_RENDER_DPI, colorspace=fitz.csGRAY)
+            if np.frombuffer(pix.samples, np.uint8).min(initial=255) > 245:
+                continue  # blank page
+            pages.append(("image", pix.tobytes("png")))
+    finally:
         doc.close()
-        return "text", total_text
-
-    page_images = []
-    for page_num in range(len(doc)):
-        pix = doc[page_num].get_pixmap(dpi=200)
-        page_images.append(pix.tobytes("png"))
-    doc.close()
-    return "images", page_images
+    return pages

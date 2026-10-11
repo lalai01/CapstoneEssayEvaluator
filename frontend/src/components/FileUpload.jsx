@@ -21,24 +21,35 @@ export default function FileUpload({ onExtracted }) {
       // If it's a PDF job, poll for completion
       if (result.job_id) {
         setProgress('Processing PDF pages...');
+        const POLL_MS = 1500;
         let attempts = 0;
-        const maxAttempts = 60; // up to 5 minutes
+        const maxAttempts = Math.ceil((5 * 60 * 1000) / POLL_MS); // up to 5 minutes
         while (attempts < maxAttempts) {
-          await new Promise(r => setTimeout(r, 5000));
+          await new Promise(r => setTimeout(r, POLL_MS));
           const status = await pollOcrStatus(result.job_id);
 
           if (status.status === 'completed') {
+            const text = (status.text || '').trim();
+            if (!text) {
+              throw new Error('PDF OCR finished but returned no text.');
+            }
             onExtracted({
               text: status.text,
-              confidence: status.confidence ?? 90,
+              confidence: status.confidence ?? 0,
               method: `PDF OCR (${status.engine || 'auto'})`,
+              low_confidence: !!status.low_confidence,
             });
             toast.success('PDF text extracted');
             break;
           } else if (status.status === 'failed') {
             throw new Error(status.error || 'OCR failed');
           } else {
-            setProgress(`Processing page (${attempts + 1})...`);
+            const seconds = Math.round(((attempts + 1) * POLL_MS) / 1000);
+            setProgress(
+              status.current_engine
+                ? `${status.current_engine} done · ${seconds}s`
+                : `Reading PDF… ${seconds}s`
+            );
           }
           attempts++;
         }

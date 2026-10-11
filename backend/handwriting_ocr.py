@@ -1,4 +1,6 @@
 import math
+import os
+import threading
 import cv2
 import numpy as np
 from PIL import Image
@@ -7,14 +9,36 @@ import torch
 
 _processor = None
 _model = None
+_load_lock = threading.Lock()
+# One model instance is shared by all requests and PDF page workers.
+# PyTorch already uses every core per forward pass, so running two passes
+# at once only makes both slower; serialize them.
+_infer_lock = threading.Lock()
+
+# A handwritten line is rarely more than ~30 tokens; 64 leaves headroom
+# while stopping runaway generations early.
+MAX_LINE_TOKENS = 64
+BATCH_SIZE = 8
 
 
 def _load():
     global _processor, _model
-    if _processor is None:
-        _processor = TrOCRProcessor.from_pretrained("/opt/trocr")
-        _model = VisionEncoderDecoderModel.from_pretrained("/opt/trocr")
-        _model.eval()
+    with _load_lock:
+        if _processor is not None:
+            return
+        processor = TrOCRProcessor.from_pretrained("/opt/trocr")
+        model = VisionEncoderDecoderModel.from_pretrained("/opt/trocr")
+        model.eval()
+        # Optional int8 dynamic quantization: roughly 2x faster on CPU with
+        # a small accuracy cost. Enable with TROCR_QUANTIZE=1 after checking
+        # results on your own samples.
+        if os.environ.get("TROCR_QUANTIZE") == "1":
+            model = torch.quantization.quantize_dynamic(
+                model, {torch.nn.Linear}, dtype=torch.qint8
+            )
+            print("[TrOCR] using int8 dynamic quantization")
+        _model = model
+        _processor = processor
 
 
 def _crop_to_content(gray):
@@ -156,10 +180,11 @@ def _transcribe_batch(pil_images):
         images=pil_images, return_tensors="pt"
     ).pixel_values
 
-    with torch.no_grad():
+    with _infer_lock, torch.inference_mode():
         outputs = _model.generate(
             pixel_values,
-            max_new_tokens=128,
+            max_new_tokens=MAX_LINE_TOKENS,
+            num_beams=1,  # greedy decoding; beam search multiplies the cost
             output_scores=True,
             return_dict_in_generate=True,
         )
@@ -230,7 +255,6 @@ def ocr_handwriting_image(image_bytes):
         print("[TrOCR] no crops to process")
         return "", 0.0
 
-    BATCH_SIZE = 4
     texts = []
     confidences = []
     for i in range(0, len(crops), BATCH_SIZE):

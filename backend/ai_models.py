@@ -95,7 +95,9 @@ def test_prompt(ai_provider, system_prompt, user_prompt, model=None):
 
     if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat")
-    elif provider in ("gemma", "ollama"):
+    elif provider == "gemma":
+        return call_ollama(system_prompt, user_prompt, model or "gemma2:2b")
+    elif provider == "ollama":
         return call_ollama(system_prompt, user_prompt, model or "llama3.2:3b")
     elif provider == "llamacpp":
         return call_llamacpp(system_prompt, user_prompt, model)

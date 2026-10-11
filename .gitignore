@@ -55,3 +55,24 @@ backend/training-data/
 backend/trocr-finetuned/
 backend/handwriting_dataset/
 *.zip
+# ===============================
+# Local OCR / handwriting experiments (kept on disk, not part of the app)
+# ===============================
+EasyOCR/
+backend/full_dataset/
+backend/my_handwriting/
+backend/create_lmdb.py
+backend/download_dataset.py
+backend/inspect_dataset.py
+backend/inspect_lmdb.py
+backend/prepare_small_dataset.py
+backend/test_handwriting.py
+backend/train_combined_lora.py
+backend/train_handwriting_model.py
+backend/train_local.py
+backend/handwritten_note.png
+dataset_report.txt
+inspect_dataset.bat
+
+# Firebase CLI cache
+frontend/.firebase/
