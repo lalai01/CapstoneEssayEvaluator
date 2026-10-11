@@ -1,8 +1,8 @@
 import React from 'react';
 import toast from 'react-hot-toast';
-import { jsPDF } from 'jspdf';
 import { saveKnowledge, saveOverride } from '../api';
 import { useAuth } from '../context/AuthContext';
+import ReportDialog from './ReportDialog';
 import {
   getCriteria,
   totalScore,
@@ -188,68 +188,6 @@ function AnalyzingLoader() {
 }
 
 // ============================================================
-// PDF Export
-// ============================================================
-function exportEvaluationPDF({ title, essayText, feedback, scores, evalType, userEmail }) {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const margin = 40;
-  let y = margin;
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.text('Essay Evaluation Report', margin, y);
-  y += 24;
-
-  doc.setFontSize(12);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Title: ${title || 'Untitled Essay'}`, margin, y); y += 16;
-  doc.text(`Evaluator: ${userEmail || 'Anonymous'}`, margin, y); y += 16;
-  doc.text(`Evaluation Type: ${evalType}`, margin, y); y += 16;
-  doc.text(`Date: ${new Date().toLocaleString()}`, margin, y); y += 24;
-
-  doc.setFont('helvetica', 'bold');
-  doc.text('Scores', margin, y); y += 18;
-  doc.setFont('helvetica', 'normal');
-
-  if (evalType === 'holistic') {
-    doc.text(`Holistic Score: ${scores.holistic_score}/5`, margin, y); y += 16;
-    doc.text(`Level: ${scores.level_description || ''}`, margin, y); y += 24;
-  } else {
-    const criteria = getCriteria(scores);
-    criteria.forEach(({ key, label, max_score }) => {
-      const v = scores[key];
-      doc.text(`${label}: ${typeof v === 'number' ? v : '—'}/${max_score}`, margin, y);
-      y += 16;
-    });
-    y += 8;
-
-    const weighted = weightedFraction(scores, criteria);
-
-    doc.setFont('helvetica', 'bold');
-    doc.text(`Total: ${totalScore(scores, criteria)} / ${maxTotal(criteria)}`, margin, y); y += 16;
-    doc.text(`Average: ${pct(averageFraction(scores, criteria))}`, margin, y); y += 16;
-    doc.text(`Weighted: ${pct(weighted)} (${gradeFromFraction(weighted).label})`, margin, y); y += 24;
-    doc.setFont('helvetica', 'normal');
-  }
-
-  doc.setFont('helvetica', 'bold');
-  doc.text('Feedback', margin, y); y += 18;
-  doc.setFont('helvetica', 'normal');
-  const feedbackLines = doc.splitTextToSize(feedback || '', pageWidth - margin * 2);
-  doc.text(feedbackLines, margin, y);
-  y += feedbackLines.length * 14 + 16;
-
-  doc.setFont('helvetica', 'bold');
-  doc.text('Essay Text', margin, y); y += 18;
-  doc.setFont('helvetica', 'normal');
-  const essayLines = doc.splitTextToSize(essayText || '', pageWidth - margin * 2);
-  doc.text(essayLines, margin, y);
-
-  doc.save(`evaluation-${(title || 'essay').replace(/\s+/g, '_')}.pdf`);
-}
-
-// ============================================================
 // Satisfaction rating (1–10)
 // ============================================================
 function satisfactionLabel(v) {
@@ -321,11 +259,17 @@ export default function Results({
   const [submittingOverride, setSubmittingOverride] = React.useState(false);
   // 1–10 rating of how satisfied the user is with this evaluation.
   const [satisfaction, setSatisfaction] = React.useState(null);
+  const [showReport, setShowReport] = React.useState(false);
+  // The submitted override (teacher scores + remarks), reused in the report.
+  const [submittedOverride, setSubmittedOverride] = React.useState(null);
 
   // A new evaluation needs a fresh rating.
   React.useEffect(() => {
     setSatisfaction(null);
+    setSubmittedOverride(null);
   }, [scores]);
+
+  const aiLabel = scores?.evaluated_by?.label || null;
 
   const handleSaveToKB = async () => {
     if (!essayText || !scores) {
@@ -355,6 +299,9 @@ export default function Results({
         accepted: true,
         satisfaction,
         teacher_feedback: null,
+        // Full scores keep admin/teacher-defined criteria and the rubric used.
+        scores,
+        ai_model: aiLabel,
       };
       await saveKnowledge(payload);
       toast.success('Saved to knowledge base!');
@@ -376,11 +323,10 @@ export default function Results({
       getCriteria(scores).forEach(({ key }) => { initial[key] = scores[key]; });
     }
     setTeacherScores(initial);
-    // Strip the internal [RAG_INSIGHTS] block so the teacher edits plain feedback.
-    setTeacherFeedback(
-      (feedback || '').replace(/\[RAG_INSIGHTS_START\][\s\S]*?\[RAG_INSIGHTS_END\]/, '').trim()
-    );
-    setSuggestedChanges('');
+    // Remarks are the teacher's own words; the AI feedback is shown separately
+    // for reference rather than pre-filled (which saved the AI's text as "remarks").
+    setTeacherFeedback(submittedOverride?.remarks || '');
+    setSuggestedChanges(submittedOverride?.suggestions || '');
     setShowOverrideModal(true);
   };
 
@@ -393,7 +339,7 @@ export default function Results({
 
   const submitOverride = async () => {
     if (!teacherFeedback.trim()) {
-      toast.error('Please provide your feedback.');
+      toast.error('Please write your remarks for this essay.');
       return;
     }
     const cleanedTeacherScores = {};
@@ -410,15 +356,23 @@ export default function Results({
     setSubmittingOverride(true);
     try {
       await saveOverride({
+        title: essayTitle?.trim() || null,
+        ai_model: aiLabel,
         original_essay: essayText,
         original_scores: scores,
         teacher_scores: Object.keys(cleanedTeacherScores).length ? cleanedTeacherScores : null,
-        teacher_feedback: teacherFeedback,
-        suggested_changes: suggestedChanges || null,
+        teacher_feedback: teacherFeedback.trim(),
+        suggested_changes: suggestedChanges.trim() || null,
         accepted: false,
         satisfaction,
       });
-      toast.success('Override saved to learning knowledge base!');
+      const changed = Object.entries(cleanedTeacherScores).some(([k, v]) => v !== scores[k]);
+      setSubmittedOverride({
+        teacherScores: changed ? cleanedTeacherScores : null,
+        remarks: teacherFeedback.trim(),
+        suggestions: suggestedChanges.trim(),
+      });
+      toast.success('Override saved to the Learning Hub');
       setShowOverrideModal(false);
     } catch (err) {
       toast.error('Failed to save override: ' + errorMessage(err));
@@ -477,6 +431,20 @@ export default function Results({
           <span className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white text-sm">2</span>
           Evaluation Scores
         </h2>
+        {(aiLabel || scores?.rubric?.title) && (
+          <div className="flex flex-wrap gap-2 -mt-2 mb-4 text-xs">
+            {aiLabel && (
+              <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-1 rounded-full">
+                🤖 Scored by {aiLabel}
+              </span>
+            )}
+            {scores?.rubric?.title && evalType !== 'holistic' && (
+              <span className="bg-gray-50 text-gray-700 border border-gray-200 px-2 py-1 rounded-full">
+                📐 {scores.rubric.title}
+              </span>
+            )}
+          </div>
+        )}
 
         {evalType === 'holistic' ? (
           <div className="text-center mb-6">
@@ -603,19 +571,10 @@ export default function Results({
               </button>
             </div>
             <button
-              onClick={() =>
-                exportEvaluationPDF({
-                  title: essayTitle,
-                  essayText,
-                  feedback: mainFeedback,
-                  scores,
-                  evalType,
-                  userEmail: user?.email,
-                })
-              }
+              onClick={() => setShowReport(true)}
               className="w-full bg-gradient-to-r from-sky-500 to-cyan-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
             >
-              📄 Download Report (PDF)
+              📄 Generate Evaluation Report
             </button>
           </div>
         ) : (
@@ -720,6 +679,28 @@ export default function Results({
         )}
       </div>
 
+      {showReport && (
+        <ReportDialog
+          onClose={() => setShowReport(false)}
+          defaults={{
+            teacherName: user?.user_metadata?.full_name || user?.email || '',
+            // The override's remarks and suggestions become the report's teacher comments.
+            teacherComments: submittedOverride
+              ? [submittedOverride.remarks, submittedOverride.suggestions && `Suggestions: ${submittedOverride.suggestions}`]
+                .filter(Boolean).join('\n\n')
+              : '',
+          }}
+          reportData={{
+            title: essayTitle,
+            essayText,
+            feedback: mainFeedback,
+            scores,
+            evalType,
+            teacherScores: submittedOverride?.teacherScores || null,
+          }}
+        />
+      )}
+
       {/* Override Modal */}
       {showOverrideModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in">
@@ -757,20 +738,41 @@ export default function Results({
               })}
             </div>
 
-            <label className="block text-sm font-semibold mb-1">Your Feedback (required)</label>
+            {mainFeedback && (
+              <details className="mb-4 border rounded-xl bg-gray-50">
+                <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-gray-700">
+                  🤖 AI feedback (for reference{aiLabel ? ` · ${aiLabel}` : ''})
+                </summary>
+                <p className="px-3 pb-3 text-sm text-gray-700 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                  {mainFeedback}
+                </p>
+              </details>
+            )}
+
+            <label htmlFor="override-remarks" className="block text-sm font-semibold mb-1">
+              Teacher's remarks <span className="text-red-500">*</span>
+            </label>
+            <p className="text-xs text-gray-500 mb-1">
+              Your own assessment: what the AI got wrong and how you judge the essay. Saved to the Learning Hub and used to improve later evaluations.
+            </p>
             <textarea
+              id="override-remarks"
               rows="4"
               className="w-full border rounded-xl p-3 mb-3 focus:ring-2 focus:ring-blue-500"
               value={teacherFeedback}
               onChange={(e) => setTeacherFeedback(e.target.value)}
+              placeholder="e.g., The thesis is clearer than the AI suggests, but the evidence in paragraph 2 is unsupported."
             />
-            <label className="block text-sm font-semibold mb-1">Suggested Changes (optional)</label>
+            <label htmlFor="override-suggestions" className="block text-sm font-semibold mb-1">
+              Suggestions for the student <span className="font-normal text-gray-400">(optional)</span>
+            </label>
             <textarea
+              id="override-suggestions"
               rows="3"
               className="w-full border rounded-xl p-3 mb-4 focus:ring-2 focus:ring-blue-500"
               value={suggestedChanges}
               onChange={(e) => setSuggestedChanges(e.target.value)}
-              placeholder="What specific changes would improve the essay?"
+              placeholder="e.g., Cite at least two studies in paragraph 2 and explain how each supports your thesis."
             />
             <div className="flex justify-end gap-3">
               <button

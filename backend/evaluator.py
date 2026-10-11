@@ -186,31 +186,77 @@ def descriptor_for(criterion, score):
     return ""
 
 
-def get_active_rubric(user_id=None):
+BUILTIN_RUBRIC_INFO = {"id": None, "title": "Built-in analytic rubric", "source": "builtin"}
+
+
+def _rubric_client():
+    from supabase_client import supabase, supabase_admin
+    return supabase_admin or supabase
+
+
+def _latest_active(client, **filters):
+    query = client.table("rubrics").select("id,title,criteria,is_system,user_id").eq("is_active", True)
+    for column, value in filters.items():
+        query = query.eq(column, value)
+    result = query.order("created_at", desc=True).limit(1).execute()
+    row = result.data[0] if result.data else None
+    return row if row and row.get("criteria") else None
+
+
+def _info(row, source):
+    return {"id": row["id"], "title": row.get("title") or "Untitled rubric", "source": source}
+
+
+def resolve_rubric(user_id=None, rubric_id=None):
     """
-    The rubric admins configured in the Rubric Manager applies system-wide:
-    the most recently created active rubric wins. Falls back to the built-in
-    analytic rubric. `user_id` is kept for call-site compatibility.
+    Pick the rubric for an evaluation. Returns (criteria, info) where info is
+    {"id", "title", "source": "chosen" | "teacher" | "system" | "builtin"}.
+
+    Order: the rubric the teacher explicitly chose (if they may use it) →
+    the teacher's own default rubric → the admin's school-wide rubric →
+    the built-in rubric.
     """
     try:
-        from supabase_client import supabase, supabase_admin
-        client = supabase_admin or supabase
+        client = _rubric_client()
         if not client:
-            return ANALYTIC_RUBRIC
+            return ANALYTIC_RUBRIC, BUILTIN_RUBRIC_INFO
 
-        result = client.table("rubrics") \
-            .select("criteria") \
-            .eq("is_active", True) \
-            .order("created_at", desc=True) \
-            .limit(1) \
-            .execute()
+        if rubric_id is not None:
+            result = client.table("rubrics") \
+                .select("id,title,criteria,is_system,user_id") \
+                .eq("id", rubric_id).limit(1).execute()
+            row = result.data[0] if result.data else None
+            if row and row.get("criteria") and (row.get("is_system") or row.get("user_id") == user_id):
+                return row["criteria"], _info(row, "chosen")
+            print(f"Rubric {rubric_id} not usable by {user_id}; falling back")
 
-        if result.data and result.data[0].get("criteria"):
-            return result.data[0]["criteria"]
+        if user_id:
+            row = _latest_active(client, user_id=user_id, is_system=False)
+            if row:
+                return row["criteria"], _info(row, "teacher")
+
+        row = _latest_active(client, is_system=True)
+        if row:
+            return row["criteria"], _info(row, "system")
     except Exception as e:
-        print(f"Rubric fetch failed: {e}")
+        # Most likely the is_system column hasn't been added yet: behave as
+        # before (latest active rubric is school-wide).
+        print(f"Rubric resolution failed ({e}); trying legacy lookup")
+        try:
+            result = _rubric_client().table("rubrics") \
+                .select("id,title,criteria").eq("is_active", True) \
+                .order("created_at", desc=True).limit(1).execute()
+            if result.data and result.data[0].get("criteria"):
+                return result.data[0]["criteria"], _info(result.data[0], "system")
+        except Exception as e2:
+            print(f"Legacy rubric lookup failed: {e2}")
 
-    return ANALYTIC_RUBRIC
+    return ANALYTIC_RUBRIC, BUILTIN_RUBRIC_INFO
+
+
+def get_active_rubric(user_id=None):
+    """Criteria of the rubric that applies to this user by default."""
+    return resolve_rubric(user_id)[0]
 
 
 def is_valid_essay(text):
@@ -325,6 +371,23 @@ def _essay_facts(essay_text):
         "citation_count": citation_count,
         "transition_count": transition_count,
     }
+
+
+MODEL_LABELS = {
+    "llama3.2:3b": "Llama 3.2 3B (Ollama)",
+    "gemma2:2b": "Gemma 2 2B (Ollama)",
+    "deepseek-chat": "DeepSeek Chat",
+}
+
+
+def evaluated_by(model=None):
+    """Which AI produced the scores; None means the rule-based fallback."""
+    if model is None:
+        return {"provider": "heuristic", "model": None,
+                "label": "Rule-based scoring (AI unavailable)"}
+    provider = "deepseek" if model.startswith("deepseek") else "ollama"
+    return {"provider": provider, "model": model,
+            "label": MODEL_LABELS.get(model, model)}
 
 
 def _is_default_rubric_shape(criteria):
@@ -535,6 +598,7 @@ RULES:
         result["recommendations"] = recs if isinstance(recs, list) else []
 
         result["criteria_meta"] = rubric_meta(criteria)
+        result["evaluated_by"] = evaluated_by(model)
         return result
 
     except json.JSONDecodeError as e:
@@ -675,6 +739,7 @@ def _heuristic_scores_for_rubric(essay_text, analysis, criteria):
     result["grammar_issues"] = []
     result["recommendations"] = []
     result["criteria_meta"] = rubric_meta(criteria)
+    result["evaluated_by"] = evaluated_by(None)
     return result
 
 
@@ -702,6 +767,11 @@ def weighted_fraction(scores, rubric=None):
 
 def calculate_holistic_score(essay_text, analysis, rubric=None):
     analytic = calculate_analytic_scores(essay_text, analysis, rubric=rubric)
+    return holistic_from_analytic(analytic, rubric)
+
+
+def holistic_from_analytic(analytic, rubric=None):
+    """Map analytic scores onto the 1-5 holistic scale."""
     if not any(isinstance(v, (int, float)) for v in analytic.values()):
         return 3
     avg = 1 + 3 * weighted_fraction(analytic, rubric)  # 1.0 – 4.0 equivalent

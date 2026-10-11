@@ -6,7 +6,7 @@ from evaluator import (
     is_valid_essay,
     analyze_essay_content,
     calculate_analytic_scores,
-    calculate_holistic_score,
+    holistic_from_analytic,
     generate_rule_based_analytic_feedback,
     generate_rule_based_holistic_feedback,
     enhance_feedback_with_ai,
@@ -44,14 +44,16 @@ def validate_node(state: EvaluationState) -> dict:
 def score_node(state: EvaluationState) -> dict:
     analysis = analyze_essay_content(state["essay_text"])
     if state.get("evaluation_type") == "holistic":
-        score = calculate_holistic_score(
+        analytic = calculate_analytic_scores(
             state["essay_text"],
             analysis,
             rubric=state.get("rubric"),
         )
+        score = holistic_from_analytic(analytic, state.get("rubric"))
         scores = {
             "holistic_score": score,
             "level_description": HOLISTIC_RUBRIC[score],
+            "evaluated_by": analytic.get("evaluated_by"),
         }
     else:
         scores = calculate_analytic_scores(

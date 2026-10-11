@@ -1,8 +1,26 @@
-import React, { useState, useEffect } from 'react';
-import { listKnowledge, getRubric, getSuggestions } from '../api';
+import React, { useState, useEffect, useMemo } from 'react';
+import { listKnowledge, listLearningFeedback, getRubric, getSuggestions } from '../api';
 import { useAuth } from '../context/AuthContext';
 import LoadingIndicator from './LoadingIndicator';
+import EntryFilters, { RichText } from './EntryFilters';
 import toast from 'react-hot-toast';
+import {
+  DEFAULT_CRITERIA,
+  getCriteria,
+  averageFraction,
+  fractionOf,
+  colorForFraction,
+  errorMessage,
+  entryScores,
+  entryTitle,
+  entryAiLabel,
+  entryRubricTitle,
+  essayKey,
+  matchesSearch,
+  countByAi,
+  sortEntries,
+  isNum,
+} from '../lib/scoring';
 
 // ---------- Safe value renderer ----------
 function safeRender(value) {
@@ -11,59 +29,28 @@ function safeRender(value) {
   return String(value);
 }
 
-// ---------- Average of 5 rubric criteria on 1-4 scale ----------
-function computeAverage(entry) {
-  if (!entry) return null;
-  const keys = ['main_statement', 'organization', 'evidence', 'analysis', 'grammar'];
-  const values = keys
-    .map(k => entry[k])
-    .filter(v => typeof v === 'number' && !isNaN(v));
-  if (values.length === 0) return null;
-  return values.reduce((a, b) => a + b, 0) / values.length;
+// Scores and criteria for a saved entry. Newer entries store the full scores
+// (any rubric); older ones only have the five built-in 1–4 columns.
+function entryScoreView(entry) {
+  const full = entryScores(entry);
+  if (full && getCriteria(full).length) {
+    return { values: full, criteria: getCriteria(full) };
+  }
+  return { values: entry, criteria: DEFAULT_CRITERIA };
 }
 
-// ---------- Get a single numeric score to display in the list ----------
 function getDisplayScore(entry) {
-  if (!entry) return { value: '—', isHolistic: false };
-
   if (entry.eval_type === 'holistic') {
     const hs = entry.holistic_score;
-    return {
-      value: typeof hs === 'number' ? `${hs}/5` : '—',
-      isHolistic: true,
-    };
+    return { text: isNum(hs) ? `${hs}/5` : '—', fraction: fractionOf(hs, 5) };
   }
-
-  const avg = computeAverage(entry);
-  return {
-    value: avg !== null ? `${avg.toFixed(1)}/4` : '—',
-    isHolistic: false,
-  };
+  const { values, criteria } = entryScoreView(entry);
+  const f = averageFraction(values, criteria);
+  return { text: f === null ? '—' : `${Math.round(f * 100)}%`, fraction: f };
 }
 
-function colorFrom4Scale(score) {
-  if (score === null || score === undefined) return 'text-gray-400';
-  if (score >= 3.5) return 'text-emerald-600';
-  if (score >= 2.5) return 'text-blue-600';
-  if (score >= 1.5) return 'text-amber-600';
-  return 'text-red-500';
-}
-
-function colorFrom5Scale(score) {
-  if (score === null || score === undefined) return 'text-gray-400';
-  if (score >= 4.5) return 'text-emerald-600';
-  if (score >= 3.5) return 'text-blue-600';
-  if (score >= 2.5) return 'text-amber-600';
-  return 'text-red-500';
-}
-
-const CRITERION_COLORS = {
-  main_statement: { dot: 'bg-blue-400',    bar: 'bg-blue-500',    text: 'text-blue-700' },
-  organization:   { dot: 'bg-emerald-400', bar: 'bg-emerald-500', text: 'text-emerald-700' },
-  evidence:       { dot: 'bg-purple-400',  bar: 'bg-purple-500',  text: 'text-purple-700' },
-  analysis:       { dot: 'bg-amber-400',   bar: 'bg-amber-500',   text: 'text-amber-700' },
-  grammar:        { dot: 'bg-pink-400',    bar: 'bg-pink-500',    text: 'text-pink-700' },
-};
+const BAR_COLORS = ['bg-blue-500', 'bg-emerald-500', 'bg-purple-500', 'bg-amber-500', 'bg-pink-500', 'bg-cyan-500', 'bg-orange-500'];
+const TEXT_COLORS = ['text-blue-700', 'text-emerald-700', 'text-purple-700', 'text-amber-700', 'text-pink-700', 'text-cyan-700', 'text-orange-700'];
 
 // ---------- Filter helpers for rich fields ----------
 function filterGrammarIssues(issues) {
@@ -89,10 +76,17 @@ export default function KnowledgeBase() {
   const [rubric, setRubric] = useState(null);
   const [suggestions, setSuggestions] = useState(null);
   const [entries, setEntries] = useState([]);
+  // essayKey → teacher overrides of that essay (from the Learning Hub)
+  const [overridesByEssay, setOverridesByEssay] = useState(new Map());
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [showFullEssay, setShowFullEssay] = useState(false);
   const [showFullFeedback, setShowFullFeedback] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const [search, setSearch] = useState('');
+  const [aiFilter, setAiFilter] = useState('all');
+  const [sort, setSort] = useState('newest');
+  const [status, setStatus] = useState('all');
 
   useEffect(() => {
     if (user) {
@@ -105,27 +99,43 @@ export default function KnowledgeBase() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [rubricData, suggestionsData, entriesData] = await Promise.all([
+      const [rubricData, suggestionsData, entriesData, overrides] = await Promise.all([
         getRubric(),
         getSuggestions(),
         listKnowledge(),
+        listLearningFeedback().catch(() => []),
       ]);
       setRubric(rubricData);
       setSuggestions(suggestionsData);
       setEntries(entriesData);
+      const byEssay = new Map();
+      for (const o of overrides) {
+        const key = essayKey(o.original_essay);
+        byEssay.set(key, [...(byEssay.get(key) || []), o]);
+      }
+      setOverridesByEssay(byEssay);
     } catch (err) {
-      toast.error('Failed to load data: ' + err.message);
+      toast.error('Failed to load data: ' + errorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
-  const formatText = (text) => {
-    if (!text) return '';
-    let formatted = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    formatted = formatted.replace(/\n/g, '<br />');
-    return <span dangerouslySetInnerHTML={{ __html: formatted }} />;
-  };
+  const overridesOf = (entry) => overridesByEssay.get(essayKey(entry.essay)) || [];
+
+  const aiCounts = useMemo(() => countByAi(entries, entryAiLabel), [entries]);
+
+  const visible = useMemo(() => {
+    const filtered = entries.filter((entry) => {
+      const overridden = (overridesByEssay.get(essayKey(entry.essay)) || []).length > 0;
+      return (
+        (aiFilter === 'all' || entryAiLabel(entry) === aiFilter) &&
+        (status === 'all' || (status === 'overridden' && overridden) || (status === 'saved-only' && !overridden)) &&
+        matchesSearch(search, entryTitle(entry), entry.essay, entry.feedback)
+      );
+    });
+    return sortEntries(filtered, sort, entryTitle);
+  }, [entries, overridesByEssay, aiFilter, status, search, sort]);
 
   if (!user) {
     return (
@@ -145,91 +155,93 @@ export default function KnowledgeBase() {
     );
   }
 
+  const selectedView = selectedEntry ? entryScoreView(selectedEntry) : null;
+  const selectedOverrides = selectedEntry ? overridesOf(selectedEntry) : [];
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
       {/* ============ Left: entries list ============ */}
       <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/90 backdrop-blur-md">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold text-indigo-700">📚 Saved Evaluations</h2>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-2xl font-bold text-indigo-700">📚 Knowledge Base</h2>
           <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded-full">
-            {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+            {visible.length}/{entries.length} saved
           </span>
         </div>
+        <p className="text-sm text-gray-600 mb-4">
+          Evaluations you accepted and saved. Overridden essays are also listed in the Learning Hub.
+        </p>
+
+        <EntryFilters
+          search={search}
+          onSearch={setSearch}
+          placeholder="Search title, essay, feedback…"
+          aiCounts={aiCounts}
+          aiFilter={aiFilter}
+          onAiFilter={setAiFilter}
+          sort={sort}
+          onSort={setSort}
+          extraFilters={[
+            { id: 'all', label: 'All' },
+            { id: 'saved-only', label: '💾 Saved only' },
+            { id: 'overridden', label: '✏️ Also overridden' },
+          ]}
+          activeExtra={status}
+          onExtra={setStatus}
+        />
 
         {entries.length === 0 ? (
           <div className="text-center py-12">
             <div className="text-5xl mb-3">📭</div>
             <p className="text-gray-700">No saved evaluations yet.</p>
-            <p className="text-sm text-gray-600 mt-1">
-              Evaluate an essay and click "Save to KB".
-            </p>
+            <p className="text-sm text-gray-600 mt-1">Evaluate an essay and click "Save to KB".</p>
           </div>
+        ) : visible.length === 0 ? (
+          <p className="text-gray-500 text-sm">No saved evaluations match these filters.</p>
         ) : (
-          <ul className="space-y-2 max-h-[600px] overflow-y-auto pr-2">
-            {entries.map(entry => {
+          <ul className="space-y-2 max-h-[560px] overflow-y-auto pr-2">
+            {visible.map((entry) => {
               const display = getDisplayScore(entry);
               const isHolistic = entry.eval_type === 'holistic';
-              const scoreClass = isHolistic
-                ? colorFrom5Scale(entry.holistic_score)
-                : colorFrom4Scale(computeAverage(entry));
-
+              const overridden = overridesOf(entry).length > 0;
               return (
-                <li
-                  key={entry.id}
-                  className={`border border-gray-200 rounded-xl p-3 cursor-pointer transition-all hover:shadow-md ${
-                    selectedEntry?.id === entry.id
-                      ? 'bg-blue-50 border-blue-300 shadow-md'
-                      : 'bg-white hover:bg-gray-50'
-                  }`}
-                  onClick={() => {
-                    setSelectedEntry(entry);
-                    setShowFullEssay(false);
-                    setShowFullFeedback(false);
-                  }}
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <div className="font-semibold text-gray-800 truncate">
-                        {entry.title || `Essay #${entry.id}`}
+                <li key={entry.id}>
+                  <button
+                    className={`w-full text-left border rounded-xl p-3 transition-all hover:shadow-md ${
+                      selectedEntry?.id === entry.id
+                        ? 'bg-blue-50 border-blue-300 shadow-md'
+                        : 'bg-white border-gray-200 hover:bg-gray-50'
+                    }`}
+                    onClick={() => {
+                      setSelectedEntry(entry);
+                      setShowFullEssay(false);
+                      setShowFullFeedback(false);
+                    }}
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-800 truncate">{entryTitle(entry)}</div>
+                        <div className="text-xs text-gray-600 mt-1">
+                          {new Date(entry.created_at).toLocaleDateString(undefined, {
+                            month: 'short', day: 'numeric', year: 'numeric',
+                          })}
+                          {' · '}
+                          {isHolistic ? '🌟 Holistic' : '📊 Analytic'}
+                        </div>
                       </div>
-                      <div className="text-xs text-gray-600 mt-1">
-                        {new Date(entry.created_at).toLocaleDateString(undefined, {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
+                      <div className={`text-lg font-bold ${colorForFraction(display.fraction)}`}>
+                        {display.text}
                       </div>
                     </div>
-                    <div className={`text-lg font-bold ${scoreClass}`}>
-                      {display.value}
+                    <div className="text-xs text-gray-600 mt-2 line-clamp-2">
+                      {(entry.essay || '').substring(0, 120)}…
                     </div>
-                  </div>
-
-                  <div className="text-xs text-gray-600 mt-2 line-clamp-2">
-                    {(entry.essay || '').substring(0, 100)}...
-                  </div>
-
-                  <div className="flex items-center gap-3 mt-2 text-xs">
-                    {!isHolistic && (
-                      <>
-                        <span className="flex items-center gap-1">
-                          <span className={`w-2 h-2 rounded-full ${CRITERION_COLORS.main_statement.dot}`}></span>
-                          <span className="text-gray-700">MS:{safeRender(entry.main_statement)}</span>
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className={`w-2 h-2 rounded-full ${CRITERION_COLORS.organization.dot}`}></span>
-                          <span className="text-gray-700">OR:{safeRender(entry.organization)}</span>
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className={`w-2 h-2 rounded-full ${CRITERION_COLORS.evidence.dot}`}></span>
-                          <span className="text-gray-700">EV:{safeRender(entry.evidence)}</span>
-                        </span>
-                      </>
-                    )}
-                    <span className="ml-auto text-gray-600">
-                      {isHolistic ? '🌟 Holistic' : '📊 Analytic'}
-                    </span>
-                  </div>
+                    <div className="flex flex-wrap gap-1.5 mt-2 text-xs">
+                      <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">🤖 {entryAiLabel(entry)}</span>
+                      <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">💾 Saved</span>
+                      {overridden && <span className="bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full">✏️ Overridden</span>}
+                    </div>
+                  </button>
                 </li>
               );
             })}
@@ -242,23 +254,28 @@ export default function KnowledgeBase() {
         <h2 className="text-2xl font-bold text-indigo-700 mb-4">📋 Evaluation Details</h2>
 
         {selectedEntry ? (
-          <div className="space-y-5 max-h-[600px] overflow-y-auto pr-2">
+          <div className="space-y-5 max-h-[680px] overflow-y-auto pr-2">
             <div className="border-b border-gray-200 pb-3">
-              <h3 className="text-xl font-semibold text-gray-800">
-                {selectedEntry.title || `Essay #${selectedEntry.id}`}
-              </h3>
-              <p className="text-sm text-gray-600 mt-1">
-                Evaluated on {new Date(selectedEntry.created_at).toLocaleString()}
-              </p>
+              <h3 className="text-xl font-semibold text-gray-800">{entryTitle(selectedEntry)}</h3>
+              <div className="flex flex-wrap gap-1.5 mt-2 text-xs">
+                <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">🤖 Scored by {entryAiLabel(selectedEntry)}</span>
+                {entryRubricTitle(selectedEntry) && (
+                  <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">📐 {entryRubricTitle(selectedEntry)}</span>
+                )}
+                <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
+                  🕒 {new Date(selectedEntry.created_at).toLocaleString()}
+                </span>
+                <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
+                  Satisfaction {selectedEntry.satisfaction ?? '—'}/10
+                </span>
+              </div>
             </div>
 
             {selectedEntry.eval_type === 'holistic' ? (
               <div className="bg-gray-50 p-4 rounded-xl text-center">
                 <h4 className="font-semibold text-indigo-600 mb-3">Holistic Score</h4>
-                <div className={`text-6xl font-bold ${colorFrom5Scale(selectedEntry.holistic_score)}`}>
-                  {typeof selectedEntry.holistic_score === 'number'
-                    ? `${selectedEntry.holistic_score}/5`
-                    : '—'}
+                <div className={`text-6xl font-bold ${colorForFraction(fractionOf(selectedEntry.holistic_score, 5))}`}>
+                  {isNum(selectedEntry.holistic_score) ? `${selectedEntry.holistic_score}/5` : '—'}
                 </div>
                 <div className="mt-2 p-3 bg-white rounded-lg text-gray-700 border border-gray-200">
                   {selectedEntry.level_description || 'No description available.'}
@@ -268,35 +285,26 @@ export default function KnowledgeBase() {
               <div className="bg-gray-50 p-4 rounded-xl">
                 <h4 className="font-semibold text-indigo-600 mb-3">Scores</h4>
                 <div className="space-y-3">
-                  {[
-                    { key: 'main_statement', label: 'Main Statement' },
-                    { key: 'organization',   label: 'Organization' },
-                    { key: 'evidence',       label: 'Evidence' },
-                    { key: 'analysis',       label: 'Analysis' },
-                    { key: 'grammar',        label: 'Grammar' },
-                  ].map(({ key, label }) => {
-                    const value = selectedEntry[key];
-                    const color = CRITERION_COLORS[key];
-                    const percent = typeof value === 'number' ? (value / 4) * 100 : 0;
+                  {selectedView.criteria.map(({ key, label, max_score }, idx) => {
+                    const value = selectedView.values[key];
+                    const percent = isNum(value) ? Math.min(100, (value / max_score) * 100) : 0;
                     const note = selectedEntry.criterion_feedback?.[key];
                     return (
                       <div key={key}>
                         <div className="flex justify-between text-sm mb-1">
-                          <span className={`font-medium ${color.text}`}>{label}</span>
-                          <span className={`font-bold ${colorFrom4Scale(value)}`}>
-                            {typeof value === 'number' ? `${value}/4` : '—'}
+                          <span className={`font-medium ${TEXT_COLORS[idx % TEXT_COLORS.length]}`}>{label}</span>
+                          <span className={`font-bold ${colorForFraction(fractionOf(value, max_score))}`}>
+                            {isNum(value) ? `${value}/${max_score}` : '—'}
                           </span>
                         </div>
                         <div className="w-full bg-gray-200 rounded-full h-2">
                           <div
-                            className={`${color.bar} h-2 rounded-full transition-all`}
+                            className={`${BAR_COLORS[idx % BAR_COLORS.length]} h-2 rounded-full transition-all`}
                             style={{ width: `${percent}%` }}
                           />
                         </div>
-                        {note && (
-                          <p className="text-xs text-gray-700 mt-1 leading-relaxed pl-1">
-                            {note}
-                          </p>
+                        {typeof note === 'string' && note && (
+                          <p className="text-xs text-gray-700 mt-1 leading-relaxed pl-1">{note}</p>
                         )}
                       </div>
                     );
@@ -304,12 +312,12 @@ export default function KnowledgeBase() {
                 </div>
 
                 {(() => {
-                  const avg = computeAverage(selectedEntry);
+                  const avg = averageFraction(selectedView.values, selectedView.criteria);
                   return (
                     <div className="mt-4 pt-3 border-t border-gray-200 flex justify-between items-center">
                       <span className="font-medium text-gray-800">Overall Average</span>
-                      <span className={`text-xl font-bold ${colorFrom4Scale(avg)}`}>
-                        {avg !== null ? `${avg.toFixed(2)}/4` : '—'}
+                      <span className={`text-xl font-bold ${colorForFraction(avg)}`}>
+                        {avg !== null ? `${Math.round(avg * 100)}%` : '—'}
                       </span>
                     </div>
                   );
@@ -317,19 +325,37 @@ export default function KnowledgeBase() {
               </div>
             )}
 
+            {selectedOverrides.length > 0 && (
+              <div>
+                <h4 className="font-semibold text-gray-800 mb-2">
+                  👩‍🏫 Teacher Remarks ({selectedOverrides.length} override{selectedOverrides.length === 1 ? '' : 's'})
+                </h4>
+                <div className="space-y-2">
+                  {selectedOverrides.map((o) => (
+                    <div key={o.id} className="bg-amber-50 p-3 rounded-lg text-sm border-l-4 border-amber-400 text-gray-800">
+                      <div className="text-xs text-amber-800 mb-1">{new Date(o.created_at).toLocaleString()}</div>
+                      <RichText text={o.teacher_feedback} />
+                      {o.suggested_changes && (
+                        <p className="mt-2"><span className="font-medium text-amber-900">Suggestions:</span> {o.suggested_changes}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Score changes are in the 🧠 Learning Hub.</p>
+              </div>
+            )}
+
             <div>
               <h4 className="font-semibold text-gray-800 mb-2 flex items-center gap-2">
                 <span>🤖 AI Feedback</span>
                 {selectedEntry.accepted && (
-                  <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                    Accepted
-                  </span>
+                  <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Accepted</span>
                 )}
               </h4>
               <div className="bg-gray-50 p-4 rounded-lg text-sm leading-relaxed text-gray-800">
-                {showFullFeedback
-                  ? formatText(selectedEntry.feedback)
-                  : formatText((selectedEntry.feedback || '').substring(0, 600))}
+                <RichText
+                  text={showFullFeedback ? selectedEntry.feedback : (selectedEntry.feedback || '').substring(0, 600)}
+                />
                 {(selectedEntry.feedback || '').length > 600 && (
                   <button
                     onClick={() => setShowFullFeedback(!showFullFeedback)}
@@ -362,9 +388,7 @@ export default function KnowledgeBase() {
                           <span className="text-gray-900 font-medium">{issue.correction}</span>
                         </div>
                         {issue.explanation && (
-                          <p className="text-xs text-gray-600 mt-1 pl-5 italic">
-                            {issue.explanation}
-                          </p>
+                          <p className="text-xs text-gray-600 mt-1 pl-5 italic">{issue.explanation}</p>
                         )}
                       </div>
                     ))}
@@ -379,9 +403,7 @@ export default function KnowledgeBase() {
               if (recs.length === 0) return null;
               return (
                 <div>
-                  <h4 className="font-semibold text-gray-800 mb-2">
-                    💡 Recommendations ({recs.length})
-                  </h4>
+                  <h4 className="font-semibold text-gray-800 mb-2">💡 Recommendations ({recs.length})</h4>
                   <div className="space-y-2">
                     {recs.map((rec, idx) => (
                       <div key={idx} className="bg-amber-50 p-3 rounded-lg border border-amber-200 text-sm">
@@ -405,21 +427,10 @@ export default function KnowledgeBase() {
               );
             })()}
 
-            {selectedEntry.teacher_feedback && (
-              <div>
-                <h4 className="font-semibold text-gray-800 mb-2">👩‍🏫 Teacher Override</h4>
-                <div className="bg-yellow-50 p-4 rounded-lg text-sm border-l-4 border-yellow-400 text-gray-800">
-                  {formatText(selectedEntry.teacher_feedback)}
-                </div>
-              </div>
-            )}
-
             <div>
               <h4 className="font-semibold text-gray-800 mb-2">📄 Essay Text</h4>
               <div className="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap font-mono max-h-60 overflow-y-auto text-gray-800">
-                {showFullEssay
-                  ? selectedEntry.essay
-                  : (selectedEntry.essay || '').substring(0, 500)}
+                {showFullEssay ? selectedEntry.essay : (selectedEntry.essay || '').substring(0, 500)}
                 {(selectedEntry.essay || '').length > 500 && (
                   <button
                     onClick={() => setShowFullEssay(!showFullEssay)}
@@ -429,15 +440,6 @@ export default function KnowledgeBase() {
                   </button>
                 )}
               </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2 pt-2">
-              <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
-                {selectedEntry.eval_type === 'holistic' ? '🌟 Holistic' : '📊 Analytic'}
-              </span>
-              <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
-                Satisfaction: {selectedEntry.satisfaction ?? '—'}/10
-              </span>
             </div>
           </div>
         ) : (
@@ -451,7 +453,7 @@ export default function KnowledgeBase() {
         <div className="mt-6 pt-4 border-t border-gray-200">
           <details className="cursor-pointer group">
             <summary className="font-semibold text-gray-800 flex items-center gap-2">
-              <span>📖 Scoring Rubric</span>
+              <span>📖 Built-in Scoring Rubric</span>
               <span className="text-xs text-gray-700 group-open:hidden">click to expand</span>
             </summary>
 
@@ -459,16 +461,12 @@ export default function KnowledgeBase() {
               <div className="mt-3 space-y-3 pl-2">
                 {Object.entries(rubric).map(([criterion, levels]) => (
                   <div key={criterion} className="bg-gray-50 p-3 rounded-lg">
-                    <div
-                      className={`font-semibold capitalize mb-2 ${
-                        CRITERION_COLORS[criterion]?.text || 'text-indigo-700'
-                      }`}
-                    >
+                    <div className="font-semibold capitalize mb-2 text-indigo-700">
                       {criterion.replace(/_/g, ' ')}
                     </div>
                     {levels && typeof levels === 'object' ? (
                       <ul className="space-y-1">
-                        {[4, 3, 2, 1].map(level => (
+                        {[4, 3, 2, 1].map((level) => (
                           <li key={level} className="text-sm text-gray-700">
                             <span className="font-bold text-gray-800">{level}:</span>{' '}
                             {safeRender(levels[level])}
@@ -497,15 +495,11 @@ export default function KnowledgeBase() {
                 </div>
                 <div className="bg-indigo-50 p-3 rounded-lg">
                   <strong className="text-indigo-700">When to use</strong>
-                  <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">
-                    {safeRender(suggestions.when)}
-                  </p>
+                  <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{safeRender(suggestions.when)}</p>
                 </div>
                 <div className="bg-indigo-50 p-3 rounded-lg">
                   <strong className="text-indigo-700">Best results</strong>
-                  <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">
-                    {safeRender(suggestions.how)}
-                  </p>
+                  <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">{safeRender(suggestions.how)}</p>
                 </div>
               </div>
             </details>

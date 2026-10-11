@@ -13,8 +13,53 @@ export const DEFAULT_CRITERIA = [
 // Keys in a scores object that are never criterion scores.
 export const NON_CRITERION_KEYS = new Set([
   'criterion_feedback', 'grammar_issues', 'recommendations', 'criteria_meta',
-  'feedback', 'holistic_score', 'level_description', 'teacher_scores',
+  'feedback', 'holistic_score', 'level_description', 'teacher_scores', 'rubric',
+  'evaluated_by', 'title', 'ai_model', 'scores',
 ]);
+
+// ---------- Saved entries (Knowledge Base rows and teacher overrides) ----------
+// Newer rows have dedicated columns; on a database without the README
+// migration the same values are nested in a jsonb column instead.
+
+export function entryScores(entry) {
+  // Knowledge Base row → full scores object (any rubric) when available.
+  return entry?.scores || entry?.criterion_feedback?.scores || null;
+}
+
+export function entryTitle(entry) {
+  const title = entry?.title || entry?.original_scores?.title;
+  if (title) return title;
+  const text = (entry?.essay || entry?.original_essay || '').trim();
+  return text ? `${text.split(/\s+/).slice(0, 8).join(' ')}…` : `Essay #${entry?.id ?? '?'}`;
+}
+
+export const UNKNOWN_AI = 'Unknown AI (older entry)';
+
+export function entryAiLabel(entry) {
+  return (
+    entry?.ai_model ||
+    entryScores(entry)?.evaluated_by?.label ||
+    entry?.criterion_feedback?.ai_model ||
+    entry?.original_scores?.ai_model ||
+    entry?.original_scores?.evaluated_by?.label ||
+    UNKNOWN_AI
+  );
+}
+
+export function entryRubricTitle(entry) {
+  return (entryScores(entry) || entry?.original_scores)?.rubric?.title || null;
+}
+
+// Normalized text used to recognize the same essay across the KB and overrides.
+export function essayKey(text) {
+  return (text || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+export function matchesSearch(query, ...fields) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return fields.some((f) => (f || '').toLowerCase().includes(q));
+}
 
 export function labelFromKey(key) {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -88,4 +133,23 @@ export function errorMessage(err) {
     return detail.map((d) => `${(d.loc || []).slice(1).join('.')}: ${d.msg}`).join('; ');
   }
   return err?.message || 'Unknown error';
+}
+
+// Helpers shared by both pages.
+export function countByAi(entries, labelOf) {
+  const counts = new Map();
+  for (const e of entries) {
+    const label = labelOf(e);
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export function sortEntries(entries, sort, titleOf) {
+  const list = [...entries];
+  if (sort === 'title') return list.sort((a, b) => titleOf(a).localeCompare(titleOf(b)));
+  const dir = sort === 'oldest' ? 1 : -1;
+  return list.sort((a, b) => dir * (new Date(a.created_at) - new Date(b.created_at)));
 }

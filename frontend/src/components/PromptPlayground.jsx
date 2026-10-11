@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   testPrompt,
   saveEssay,
@@ -16,6 +16,7 @@ import {
   isNum,
   fractionOf,
   averageFraction,
+  weightedFraction,
   colorForFraction,
   errorMessage,
 } from '../lib/scoring';
@@ -28,6 +29,7 @@ import {
   summarizeHistory,
   BIAS_THRESHOLD,
 } from '../lib/aiComparison';
+import { generateComparisonReport } from '../lib/comparisonReport';
 
 // -----------------------------------------------------------------------------
 // Shared helpers
@@ -443,6 +445,91 @@ function ComparisonTable({ raters, stats, reference, referenceLabel, showReferen
 }
 
 // -----------------------------------------------------------------------------
+// Score comparison: Category | Primary | Compare | Diff
+// -----------------------------------------------------------------------------
+function ScoreComparison({ criteria, raters, primaryId, compareId, onPrimary, onCompare, onDownload }) {
+  const primary = raters.find((r) => r.id === primaryId);
+  const compare = raters.find((r) => r.id === compareId);
+  const pick = (value, onChange, label) => (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={label}
+      className="border rounded-lg px-2 py-1 text-sm bg-white"
+    >
+      {raters.map((r) => (
+        <option key={r.id} value={r.id} disabled={!r.scores}>
+          {r.id} · {r.name}{r.scores ? '' : ' (no scores)'}
+        </option>
+      ))}
+    </select>
+  );
+  const wp = primary?.scores ? weightedFraction(primary.scores, criteria) : null;
+  const wq = compare?.scores ? weightedFraction(compare.scores, criteria) : null;
+  const wDiff = wp !== null && wq !== null ? (wp - wq) * 100 : null;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h4 className="font-semibold text-gray-800">📊 Score Comparison</h4>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-gray-600">Primary</span>
+          {pick(primaryId, onPrimary, 'Primary model')}
+          <span className="text-gray-600">vs Compare</span>
+          {pick(compareId, onCompare, 'Compare model')}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-gray-600 border-b">
+              <th className="text-left font-medium py-2">Category</th>
+              <th className="font-medium text-center">Primary</th>
+              <th className="font-medium text-center">Compare</th>
+              <th className="font-medium text-center">Diff</th>
+            </tr>
+          </thead>
+          <tbody>
+            {criteria.map((c) => {
+              const p = primary?.scores?.[c.key];
+              const q = compare?.scores?.[c.key];
+              const d = isNum(p) && isNum(q) ? p - q : null;
+              return (
+                <tr key={c.key} className="border-b border-gray-100">
+                  <td className="py-2 text-gray-800">
+                    {c.label}<span className="text-xs text-gray-400 ml-1">/{c.max_score}</span>
+                  </td>
+                  <td className="text-center font-medium text-gray-800">{fmtScore(p)}</td>
+                  <td className="text-center font-medium text-gray-800">{fmtScore(q)}</td>
+                  <td className={`text-center ${diffClass(d, c.max_score)}`}>{d === null ? '—' : fmtSigned(d, 0)}</td>
+                </tr>
+              );
+            })}
+            <tr className="font-semibold text-gray-800">
+              <td className="py-2">Weighted overall</td>
+              <td className="text-center">{wp === null ? '—' : `${Math.round(wp * 100)}%`}</td>
+              <td className="text-center">{wq === null ? '—' : `${Math.round(wq * 100)}%`}</td>
+              <td className={`text-center ${wDiff === null || Math.round(wDiff) === 0 ? 'text-gray-500' : wDiff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                {wDiff === null ? '—' : fmtSigned(wDiff, 0, ' pts')}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
+        <p className="text-xs text-gray-500">Diff = Primary − Compare. Green means Primary scored higher.</p>
+        <button
+          onClick={onDownload}
+          className="text-sm bg-gradient-to-r from-sky-500 to-cyan-500 text-white px-3 py-1.5 rounded-lg font-semibold hover:shadow-md transition"
+        >
+          📄 Save comparison report (PDF)
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Statistics: which AI the scoring belongs closest to
 // -----------------------------------------------------------------------------
 function StatisticsPanel({
@@ -726,7 +813,7 @@ const MODEL_INFO = [
 // Main Component
 // -----------------------------------------------------------------------------
 export default function PromptPlayground() {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
 
   const [showModelInfo, setShowModelInfo] = useState(true);
 
@@ -743,8 +830,13 @@ export default function PromptPlayground() {
   const [runId, setRunId] = useState(0);
 
   const [rubricCriteria, setRubricCriteria] = useState(DEFAULT_CRITERIA);
+  const [rubricInfo, setRubricInfo] = useState(null);
+  // Once an admin hand-edits the prompts, rubric changes stop overwriting them.
+  const promptsEdited = useRef(false);
 
   const [referenceMode, setReferenceMode] = useState('consensus');
+  const [primaryId, setPrimaryId] = useState('A');
+  const [compareId, setCompareId] = useState('B');
   const [teacherRef, setTeacherRef] = useState({});
   const [systemRef, setSystemRef] = useState(null);
   const [systemLoading, setSystemLoading] = useState(false);
@@ -832,13 +924,24 @@ Example of a CORRECT response:
 Now output the JSON for the essay above. Nothing else.`
   );
 
+  // Load the rubric that applies to this user (their default, the
+  // school-wide one, or the built-in one) and build the prompts from it, so
+  // nobody has to edit prompts by hand.
   useEffect(() => {
     getActiveRubric()
       .then((data) => {
-        if (Array.isArray(data?.criteria) && data.criteria.length) setRubricCriteria(data.criteria);
+        if (!Array.isArray(data?.criteria) || !data.criteria.length) return;
+        setRubricCriteria(data.criteria);
+        setRubricInfo(data.rubric || null);
+        // The hand-tuned defaults already match the built-in rubric.
+        if (!promptsEdited.current && !isDefaultRubric(data.criteria)) {
+          const { system, user: userTemplate } = buildPromptsFromRubric(data.criteria);
+          setSystemPrompt(system);
+          setUserPromptTemplate(userTemplate);
+        }
       })
       .catch(() => {});
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (user) {
@@ -999,7 +1102,8 @@ Now output the JSON for the essay above. Nothing else.`
     const { system, user: userTemplate } = buildPromptsFromRubric(rubricCriteria);
     setSystemPrompt(system);
     setUserPromptTemplate(userTemplate);
-    toast.success('Prompts now ask for the active rubric’s criteria');
+    promptsEdited.current = false;
+    toast.success('Prompts rebuilt from your rubric');
   };
 
   // ---------- Derived comparison data ----------
@@ -1049,6 +1153,28 @@ Now output the JSON for the essay above. Nothing else.`
     saveHistory(next);
     setLoggedRunId(logKey);
     toast.success('Run added to statistics');
+  };
+
+  const handleDownloadComparison = () => {
+    const saved = savedEssays.find((e) => e.source === selectedEssaySource && e.id === selectedEssayId);
+    const words = essayText.trim().split(/\s+/).slice(0, 8).join(' ');
+    try {
+      generateComparisonReport({
+        essayTitle: saved?.displayTitle || (words ? `${words}…` : 'Untitled essay'),
+        essayText,
+        criteria,
+        raters,
+        primaryId,
+        compareId,
+        stats,
+        reference,
+        referenceLabel,
+      });
+      toast.success('Comparison report downloaded');
+    } catch (err) {
+      console.error('[comparison report]', err);
+      toast.error('Could not create the report: ' + err.message);
+    }
   };
 
   const handleClearHistory = () => {
@@ -1166,63 +1292,58 @@ Now output the JSON for the essay above. Nothing else.`
             />
           </div>
 
-          {!isDefaultRubric(rubricCriteria) && (
-            <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-900 flex flex-wrap items-center gap-2">
-              <span>
-                📐 The active rubric has {rubricCriteria.length} criteria
-                ({rubricCriteria.map((c) => `${c.label} 1–${c.max_score}`).join(', ')}).
-              </span>
-              <button
-                onClick={applyRubricToPrompts}
-                className="ml-auto bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700"
-              >
-                Use it in the prompts
-              </button>
-            </div>
+          <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-900">
+            📐 Scoring with <strong>{rubricInfo?.title || 'the built-in rubric'}</strong>:{' '}
+            {rubricCriteria.map((c) => `${c.label} (1–${c.max_score})`).join(', ')}.
+            <span className="block text-xs text-indigo-700 mt-1">
+              Change your default rubric in the 📐 Rubrics tab.
+            </span>
+          </div>
+
+          {isAdmin && (
+            <details className="border border-gray-200 rounded-xl">
+              <summary className="cursor-pointer p-3 bg-gray-50 hover:bg-gray-100 font-semibold text-gray-700 rounded-xl">
+                ⚙️ Advanced (admin): Edit Prompts
+              </summary>
+              <div className="p-4 space-y-4">
+                <div>
+                  <label className="block font-semibold text-gray-800 mb-1">🤖 System Prompt</label>
+                  <textarea
+                    rows="4"
+                    value={systemPrompt}
+                    onChange={(e) => { promptsEdited.current = true; setSystemPrompt(e.target.value); }}
+                    className="w-full border rounded-xl p-2 bg-gray-50 text-gray-800"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-gray-800 mb-1">
+                    📋 User Prompt Template
+                    <span className="text-sm font-normal ml-1">(use {'{essay}'})</span>
+                  </label>
+                  <textarea
+                    rows="6"
+                    value={userPromptTemplate}
+                    onChange={(e) => { promptsEdited.current = true; setUserPromptTemplate(e.target.value); }}
+                    className="w-full border rounded-xl p-2 bg-gray-50 font-mono text-sm text-gray-800"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-gray-500 flex-1">
+                    These prompts apply to all three models. Edit only if you understand the required
+                    JSON output format.
+                  </p>
+                  <button
+                    onClick={applyRubricToPrompts}
+                    className="text-xs border border-indigo-300 text-indigo-700 px-2 py-1 rounded-md hover:bg-indigo-50"
+                  >
+                    Rebuild from rubric
+                  </button>
+                </div>
+              </div>
+            </details>
           )}
-
-          <details className="border border-gray-200 rounded-xl">
-            <summary className="cursor-pointer p-3 bg-gray-50 hover:bg-gray-100 font-semibold text-gray-700 rounded-xl">
-              ⚙️ Advanced: Edit Prompts
-            </summary>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="block font-semibold text-gray-800 mb-1">🤖 System Prompt</label>
-                <textarea
-                  rows="4"
-                  value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
-                  className="w-full border rounded-xl p-2 bg-gray-50 text-gray-800"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-gray-800 mb-1">
-                  📋 User Prompt Template
-                  <span className="text-sm font-normal ml-1">(use {'{essay}'})</span>
-                </label>
-                <textarea
-                  rows="6"
-                  value={userPromptTemplate}
-                  onChange={(e) => setUserPromptTemplate(e.target.value)}
-                  className="w-full border rounded-xl p-2 bg-gray-50 font-mono text-sm text-gray-800"
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-xs text-gray-500 flex-1">
-                  These prompts apply to all three models. Edit only if you understand the required
-                  JSON output format.
-                </p>
-                <button
-                  onClick={applyRubricToPrompts}
-                  className="text-xs border border-indigo-300 text-indigo-700 px-2 py-1 rounded-md hover:bg-indigo-50"
-                >
-                  Rebuild from active rubric
-                </button>
-              </div>
-            </div>
-          </details>
         </div>
 
         {/* Right: the three models */}
@@ -1305,13 +1426,27 @@ Now output the JSON for the essay above. Nothing else.`
       {/* Comparison + statistics */}
       {scoredCount > 0 && criteria.length > 0 && (
         <div className="mt-6 space-y-6">
-          <ComparisonTable
+          <ScoreComparison
+            criteria={criteria}
             raters={raters}
-            stats={stats}
-            reference={reference}
-            referenceLabel={referenceLabel}
-            showReference={referenceMode !== 'consensus'}
+            primaryId={primaryId}
+            compareId={compareId}
+            onPrimary={setPrimaryId}
+            onCompare={setCompareId}
+            onDownload={handleDownloadComparison}
           />
+          <details className="group">
+            <summary className="cursor-pointer text-sm font-semibold text-gray-700 mb-2">
+              🔎 Detailed table: all three models, consensus and pairwise differences
+            </summary>
+            <ComparisonTable
+              raters={raters}
+              stats={stats}
+              reference={reference}
+              referenceLabel={referenceLabel}
+              showReference={referenceMode !== 'consensus'}
+            />
+          </details>
           <StatisticsPanel
             stats={stats}
             raters={raters}

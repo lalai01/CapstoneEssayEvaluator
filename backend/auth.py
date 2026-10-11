@@ -11,6 +11,7 @@ if not SUPABASE_URL:
     raise ValueError("SUPABASE_URL environment variable is required")
 
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
@@ -56,3 +57,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except Exception as e:
         print(f"❌ All verification attempts failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
+
+async def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(optional_security)):
+    """Like get_current_user, but returns None for anonymous requests."""
+    if not credentials:
+        return None
+    try:
+        return await get_current_user(credentials)
+    except HTTPException:
+        return None
