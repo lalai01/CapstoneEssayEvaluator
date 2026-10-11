@@ -11,10 +11,10 @@ import evaluator
 from supabase_client import supabase, supabase_admin
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
-from auth import get_current_user, security
+from auth import get_current_user, get_optional_user, security
 from supabase import create_client, Client
 from evaluation_graph import run_evaluation   # ✅ LangGraph
-from evaluator import get_active_rubric
+from evaluator import resolve_rubric
 
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
@@ -69,6 +69,7 @@ def get_user_client(credentials: HTTPAuthorizationCredentials = Depends(security
 class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
+    rubric_id: Optional[int] = None   # omit to use the teacher's default rubric
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -107,6 +108,10 @@ class KnowledgeEntry(BaseModel):
     accepted: bool = False
     satisfaction: int = 5
     teacher_feedback: Optional[str] = None
+    # Full /evaluate scores (any rubric's criteria, rubric used, evaluated_by)
+    # and a readable model label, so entries can be filtered by AI.
+    scores: Optional[Dict[str, Any]] = None
+    ai_model: Optional[str] = None
 
 # criteria accepts both the legacy shape ({key: {"4": "..."}}) and the
 # configurable shape ({key: {"label", "max_score", "weight", "levels"}}).
@@ -115,6 +120,7 @@ class RubricCreate(BaseModel):
     description: Optional[str] = None
     criteria: Dict[str, Dict[str, Any]]
     is_active: bool = True
+    is_system: bool = False   # school-wide (admins only) vs the teacher's own
 
 class RubricUpdate(BaseModel):
     title: Optional[str] = None
@@ -126,6 +132,8 @@ class RubricUpdate(BaseModel):
 # criterion_feedback (dict), grammar_issues / recommendations (lists),
 # level_description (str) and criteria_meta (list) — not just ints.
 class OverrideRequest(BaseModel):
+    title: Optional[str] = None
+    ai_model: Optional[str] = None
     original_essay: str
     original_scores: Dict[str, Any]
     teacher_scores: Optional[Dict[str, Any]] = None
@@ -601,9 +609,16 @@ def get_survey_responses(
 
 #end region
 
-#region Admin Rubrics
+#region Rubrics
+# Two kinds of rubric share the `rubrics` table:
+#   - school-wide (is_system = true): created and edited by admins only; the
+#     active one is the default for everyone.
+#   - personal (is_system = false): any signed-in teacher manages their own;
+#     their active one is their default and overrides the school-wide rubric.
+# Requires: alter table rubrics add column if not exists is_system boolean not null default false;
+
 def _validate_criteria(criteria: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Normalize admin-submitted criteria into the stored configurable shape."""
+    """Normalize submitted criteria into the stored configurable shape."""
     if not criteria:
         raise HTTPException(422, "A rubric needs at least one criterion.")
     normalized = evaluator.normalize_rubric(criteria)
@@ -621,70 +636,110 @@ def _validate_criteria(criteria: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[st
 def _rubric_client(user_client: Client) -> Client:
     return supabase_admin or user_client
 
-def _deactivate_other_rubrics(client: Client, keep_id: int):
-    client.table("rubrics").update({"is_active": False}).neq("id", keep_id).eq("is_active", True).execute()
+def _get_rubric_or_404(client: Client, rubric_id: int) -> dict:
+    result = client.table("rubrics").select("*").eq("id", rubric_id).limit(1).execute()
+    if not result.data:
+        raise HTTPException(404, "Rubric not found")
+    return result.data[0]
+
+def _check_can_edit(user: dict, row: dict):
+    if row.get("is_system"):
+        if not is_admin(user):
+            raise HTTPException(403, "Only admins can change school-wide rubrics.")
+    elif row.get("user_id") != user["id"]:
+        raise HTTPException(403, "You can only change your own rubrics.")
+
+def _deactivate_others(client: Client, row: dict):
+    """Keep one active rubric per scope: school-wide, or per teacher."""
+    query = client.table("rubrics").update({"is_active": False})         .neq("id", row["id"]).eq("is_active", True)
+    if row.get("is_system"):
+        query = query.eq("is_system", True)
+    else:
+        query = query.eq("is_system", False).eq("user_id", row["user_id"])
+    query.execute()
+
+def _with_flags(row: dict, user: dict) -> dict:
+    return {
+        **row,
+        "is_system": bool(row.get("is_system")),
+        "can_edit": is_admin(user) if row.get("is_system") else row.get("user_id") == user["id"],
+    }
 
 @app.post("/rubrics")
 def create_rubric(rubric: RubricCreate,
                   user: dict = Depends(get_current_user),
                   user_client: Client = Depends(get_user_client)):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
+    if rubric.is_system and not is_admin(user):
+        raise HTTPException(403, "Only admins can create school-wide rubrics.")
     data = rubric.dict()
     data["criteria"] = _validate_criteria(rubric.criteria)
     data["user_id"] = user["id"]
     client = _rubric_client(user_client)
     result = client.table("rubrics").insert(data).execute()
-    new_id = result.data[0]["id"]
+    row = result.data[0]
     if rubric.is_active:
-        _deactivate_other_rubrics(client, new_id)
-    return {"id": new_id}
+        _deactivate_others(client, row)
+    return {"id": row["id"]}
 
 @app.get("/rubrics")
 def list_rubrics(user: dict = Depends(get_current_user),
                  user_client: Client = Depends(get_user_client)):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
-    result = _rubric_client(user_client).table("rubrics") \
-        .select("*") \
-        .order("created_at", desc=True) \
-        .execute()
-    return result.data
+    """The caller's own rubrics plus school-wide ones (all of them for admins,
+    only the active one for teachers)."""
+    client = _rubric_client(user_client)
+    try:
+        own = client.table("rubrics").select("*")             .eq("user_id", user["id"]).eq("is_system", False)             .order("created_at", desc=True).execute().data
+        system = client.table("rubrics").select("*").eq("is_system", True)
+        if not is_admin(user):
+            system = system.eq("is_active", True)
+        system = system.order("created_at", desc=True).execute().data
+    except Exception as e:
+        if "is_system" in str(e):
+            raise HTTPException(500, "Database migration needed: add the rubrics.is_system column (see README).")
+        raise
+    return [_with_flags(r, user) for r in system + own]
 
 @app.put("/rubrics/{rubric_id}")
 def update_rubric(rubric_id: int,
                   rubric: RubricUpdate,
                   user: dict = Depends(get_current_user),
                   user_client: Client = Depends(get_user_client)):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
+    client = _rubric_client(user_client)
+    row = _get_rubric_or_404(client, rubric_id)
+    _check_can_edit(user, row)
     data = {k: v for k, v in rubric.dict().items() if v is not None}
+    data.pop("is_system", None)  # a rubric's scope is fixed at creation
     if "criteria" in data:
         data["criteria"] = _validate_criteria(rubric.criteria)
-    client = _rubric_client(user_client)
-    client.table("rubrics").update(data).eq("id", rubric_id).execute()
+    if data:
+        client.table("rubrics").update(data).eq("id", rubric_id).execute()
     if rubric.is_active:
-        _deactivate_other_rubrics(client, rubric_id)
+        _deactivate_others(client, row)
     return {"status": "updated"}
 
 @app.delete("/rubrics/{rubric_id}")
 def delete_rubric(rubric_id: int,
                   user: dict = Depends(get_current_user),
                   user_client: Client = Depends(get_user_client)):
-    if not is_admin(user):
-        raise HTTPException(403, "Admin only")
-    _rubric_client(user_client).table("rubrics").delete().eq("id", rubric_id).execute()
+    client = _rubric_client(user_client)
+    row = _get_rubric_or_404(client, rubric_id)
+    _check_can_edit(user, row)
+    client.table("rubrics").delete().eq("id", rubric_id).execute()
     return {"status": "deleted"}
 
 @app.get("/rubric/active")
-def get_active_rubric_meta():
-    """The rubric evaluations currently use, normalized, for the frontend."""
-    criteria = evaluator.normalize_rubric(get_active_rubric())
+def get_active_rubric_meta(rubric_id: Optional[int] = None,
+                           user: Optional[dict] = Depends(get_optional_user)):
+    """The rubric an evaluation would use (the caller's default, or
+    `rubric_id`), normalized for the frontend."""
+    raw, info = resolve_rubric(user["id"] if user else None, rubric_id)
+    criteria = evaluator.normalize_rubric(raw)
     return {
+        "rubric": info,
         "criteria": [
             {**meta, "levels": {str(k): v for k, v in criteria[meta["key"]]["levels"].items()}}
             for meta in evaluator.rubric_meta(criteria)
-        ]
+        ],
     }
 
 #end region
@@ -924,20 +979,25 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
+def _run_evaluate(req: EvaluationRequest, user: dict, use_rag: bool):
+    criteria, rubric_info = resolve_rubric(user["id"], req.rubric_id)
+    result = run_evaluation(req.text, req.evaluation_type, use_rag=use_rag, rubric=criteria)
+    if result.get("error"):
+        return EvaluationResponse(
+            scores={"main_statement": 0, "organization": 0,
+                    "evidence": 0, "analysis": 0, "grammar": 0,
+                    "criterion_feedback": {}, "grammar_issues": [],
+                    "recommendations": [], "rubric": rubric_info},
+            feedback=result.get("feedback") or "Invalid input",
+        )
+    scores = {**result["scores"], "rubric": rubric_info}
+    return EvaluationResponse(scores=scores, feedback=result["feedback"])
+
+
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user)):
     try:
-        rubric = get_active_rubric(user["id"])
-        result = run_evaluation(req.text, req.evaluation_type, use_rag=False, rubric=rubric)
-        if result.get("error"):
-            return EvaluationResponse(
-                scores={"main_statement": 0, "organization": 0,
-                        "evidence": 0, "analysis": 0, "grammar": 0,
-                        "criterion_feedback": {}, "grammar_issues": [],
-                        "recommendations": []},
-                feedback=result.get("feedback") or "Invalid input",
-            )
-        return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
+        return _run_evaluate(req, user, use_rag=False)
     except Exception as e:
         print(f"❌ Evaluation error: {e}")
         raise HTTPException(500, str(e))
@@ -946,20 +1006,37 @@ def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
 def evaluate_essay_with_rag(req: EvaluationRequest, user: dict = Depends(get_current_user)):
     try:
-        rubric = get_active_rubric(user["id"])
-        result = run_evaluation(req.text, req.evaluation_type, use_rag=True, rubric=rubric)
-        if result.get("error"):
-            return EvaluationResponse(
-                scores={"main_statement": 0, "organization": 0,
-                        "evidence": 0, "analysis": 0, "grammar": 0,
-                        "criterion_feedback": {}, "grammar_issues": [],
-                        "recommendations": []},
-                feedback=result.get("feedback") or "Invalid input",
-            )
-        return EvaluationResponse(scores=result["scores"], feedback=result["feedback"])
+        return _run_evaluate(req, user, use_rag=True)
     except Exception as e:
         print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, str(e))
+
+def _insert_tolerant(table: str, row: Dict[str, Any], optional: List[str],
+                     nest: Optional[Dict[str, str]] = None):
+    """
+    Insert a row, dropping optional columns the database doesn't have yet
+    (see the README migrations) instead of failing the whole save.
+    `nest` maps a dropped column to a jsonb column that keeps its value,
+    e.g. {"teacher_scores": "original_scores"}.
+    """
+    row = dict(row)
+    nest = nest or {}
+    while True:
+        try:
+            return supabase.table(table).insert(row).execute()
+        except Exception as e:
+            message = str(e)
+            missing = [c for c in optional if c in row and f"'{c}'" in message]
+            if not missing:
+                raise
+            print(f"⚠️ {table}: column(s) {missing} missing; saving without them "
+                  f"(run the README migration)")
+            for column in missing:
+                value = row.pop(column)
+                target = nest.get(column)
+                if target and value is not None:
+                    row[target] = {**(row.get(target) or {}), column: value}
+
 
 #region Knowledge Base
 @app.post("/knowledge")
@@ -967,7 +1044,10 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
         data["user_id"] = user["id"]
-        result = supabase.table("knowledge_base").insert(data).execute()
+        result = _insert_tolerant(
+            "knowledge_base", data, optional=["scores", "ai_model"],
+            nest={"scores": "criterion_feedback", "ai_model": "criterion_feedback"},
+        )
         print(f"✅ Knowledge saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
@@ -999,31 +1079,33 @@ def get_knowledge(id: int, user=Depends(get_current_user)):
 #region Teacher Override
 @app.post("/override")
 def save_override(override: OverrideRequest, user=Depends(get_current_user)):
+    """
+    Save a teacher override. `teacher_feedback` is the teacher's remarks
+    (required) and `suggested_changes` their suggestions for the student.
+    """
     if not override.teacher_feedback.strip():
-        raise HTTPException(422, "Teacher feedback is required.")
+        raise HTTPException(422, "Teacher remarks are required.")
 
     data = override.dict()
     data["user_id"] = user["id"]
-    teacher_scores = data.pop("teacher_scores", None)
+    if not data.get("teacher_scores"):
+        data.pop("teacher_scores", None)
+    if not data.get("ai_model"):
+        by = (data["original_scores"] or {}).get("evaluated_by") or {}
+        data["ai_model"] = by.get("label")
 
     try:
-        # Preferred: dedicated column, created with
-        #   alter table learning_feedback add column if not exists teacher_scores jsonb;
-        row = {**data, "teacher_scores": teacher_scores} if teacher_scores else data
-        result = supabase.table("learning_feedback").insert(row).execute()
+        result = _insert_tolerant(
+            "learning_feedback", data,
+            optional=["teacher_scores", "title", "ai_model"],
+            # Without these columns the values still survive inside the
+            # original_scores jsonb, and the Learning Hub reads them there.
+            nest={"teacher_scores": "original_scores", "title": "original_scores",
+                  "ai_model": "original_scores"},
+        )
     except Exception as e:
-        if not teacher_scores or "teacher_scores" not in str(e):
-            print(f"❌ Error saving override: {e}")
-            raise HTTPException(500, f"Supabase error: {str(e)}")
-        # Column not created yet: keep the teacher's scores inside the
-        # original_scores jsonb so nothing is lost.
-        print("⚠️ learning_feedback.teacher_scores column missing; nesting in original_scores")
-        data["original_scores"] = {**data["original_scores"], "teacher_scores": teacher_scores}
-        try:
-            result = supabase.table("learning_feedback").insert(data).execute()
-        except Exception as e2:
-            print(f"❌ Error saving override: {e2}")
-            raise HTTPException(500, f"Supabase error: {str(e2)}")
+        print(f"❌ Error saving override: {e}")
+        raise HTTPException(500, f"Supabase error: {str(e)}")
 
     print(f"✅ Override saved for user: {user['id']}")
     return {"id": result.data[0]["id"]}

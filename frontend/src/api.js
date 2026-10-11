@@ -59,19 +59,20 @@ export const deleteSavedEssay = async (id) => {
 };
 
 // ---------- Evaluation ----------
-export const evaluateEssay = async (text, evaluationType = 'analytic') => {
+// rubricId: a rubric from GET /rubrics, or null for the teacher's default.
+export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null) => {
   const response = await apiClient.post(
     '/evaluate',
-    { text, evaluation_type: evaluationType },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId },
     { timeout: 180000 }  // 3 min — extended prompt with criterion_feedback
   );
   return response.data;
 };
 
-export const evaluateEssayWithRag = async (text, evaluationType = 'analytic') => {
+export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null) => {
   const response = await apiClient.post(
     '/evaluate-rag',
-    { text, evaluation_type: evaluationType },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId },
     { timeout: 180000 }
   );
   return response.data;
@@ -83,8 +84,15 @@ export const getRubric = async () => {
   return response.data;
 };
 
-export const getActiveRubric = async () => {
-  const response = await apiClient.get('/rubric/active');
+export const getActiveRubric = async (rubricId = null) => {
+  const response = await apiClient.get('/rubric/active', {
+    params: rubricId ? { rubric_id: rubricId } : {},
+  });
+  return response.data;
+};
+
+export const listRubrics = async () => {
+  const response = await apiClient.get('/rubrics');
   return response.data;
 };
 

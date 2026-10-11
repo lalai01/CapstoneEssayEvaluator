@@ -1,17 +1,35 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { evaluateEssay, evaluateEssayWithRag } from '../api';
+import { evaluateEssay, evaluateEssayWithRag, listRubrics } from '../api';
 import FileUpload from './FileUpload';
 import { useAuth } from '../context/AuthContext';
+import { errorMessage } from '../lib/scoring';
 
 export default function EssayInput({ setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
   const { user } = useAuth();
+  const [rubrics, setRubrics] = useState([]);
+  const [rubricId, setRubricId] = useState('');   // '' = the teacher's default
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [evalTypeLocal, setEvalTypeLocal] = useState('analytic');
   const [extractedText, setExtractedText] = useState('');
   const [ocrInfo, setOcrInfo] = useState(null);
   const [useRag, setUseRag] = useState(true);
+
+  useEffect(() => {
+    if (!user) {
+      setRubrics([]);
+      setRubricId('');
+      return;
+    }
+    listRubrics()
+      .then((data) => setRubrics(Array.isArray(data) ? data : []))
+      .catch(() => setRubrics([]));
+  }, [user]);
+
+  const myRubrics = rubrics.filter((r) => !r.is_system);
+  const schoolRubrics = rubrics.filter((r) => r.is_system && r.is_active);
+  const defaultRubric = myRubrics.find((r) => r.is_active) || schoolRubrics[0];
 
     const handleExtracted = (data) => {
       const text = (data && typeof data.text === 'string') ? data.text : '';
@@ -46,15 +64,16 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
     setCurrentEssay(essay);
     setEvalType(evalTypeLocal);
     setEssayTitle(title.trim());  // Pass title to parent
+    const chosenRubric = rubricId ? Number(rubricId) : null;
     try {
       const result = useRag
-        ? await evaluateEssayWithRag(essay, evalTypeLocal)
-        : await evaluateEssay(essay, evalTypeLocal);
+        ? await evaluateEssayWithRag(essay, evalTypeLocal, chosenRubric)
+        : await evaluateEssay(essay, evalTypeLocal, chosenRubric);
       setScores(result.scores);
       setFeedback(result.feedback);
       toast.success(`Evaluation complete${useRag ? ' (with RAG)' : ''}`);
     } catch (err) {
-      toast.error('Evaluation failed: ' + err.message);
+      toast.error('Evaluation failed: ' + errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -122,6 +141,37 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
             </p>
           )}
         </div>
+
+        {user && evalTypeLocal === 'analytic' && (
+          <div className="mb-5">
+            <label htmlFor="rubric-select" className="block text-sm font-semibold text-gray-700 mb-2">
+              Rubric
+            </label>
+            <select
+              id="rubric-select"
+              value={rubricId}
+              onChange={(e) => setRubricId(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl p-3 bg-gray-50 focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">
+                Default — {defaultRubric ? defaultRubric.title : 'built-in rubric'}
+              </option>
+              {myRubrics.length > 0 && (
+                <optgroup label="My rubrics">
+                  {myRubrics.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+                </optgroup>
+              )}
+              {schoolRubrics.length > 0 && (
+                <optgroup label="School-wide">
+                  {schoolRubrics.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+                </optgroup>
+              )}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Create or edit rubrics in the 📐 Rubrics tab.
+            </p>
+          </div>
+        )}
 
         <div className="mb-5">
           <label className="block text-sm font-semibold text-gray-700 mb-2">Type or paste your essay</label>

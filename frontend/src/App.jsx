@@ -9,7 +9,7 @@ import HomePage from './components/HomePage';
 import RateUs from './components/RateUs';
 import AdminSurveys from './components/AdminSurveys';
 import UserSurveys from './components/UserSurveys';
-import AdminRubrics from './components/AdminRubrics';
+import RubricManager from './components/RubricManager';
 import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
@@ -37,13 +37,15 @@ function App() {
     { id: 'home', label: '🏠 Home' },
     { id: 'evaluate', label: '✍️ Evaluate Essay' },
     { id: 'knowledge', label: '📚 Knowledge Base' },
-    { id: 'learning', label: '🧠 Learning KB' },
+    { id: 'learning', label: '🧠 Learning Hub' },
     { id: 'playground', label: '🧪 AI Playground' },
     { id: 'rateus', label: '⭐ Rate Us' },
-    ...(user ? [{ id: 'surveys', label: '📋 Surveys' }] : []),
+    ...(user ? [
+      { id: 'rubrics', label: '📐 Rubrics' },
+      { id: 'surveys', label: '📋 Surveys' },
+    ] : []),
     ...(isAdmin ? [
       { id: 'admin', label: '🔧 Admin Surveys' },
-      { id: 'rubrics', label: '📐 Scoring & Criteria' },
       { id: 'ocr-labeler', label: '🏷️ OCR Labeler' },
     ] : []),
   ];
@@ -142,7 +144,7 @@ function App() {
           {activeTab === 'rateus' && <RateUs />}
           {activeTab === 'surveys' && <UserSurveys />}
           {activeTab === 'admin' && <AdminSurveys />}
-          {activeTab === 'rubrics' && <AdminRubrics />}
+          {activeTab === 'rubrics' && <RubricManager />}
           {activeTab === 'ocr-labeler' && <OcrLabeler />}
         </div>
       </div>

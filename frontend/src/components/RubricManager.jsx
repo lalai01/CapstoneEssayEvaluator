@@ -29,7 +29,7 @@ function toRows(criteria) {
       keyTouched: true,
       label: (configurable && value.label) || DEFAULT_CRITERIA.find((c) => c.key === key)?.label || labelFromKey(key),
       max_score: Number((configurable && value.max_score) || Math.max(4, ...levelNums)),
-      weight: Number((configurable && value.weight) ?? DEFAULT_WEIGHTS[key] ?? 1),
+      weight: Number(configurable && value.weight !== undefined ? value.weight : DEFAULT_WEIGHTS[key] ?? 1),
       levels,
     };
   });
@@ -65,10 +65,54 @@ function newRow() {
   };
 }
 
-export default function AdminRubrics() {
-  const { isAdmin } = useAuth();
+function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy }) {
+  const summary = toRows(rubric.criteria);
+  const activeLabel = rubric.is_system ? 'Active school-wide' : 'My default';
+  return (
+    <div className="border p-4 rounded-xl flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3 bg-white hover:bg-gray-50 transition">
+      <div className="min-w-0">
+        <div className="font-semibold text-gray-800 flex flex-wrap items-center gap-2">
+          {rubric.title}
+          {rubric.is_active && (
+            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{activeLabel}</span>
+          )}
+        </div>
+        {rubric.description && <p className="text-sm text-gray-500">{rubric.description}</p>}
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {summary.map((c) => (
+            <span key={c.id} className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-full">
+              {c.label} · 1–{c.max_score}{c.weight !== 1 ? ` · ${c.weight}×` : ''}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-3 shrink-0">
+        {rubric.can_edit ? (
+          <>
+            {!rubric.is_active && (
+              <button onClick={() => onActivate(rubric)} className="text-emerald-700 text-sm hover:underline">
+                {rubric.is_system ? 'Set active' : 'Make default'}
+              </button>
+            )}
+            <button onClick={() => onEdit(rubric)} className="text-blue-600 text-sm hover:underline">Edit</button>
+            <button onClick={() => onDelete(rubric)} className="text-red-600 text-sm hover:underline">Delete</button>
+          </>
+        ) : (
+          <button onClick={() => onCopy(rubric)} className="text-indigo-700 text-sm hover:underline">
+            Copy to my rubrics
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function RubricManager() {
+  const { user, isAdmin } = useAuth();
   const [rubrics, setRubrics] = useState([]);
-  const [editing, setEditing] = useState(null);
+  const [listLoading, setListLoading] = useState(true);
+  const [editing, setEditing] = useState(null);       // null | 'new' | rubric id
+  const [isSystem, setIsSystem] = useState(false);     // scope of the rubric being edited
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [rows, setRows] = useState([]);
@@ -76,45 +120,70 @@ export default function AdminRubrics() {
   const [loading, setLoading] = useState(false);
   const [defaultCriteria, setDefaultCriteria] = useState(null);
 
-
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!user) return;
     loadRubrics();
     getRubric().then(setDefaultCriteria).catch(() => setDefaultCriteria(null));
-  }, [isAdmin]);
+  }, [user]);
 
   const loadRubrics = async () => {
+    setListLoading(true);
     try {
       const { data } = await apiClient.get('/rubrics');
       setRubrics(data);
     } catch (err) {
       toast.error('Failed to load rubrics: ' + errorMessage(err));
+    } finally {
+      setListLoading(false);
     }
   };
 
-  const startNew = () => {
-    setEditing('new');
-    setTitle('');
-    setDescription('');
-    setRows(defaultCriteria ? toRows(defaultCriteria) : DEFAULT_CRITERIA.map((c) => ({
-      ...newRow(), key: c.key, keyTouched: true, label: c.label, weight: c.weight,
-    })));
+  const openEditor = ({ id, system, rubricTitle, rubricDescription, editorRows }) => {
+    setEditing(id);
+    setIsSystem(system);
+    setTitle(rubricTitle);
+    setDescription(rubricDescription);
+    setRows(editorRows);
     setOpenLevels({});
   };
 
+  const startNew = (system = false) => {
+    openEditor({
+      id: 'new',
+      system,
+      rubricTitle: '',
+      rubricDescription: '',
+      editorRows: defaultCriteria ? toRows(defaultCriteria) : DEFAULT_CRITERIA.map((c) => ({
+        ...newRow(), key: c.key, keyTouched: true, label: c.label, weight: c.weight,
+      })),
+    });
+  };
+
   const startEdit = (r) => {
-    setEditing(r.id);
-    setTitle(r.title);
-    setDescription(r.description || '');
-    setRows(toRows(r.criteria));
-    setOpenLevels({});
+    openEditor({
+      id: r.id,
+      system: r.is_system,
+      rubricTitle: r.title,
+      rubricDescription: r.description || '',
+      editorRows: toRows(r.criteria),
+    });
+  };
+
+  const startCopy = (r) => {
+    openEditor({
+      id: 'new',
+      system: false,
+      rubricTitle: `${r.title} (my copy)`,
+      rubricDescription: r.description || '',
+      editorRows: toRows(r.criteria),
+    });
   };
 
   const updateRow = (id, patch) => {
     setRows((prev) => prev.map((r) => {
       if (r.id !== id) return r;
       const next = { ...r, ...patch };
-      // Auto-derive the key from the label until the admin edits it directly.
+      // Auto-derive the key from the label until the teacher edits it directly.
       if (patch.label !== undefined && !r.keyTouched) next.key = slugify(patch.label);
       return next;
     }));
@@ -159,13 +228,15 @@ export default function AdminRubrics() {
     }
     setLoading(true);
     try {
-      const payload = { title, description, criteria: toCriteria(rows), is_active: true };
+      const payload = { title, description, criteria: toCriteria(rows) };
       if (editing === 'new') {
-        await apiClient.post('/rubrics', payload);
+        // A new rubric becomes the default for its scope.
+        await apiClient.post('/rubrics', { ...payload, is_active: true, is_system: isSystem });
+        toast.success(isSystem ? 'School-wide rubric saved and activated' : 'Rubric saved as your default');
       } else {
         await apiClient.put(`/rubrics/${editing}`, payload);
+        toast.success('Rubric saved');
       }
-      toast.success('Rubric saved and set as active');
       setEditing(null);
       loadRubrics();
     } catch (err) {
@@ -178,17 +249,17 @@ export default function AdminRubrics() {
   const activate = async (r) => {
     try {
       await apiClient.put(`/rubrics/${r.id}`, { is_active: true });
-      toast.success(`"${r.title}" is now the active rubric`);
+      toast.success(r.is_system ? `"${r.title}" is now the school-wide rubric` : `"${r.title}" is now your default`);
       loadRubrics();
     } catch (err) {
       toast.error('Failed to activate: ' + errorMessage(err));
     }
   };
 
-  const remove = async (id) => {
-    if (!confirm('Delete this rubric?')) return;
+  const remove = async (r) => {
+    if (!confirm(`Delete "${r.title}"?`)) return;
     try {
-      await apiClient.delete(`/rubrics/${id}`);
+      await apiClient.delete(`/rubrics/${r.id}`);
       toast.success('Deleted');
       loadRubrics();
     } catch (err) {
@@ -196,78 +267,106 @@ export default function AdminRubrics() {
     }
   };
 
-  if (!isAdmin) {
+  if (!user) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">Access Denied</h2>
-        <p className="text-gray-600">Administrator access required.</p>
+        <div className="text-6xl mb-4">🔒</div>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">Login Required</h2>
+        <p className="text-gray-600">Sign in to create and manage your own rubrics.</p>
       </div>
     );
   }
 
   const totalPoints = rows.reduce((s, r) => s + (Number(r.max_score) || 0), 0);
   const totalWeight = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
-  const activeRubric = rubrics.find((r) => r.is_active);
+  const systemRubrics = rubrics.filter((r) => r.is_system);
+  const myRubrics = rubrics.filter((r) => !r.is_system);
+  const myDefault = myRubrics.find((r) => r.is_active);
+  const schoolActive = systemRubrics.find((r) => r.is_active);
+
+  const cardHandlers = { onActivate: activate, onEdit: startEdit, onDelete: remove, onCopy: startCopy };
 
   return (
     <div className="glass-card rounded-2xl shadow-xl p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-2xl font-bold text-indigo-700">📐 Scoring & Criteria</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <h2 className="text-2xl font-bold text-indigo-700">📐 Rubrics</h2>
         {!editing && (
-          <button
-            onClick={startNew}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
-          >
-            + New Rubric
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => startNew(false)}
+              className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+            >
+              + New Rubric
+            </button>
+            {isAdmin && (
+              <button
+                onClick={() => startNew(true)}
+                className="border border-indigo-300 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-50 transition"
+              >
+                + New School-wide Rubric
+              </button>
+            )}
+          </div>
         )}
       </div>
-      <p className="text-sm text-gray-600 mb-6">
-        The active rubric is used for every analytic evaluation. Set each criterion's maximum score and
-        weight, and add your own criteria beyond the built-in ones.
-        {!activeRubric && ' No rubric is active, so the built-in 5-criterion rubric (1–4 each) is used.'}
-      </p>
 
       {!editing && (
-        <div className="space-y-3">
-          {rubrics.length === 0 && (
-            <p className="text-gray-500">No rubrics yet. Click "+ New Rubric" to create one.</p>
-          )}
-          {rubrics.map((r) => {
-            const summary = toRows(r.criteria);
-            return (
-              <div key={r.id} className="border p-4 rounded-xl flex justify-between items-start gap-4 bg-white hover:bg-gray-50 transition">
-                <div className="min-w-0">
-                  <div className="font-semibold text-gray-800 flex items-center gap-2">
-                    {r.title}
-                    {r.is_active && (
-                      <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Active</span>
-                    )}
-                  </div>
-                  {r.description && <p className="text-sm text-gray-500">{r.description}</p>}
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {summary.map((c) => (
-                      <span key={c.id} className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-full">
-                        {c.label} · 1–{c.max_score}{c.weight !== 1 ? ` · ${c.weight}×` : ''}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex gap-3 shrink-0">
-                  {!r.is_active && (
-                    <button onClick={() => activate(r)} className="text-emerald-700 text-sm hover:underline">Set active</button>
+        <>
+          <div className="text-sm text-gray-700 bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 mb-6">
+            Your evaluations use{' '}
+            <strong>
+              {myDefault ? `your rubric “${myDefault.title}”` : schoolActive ? `the school-wide rubric “${schoolActive.title}”` : 'the built-in rubric (5 criteria, 1–4 each)'}
+            </strong>{' '}
+            unless you pick a different one on the Evaluate page.
+          </div>
+
+          {listLoading ? (
+            <p className="text-gray-500">Loading rubrics…</p>
+          ) : (
+            <div className="space-y-8">
+              <section>
+                <h3 className="font-semibold text-gray-800 mb-1">My rubrics</h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  Only you can see and use these. Your default overrides the school-wide rubric for your evaluations.
+                </p>
+                <div className="space-y-3">
+                  {myRubrics.length === 0 && (
+                    <p className="text-gray-500 text-sm">
+                      You haven't created a rubric yet. Click “+ New Rubric”, or copy the school-wide one below.
+                    </p>
                   )}
-                  <button onClick={() => startEdit(r)} className="text-blue-600 text-sm hover:underline">Edit</button>
-                  <button onClick={() => remove(r.id)} className="text-red-600 text-sm hover:underline">Delete</button>
+                  {myRubrics.map((r) => <RubricCard key={r.id} rubric={r} {...cardHandlers} />)}
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              </section>
+
+              <section>
+                <h3 className="font-semibold text-gray-800 mb-1">School-wide {isAdmin ? 'rubrics' : 'rubric'}</h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  {isAdmin
+                    ? 'Set by admins. The active one is the default for every teacher without their own default.'
+                    : 'Set by the administrator. Used when you have no default rubric of your own.'}
+                </p>
+                <div className="space-y-3">
+                  {systemRubrics.length === 0 && (
+                    <p className="text-gray-500 text-sm">No school-wide rubric is set; the built-in rubric is used.</p>
+                  )}
+                  {systemRubrics.map((r) => <RubricCard key={r.id} rubric={r} {...cardHandlers} />)}
+                </div>
+              </section>
+            </div>
+          )}
+        </>
       )}
 
       {editing && (
         <div className="space-y-4">
+          <div className={`text-sm rounded-lg px-4 py-2 border ${
+            isSystem ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-gray-50 border-gray-200 text-gray-700'
+          }`}>
+            {isSystem
+              ? '🏫 School-wide rubric: applies to every teacher who has no default rubric of their own.'
+              : '👤 Personal rubric: only you can see and use it.'}
+          </div>
           <div>
             <label className="block font-medium mb-1">Title</label>
             <input
@@ -399,7 +498,7 @@ export default function AdminRubrics() {
               disabled={loading}
               className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-50"
             >
-              {loading ? 'Saving...' : 'Save & Activate'}
+              {loading ? 'Saving...' : editing === 'new' ? (isSystem ? 'Save & Activate' : 'Save & Make Default') : 'Save'}
             </button>
             <button
               onClick={() => setEditing(null)}

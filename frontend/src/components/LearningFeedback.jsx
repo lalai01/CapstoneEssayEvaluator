@@ -1,61 +1,85 @@
-import React, { useState, useEffect } from 'react';
-import { listLearningFeedback } from '../api';
+import React, { useState, useEffect, useMemo } from 'react';
+import { listLearningFeedback, listKnowledge } from '../api';
 import { useAuth } from '../context/AuthContext';
 import LoadingIndicator from './LoadingIndicator';
+import EntryFilters, { RichText } from './EntryFilters';
 import toast from 'react-hot-toast';
-import { getCriteria, errorMessage } from '../lib/scoring';
+import {
+  getCriteria,
+  errorMessage,
+  entryTitle,
+  entryAiLabel,
+  entryRubricTitle,
+  essayKey,
+  matchesSearch,
+  countByAi,
+  sortEntries,
+  isNum,
+} from '../lib/scoring';
+
+function teacherScoresOf(item) {
+  return item.teacher_scores || item.original_scores?.teacher_scores || {};
+}
+
+function changedCount(item) {
+  const original = item.original_scores || {};
+  const teacher = teacherScoresOf(item);
+  return Object.entries(teacher).filter(([k, v]) => isNum(v) && isNum(original[k]) && v !== original[k]).length;
+}
 
 function ScoreComparison({ item }) {
   const original = item.original_scores || {};
-  // teacher_scores lives in its own column, or nested in original_scores
-  // when that column hasn't been added yet.
-  const teacher = item.teacher_scores || original.teacher_scores || {};
+  const teacher = teacherScoresOf(item);
   const rows = original.holistic_score !== undefined
     ? [{ key: 'holistic_score', label: 'Holistic Score', max_score: 5 }]
     : getCriteria(original);
 
   return (
-    <div>
-      <strong>Scores</strong>
-      <table className="w-full mt-2 text-sm border rounded-lg overflow-hidden">
-        <thead className="bg-gray-50 text-gray-600">
-          <tr>
-            <th className="text-left p-2 font-medium">Criterion</th>
-            <th className="p-2 font-medium">AI</th>
-            <th className="p-2 font-medium">Teacher</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ key, label, max_score }) => {
-            const ai = original[key];
-            const t = teacher[key];
-            const diff = typeof ai === 'number' && typeof t === 'number' ? t - ai : null;
-            return (
-              <tr key={key} className="border-t">
-                <td className="p-2 text-gray-800">{label}</td>
-                <td className="p-2 text-center">{ai ?? '—'}/{max_score}</td>
-                <td className="p-2 text-center">
-                  {t ?? '—'}/{max_score}
-                  {diff !== null && diff !== 0 && (
-                    <span className={`ml-1 text-xs ${diff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                      ({diff > 0 ? `+${diff}` : diff})
-                    </span>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <table className="w-full text-sm border rounded-lg overflow-hidden">
+      <thead className="bg-gray-50 text-gray-600">
+        <tr>
+          <th className="text-left p-2 font-medium">Criterion</th>
+          <th className="p-2 font-medium">AI</th>
+          <th className="p-2 font-medium">Teacher</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(({ key, label, max_score }) => {
+          const ai = original[key];
+          const t = teacher[key];
+          const diff = isNum(ai) && isNum(t) ? t - ai : null;
+          return (
+            <tr key={key} className="border-t">
+              <td className="p-2 text-gray-800">{label}</td>
+              <td className="p-2 text-center">{ai ?? '—'}/{max_score}</td>
+              <td className="p-2 text-center">
+                {t ?? '—'}/{max_score}
+                {diff !== null && diff !== 0 && (
+                  <span className={`ml-1 text-xs ${diff > 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                    ({diff > 0 ? `+${diff}` : diff})
+                  </span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
 export default function LearningFeedback() {
   const { user } = useAuth();
   const [overrides, setOverrides] = useState([]);
+  const [kbEssays, setKbEssays] = useState(new Set());
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showFullEssay, setShowFullEssay] = useState(false);
+
+  const [search, setSearch] = useState('');
+  const [aiFilter, setAiFilter] = useState('all');
+  const [sort, setSort] = useState('newest');
+  const [status, setStatus] = useState('all');
 
   useEffect(() => {
     if (user) {
@@ -68,30 +92,46 @@ export default function LearningFeedback() {
   const loadOverrides = async () => {
     setLoading(true);
     try {
-      const data = await listLearningFeedback();
+      const [data, kb] = await Promise.all([
+        listLearningFeedback(),
+        listKnowledge().catch(() => []),
+      ]);
       setOverrides(data);
+      setKbEssays(new Set(kb.map((e) => essayKey(e.essay))));
     } catch (err) {
-      toast.error('Failed to load learning feedback: ' + errorMessage(err));
+      toast.error('Failed to load the Learning Hub: ' + errorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
-  // Show login prompt if not authenticated
+  const aiCounts = useMemo(() => countByAi(overrides, entryAiLabel), [overrides]);
+
+  const visible = useMemo(() => {
+    const filtered = overrides.filter((item) =>
+      (aiFilter === 'all' || entryAiLabel(item) === aiFilter) &&
+      (status === 'all' ||
+        (status === 'scores' && changedCount(item) > 0) ||
+        (status === 'in-kb' && kbEssays.has(essayKey(item.original_essay)))) &&
+      matchesSearch(search, entryTitle(item), item.original_essay, item.teacher_feedback, item.suggested_changes)
+    );
+    return sortEntries(filtered, sort, entryTitle);
+  }, [overrides, aiFilter, status, search, sort, kbEssays]);
+
   if (!user) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
         <div className="text-6xl mb-4">🔒</div>
         <h2 className="text-2xl font-bold text-gray-800 mb-2">Login Required</h2>
-        <p className="text-gray-600">Please log in to view the learning feedback knowledge base.</p>
+        <p className="text-gray-600">Please log in to view the Learning Hub.</p>
       </div>
     );
   }
 
-    if (loading) {
+  if (loading) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 bg-white/90 backdrop-blur-md">
-        <LoadingIndicator message="Loading learning feedback…" />
+        <LoadingIndicator message="Loading the Learning Hub…" />
       </div>
     );
   }
@@ -99,29 +139,134 @@ export default function LearningFeedback() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
       <div className="glass-card rounded-2xl shadow-xl p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">🧠 Teacher Overrides (Learning KB)</h2>
-        {overrides.length === 0 && <p className="text-gray-500">No overrides yet. Reject an evaluation and provide feedback to build this knowledge base.</p>}
-        <ul className="space-y-3 max-h-[600px] overflow-y-auto pr-2">
-          {overrides.map(item => (
-            <li key={item.id} className="border-b border-gray-100 pb-3 cursor-pointer hover:bg-gray-50 rounded-lg p-2 transition" onClick={() => setSelected(item)}>
-              <div className="font-medium text-gray-800">Override #{item.id}</div>
-              <div className="text-xs text-gray-500">{new Date(item.created_at).toLocaleString()}</div>
-            </li>
-          ))}
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-2xl font-bold text-gray-800">🧠 Learning Hub</h2>
+          <span className="text-sm bg-amber-100 text-amber-800 px-3 py-1 rounded-full">
+            {visible.length}/{overrides.length} overrides
+          </span>
+        </div>
+        <p className="text-sm text-gray-600 mb-4">
+          Essays where a teacher overrode the AI. Remarks here feed back into future evaluations.
+        </p>
+
+        <EntryFilters
+          search={search}
+          onSearch={setSearch}
+          placeholder="Search title, essay, remarks…"
+          aiCounts={aiCounts}
+          aiFilter={aiFilter}
+          onAiFilter={setAiFilter}
+          sort={sort}
+          onSort={setSort}
+          extraFilters={[
+            { id: 'all', label: 'All' },
+            { id: 'scores', label: 'Scores changed' },
+            { id: 'in-kb', label: 'Also in Knowledge Base' },
+          ]}
+          activeExtra={status}
+          onExtra={setStatus}
+        />
+
+        {overrides.length === 0 && (
+          <p className="text-gray-500">No overrides yet. On an evaluation, click "Reject & Override" and write your remarks.</p>
+        )}
+        {overrides.length > 0 && visible.length === 0 && (
+          <p className="text-gray-500 text-sm">No overrides match these filters.</p>
+        )}
+
+        <ul className="space-y-2 max-h-[560px] overflow-y-auto pr-2">
+          {visible.map((item) => {
+            const changed = changedCount(item);
+            const inKb = kbEssays.has(essayKey(item.original_essay));
+            return (
+              <li key={item.id}>
+                <button
+                  onClick={() => { setSelected(item); setShowFullEssay(false); }}
+                  className={`w-full text-left border rounded-xl p-3 transition hover:shadow-md ${
+                    selected?.id === item.id ? 'bg-amber-50 border-amber-300' : 'bg-white border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex justify-between gap-2">
+                    <span className="font-semibold text-gray-800 truncate">{entryTitle(item)}</span>
+                    <span className="text-xs text-gray-500 shrink-0">
+                      {new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </span>
+                  </div>
+                  {item.teacher_feedback && (
+                    <p className="text-xs text-gray-600 mt-1 line-clamp-2">“{item.teacher_feedback}”</p>
+                  )}
+                  <div className="flex flex-wrap gap-1.5 mt-2 text-xs">
+                    <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">🤖 {entryAiLabel(item)}</span>
+                    <span className="bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full">✏️ Overridden</span>
+                    {changed > 0 && (
+                      <span className="bg-red-50 text-red-700 px-2 py-0.5 rounded-full">
+                        {changed} score{changed === 1 ? '' : 's'} changed
+                      </span>
+                    )}
+                    {inKb && <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">💾 In Knowledge Base</span>}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </div>
+
       <div className="glass-card rounded-2xl shadow-xl p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">📝 Override Details</h2>
         {selected ? (
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2">
-            <ScoreComparison item={selected} />
-            <div><strong>Teacher Feedback:</strong><br/>{selected.teacher_feedback}</div>
-            {selected.suggested_changes && <div><strong>Suggested Changes:</strong><br/>{selected.suggested_changes}</div>}
-            <div><strong>Accepted?</strong> {selected.accepted ? 'Yes' : 'No'}</div>
-            <div><strong>Original Essay Preview:</strong><br/>{selected.original_essay?.substring(0, 400)}...</div>
+          <div className="space-y-5 max-h-[680px] overflow-y-auto pr-2">
+            <div className="border-b border-gray-200 pb-3">
+              <h3 className="text-xl font-semibold text-gray-800">{entryTitle(selected)}</h3>
+              <div className="flex flex-wrap gap-1.5 mt-2 text-xs">
+                <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">🤖 Scored by {entryAiLabel(selected)}</span>
+                {entryRubricTitle(selected) && (
+                  <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">📐 {entryRubricTitle(selected)}</span>
+                )}
+                <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
+                  🕒 {new Date(selected.created_at).toLocaleString()}
+                </span>
+                {selected.satisfaction != null && (
+                  <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">Satisfaction {selected.satisfaction}/10</span>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <h4 className="font-semibold text-gray-800 mb-2">Scores: AI vs teacher</h4>
+              <ScoreComparison item={selected} />
+            </div>
+
+            <div>
+              <h4 className="font-semibold text-gray-800 mb-2">👩‍🏫 Teacher's Remarks</h4>
+              <div className="bg-amber-50 p-4 rounded-lg text-sm border-l-4 border-amber-400 text-gray-800">
+                <RichText text={selected.teacher_feedback || '—'} />
+              </div>
+            </div>
+
+            {selected.suggested_changes && (
+              <div>
+                <h4 className="font-semibold text-gray-800 mb-2">💡 Suggestions for the Student</h4>
+                <div className="bg-blue-50 p-4 rounded-lg text-sm border-l-4 border-blue-400 text-gray-800">
+                  <RichText text={selected.suggested_changes} />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <h4 className="font-semibold text-gray-800 mb-2">📄 Essay</h4>
+              <div className="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap max-h-60 overflow-y-auto text-gray-800">
+                {showFullEssay ? selected.original_essay : (selected.original_essay || '').slice(0, 500)}
+                {(selected.original_essay || '').length > 500 && (
+                  <button onClick={() => setShowFullEssay(!showFullEssay)} className="text-blue-600 ml-2 text-xs font-medium hover:underline">
+                    {showFullEssay ? 'Show less' : 'Show more'}
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         ) : (
-          <div className="text-gray-500">Select an override from the left to see details.</div>
+          <div className="text-gray-500">Select an override on the left to see the teacher's remarks and score changes.</div>
         )}
       </div>
     </div>

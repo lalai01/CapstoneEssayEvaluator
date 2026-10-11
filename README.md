@@ -29,12 +29,15 @@ A web app that scores essays against a configurable rubric, gives written feedba
 
 | Area | What it does |
 |---|---|
-| **Evaluate Essay** | Paste text or upload an image, PDF or DOCX. Analytic mode scores every rubric criterion. Holistic mode gives one 1–5 score. Optional RAG adds feedback from similar past essays. Results can be downloaded as a PDF. |
+| **Evaluate Essay** | Paste text or upload an image, PDF or DOCX. Analytic mode scores every rubric criterion. Holistic mode gives one 1–5 score. Optional RAG adds feedback from similar past essays. Signed-in teachers choose which rubric to score with. |
+| **Evaluation report** | **Generate Evaluation Report** creates a multi-page PDF. It includes student, class and teacher details, the rubric used, the total, percentage, weighted score and grade, a per-criterion breakdown (with override scores beside the AI's), strengths and focus areas, criterion comments, feedback, grammar fixes, recommendations, a teacher comment and signature area, and optionally the full essay. |
 | **Satisfaction rating** | After an evaluation, the user rates it 1–10. The rating is stored with Knowledge Base entries and teacher overrides. |
-| **Teacher override** | Reject an evaluation and enter your own score for each criterion, plus feedback and suggested changes. Overrides go to the Learning KB and feed back into RAG. |
-| **Knowledge Base / Learning KB** | Accepted evaluations and teacher overrides, with AI-vs-teacher score comparison. |
-| **AI Prompt Playground** | Runs the same prompt on three models side by side, shows a scoring-difference table, and calculates agreement statistics (see [below](#prompt-playground-statistics)). |
-| **Scoring & Criteria** (admin only) | Admins set the criteria and how each is scored: add or remove criteria, and give each one its own maximum score (1–2 up to 1–10), weight and level descriptors. The active rubric applies to every user's evaluations. Other users can't see or change it; the backend rejects their requests with 403. |
+| **Teacher override** | **Reject & Override** an evaluation. The teacher enters their own score per criterion, **teacher's remarks** (required, in their own words, with the AI feedback shown for reference) and **suggestions for the student** (optional). Overrides go to the Learning Hub, feed back into RAG, and the remarks fill the teacher comments in the evaluation report. |
+| **Knowledge Base** | Evaluations the teacher accepted and saved. Each entry shows which AI scored it, its rubric, and whether the same essay was also overridden (with those remarks inline). Search, sort, filter by AI model, and filter by saved-only or also-overridden. |
+| **Learning Hub** | Teacher overrides, with essay title, the AI that was overridden, AI-vs-teacher scores, remarks and suggestions. The same search, sort and AI filter, plus filters for "scores changed" and "also in Knowledge Base". |
+| **AI Prompt Playground** | Runs the same prompt on three models side by side. A **Score Comparison** table (Category / Primary / Compare / Diff) compares any two of them and can be saved as a PDF report. Agreement statistics are described [below](#prompt-playground-statistics). |
+| **Rubrics** (signed-in teachers) | Teachers create their own rubrics. Each criterion has its own maximum score (1–2 up to 1–10), weight and level descriptors, and teachers can add criteria of their own. A teacher's **default** rubric is used for their evaluations. They can copy the school-wide rubric as a starting point. Personal rubrics are private to their owner. |
+| **School-wide rubric** (admin only) | Admins create and activate the school-wide rubric, the default for every teacher without their own. Teachers can view it but not change it; the backend rejects such changes with 403. |
 | **Surveys** | Admins create surveys; logged-in users answer them in the **Surveys** tab. |
 | **OCR Labeler** (admin) | Correct OCR output on uploaded images to build TrOCR fine-tuning data. |
 | **Rate Us** | Public ratings with threaded comments and reactions. |
@@ -198,9 +201,9 @@ The repository secret `FIREBASE_SERVICE_ACCOUNT_CAPSTONEESSAYEVALUATOR` must exi
 
 | Table / object | Used for |
 |---|---|
-| `knowledge_base` | Saved evaluations (fixed columns for the five built-in criteria, `criterion_feedback`, `satisfaction` 1–10) |
-| `learning_feedback` | Teacher overrides: `original_scores` (jsonb), `teacher_scores` (jsonb), `teacher_feedback`, `suggested_changes`, `satisfaction` |
-| `rubrics` | `title`, `description`, `criteria` (jsonb, see below), `is_active`, `user_id` |
+| `knowledge_base` | Saved evaluations: `title`, `essay`, fixed columns for the five built-in criteria, `scores` (jsonb, the full result for any rubric), `ai_model`, `criterion_feedback`, `satisfaction` 1–10 |
+| `learning_feedback` | Teacher overrides: `title`, `ai_model`, `original_essay`, `original_scores` (jsonb), `teacher_scores` (jsonb), `teacher_feedback` (the teacher's remarks), `suggested_changes` (suggestions for the student), `satisfaction` |
+| `rubrics` | `title`, `description`, `criteria` (jsonb, see below), `is_active`, `is_system` (school-wide vs personal), `user_id` (owner) |
 | `saved_essays` | Playground drafts |
 | `ratings`, `comments`, `comment_reactions` | Rate Us |
 | `surveys`, `survey_questions`, `survey_responses` | Surveys |
@@ -208,13 +211,25 @@ The repository secret `FIREBASE_SERVICE_ACCOUNT_CAPSTONEESSAYEVALUATOR` must exi
 | Storage bucket `ocr-samples` | Uploaded OCR images |
 | RPC `get_user_profiles` | Names and avatars for comments and ratings |
 
-**One-time migration for teacher scores** (optional but recommended):
+**One-time migrations.** Run these in the Supabase SQL editor before deploying this version:
 
 ```sql
+-- Teacher-defined rubrics (required): separates school-wide rubrics from teachers' own.
+alter table rubrics add column if not exists is_system boolean not null default false;
+-- Existing rubrics were created by admins, so they become school-wide.
+update rubrics set is_system = true;
+
+-- Organizing the Knowledge Base and Learning Hub (recommended).
+alter table knowledge_base    add column if not exists scores jsonb;
+alter table knowledge_base    add column if not exists ai_model text;
 alter table learning_feedback add column if not exists teacher_scores jsonb;
+alter table learning_feedback add column if not exists title text;
+alter table learning_feedback add column if not exists ai_model text;
 ```
 
-Until this column exists, teacher scores are stored inside `original_scores.teacher_scores`, and the Learning KB reads either location.
+- Without `rubrics.is_system`, evaluations still work and use the latest active rubric, but the Rubrics tab shows a "migration needed" error.
+- Without the other columns, nothing is lost: saves drop the missing columns and keep their values inside an existing jsonb column (`knowledge_base.criterion_feedback` or `learning_feedback.original_scores`), and the app reads either location.
+- Entries saved before this version have no AI model recorded, so they appear as "Unknown AI (older entry)".
 
 ---
 
@@ -234,7 +249,13 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 - **`weight`:** relative importance in the weighted score (0 or more).
 - **`levels`:** optional descriptors. A level without a descriptor uses the nearest described level below it.
 - **Legacy rubrics** (`{ "grammar": { "4": "…", "3": "…" } }`) still load. Their maximum is the highest level, and built-in criteria keep their default weights.
-- **Active rubric:** exactly one rubric is active, and saving or activating a rubric deactivates the others. With no active rubric, the built-in rubric is used: Main Statement, Organization, Evidence, Analysis and Grammar, each scored 1–4, with Evidence and Analysis weighted 1.5×.
+- **Which rubric scores an essay:**
+  1. the rubric the teacher picked on the Evaluate page (their own or the school-wide one);
+  2. otherwise the teacher's default rubric;
+  3. otherwise the active school-wide rubric;
+  4. otherwise the built-in rubric: Main Statement, Organization, Evidence, Analysis and Grammar, each 1–4, with Evidence and Analysis weighted 1.5×.
+
+  There is one active rubric per scope: one school-wide, and one default per teacher. A teacher can't score with another teacher's private rubric.
 
 **Score math** (shared by backend and frontend):
 - Normalized score of one criterion: `(score − 1) / (max − 1)`, from 0 to 1.
@@ -247,7 +268,7 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 
 ## Prompt Playground statistics
 
-Three slots (A, B, C) send the same prompt to the chosen models in parallel. Each slot can use DeepSeek, Gemma 2 2B, Llama 3.2 3B or Phi-3.5. If the active rubric isn't the built-in one, the **Use it in the prompts** button rebuilds the prompts to ask for its criteria and ranges.
+Three slots (A, B, C) send the same prompt to the chosen models in parallel. Each slot can use DeepSeek, Gemma 2 2B, Llama 3.2 3B or Phi-3.5. The prompts are built automatically from the rubric that applies to the user, so nobody edits prompts by hand. Admins can still open **Advanced (admin): Edit Prompts** to change them. Once an admin edits them, rubric changes no longer overwrite their version until they click **Rebuild from rubric**.
 
 **Scoring difference table:** each model's score per criterion, the consensus (mean of the three), the spread (max − min), every pairwise difference, and which model was closest per criterion. Rows where models are more than one rubric level apart are highlighted.
 
@@ -294,10 +315,10 @@ All routes except `/health`, `/ocr*`, `/test-prompt`, `/rubric*`, `/suggestions`
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Liveness check |
-| POST | `/evaluate`, `/evaluate-rag` | Evaluate `{ text, evaluation_type: "analytic" \| "holistic" }` |
-| GET | `/rubric/active` | Active rubric criteria (label, max, weight, levels) |
+| POST | `/evaluate`, `/evaluate-rag` | Evaluate `{ text, evaluation_type: "analytic" \| "holistic", rubric_id? }`; `scores.rubric` names the rubric used |
+| GET | `/rubric/active?rubric_id=` | The rubric an evaluation would use for the caller (or the given one): info and criteria |
 | GET | `/rubric`, `/suggestions` | Built-in rubric and usage guide |
-| GET/POST/PUT/DELETE | `/rubrics`, `/rubrics/{id}` | Rubric CRUD (admin) |
+| GET/POST/PUT/DELETE | `/rubrics`, `/rubrics/{id}` | Rubric CRUD: teachers manage their own; `is_system: true` (school-wide) is admin-only |
 | POST | `/override` | Teacher override `{ original_essay, original_scores, teacher_scores?, teacher_feedback, suggested_changes?, satisfaction? }` |
 | GET | `/learning-kb` | Your overrides |
 | POST/GET | `/knowledge`, `/knowledge/{id}` | Knowledge Base |
