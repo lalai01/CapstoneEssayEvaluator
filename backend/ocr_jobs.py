@@ -58,7 +58,16 @@ def start_pdf_ocr_job(pdf_bytes):
                         used_engines.add(engine)
                         confidences.append(conf)
 
-            jobs[job_id]["result"] = "\n\n".join(t for t in texts if t and t.strip())
+            result = "\n\n".join(t for t in texts if t and t.strip())
+            from text_quality import looks_like_english_text
+            if not looks_like_english_text(result):
+                # Same rule as single images: no English paragraphs, no essay.
+                jobs[job_id]["code"] = "not_essay"
+                raise ValueError(
+                    "This doesn't look like an essay. Please attach a clear photo, scan, PDF or "
+                    "Word file of a written or printed English essay."
+                )
+            jobs[job_id]["result"] = result
             jobs[job_id]["engine"] = ", ".join(sorted(used_engines)) or "none"
             jobs[job_id]["confidence"] = (
                 sum(confidences) / len(confidences) if confidences else 0.0
