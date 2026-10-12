@@ -64,6 +64,11 @@ export function buildCriteria(parsedList, rubricCriteria) {
   return [...fromRubric, ...extra];
 }
 
+// For each rater, the mean of the other raters' scores.
+export function othersConsensus(criteria, raters) {
+  return (rater) => consensusScores(criteria, raters.filter((r) => r.id !== rater.id && r.scores));
+}
+
 export function consensusScores(criteria, raters) {
   const out = {};
   for (const c of criteria) {
@@ -121,7 +126,9 @@ function comparePair(criteria, a, b) {
 
 /**
  * raters:    [{ id, name, scores }]  — scores is the parsed model JSON
- * reference: scores object to compare against
+ * reference: scores object to compare against, or a function (rater) =>
+ *            scores, e.g. the consensus of the *other* raters (so a model
+ *            is never compared with an average that includes itself)
  */
 export function computeStats(criteria, raters, reference) {
   const valid = raters.filter((r) => r.scores);
@@ -131,7 +138,8 @@ export function computeStats(criteria, raters, reference) {
       .map((c) => fractionOf(r.scores[c.key], c.max_score))
       .filter((f) => f !== null)
       .map((f) => f * 100);
-    const vsRef = compareToReference(criteria, r.scores, reference);
+    const ref = typeof reference === 'function' ? reference(r) : reference;
+    const vsRef = compareToReference(criteria, r.scores, ref);
     return {
       ...r,
       average: averageFraction(r.scores, criteria),

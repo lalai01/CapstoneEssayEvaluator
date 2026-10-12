@@ -150,12 +150,13 @@ export const listLearningFeedback = async () => {
 };
 
 // ---------- AI Prompt Testing ----------
-export const testPrompt = async (aiProvider, systemPrompt, userPrompt, model = null) => {
+export const testPrompt = async (aiProvider, systemPrompt, userPrompt, model = null, jsonMode = false) => {
   const response = await apiClient.post('/test-prompt', {
     ai_provider: aiProvider,
     system_prompt: systemPrompt,
     user_prompt: userPrompt,
     model: model,
+    json_mode: jsonMode,
   }, {
     timeout: 300000,  // 5 min — Phi-3.5 and other local models are slow
   });

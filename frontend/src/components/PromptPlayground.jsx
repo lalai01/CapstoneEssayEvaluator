@@ -23,6 +23,7 @@ import {
 import {
   buildCriteria,
   consensusScores,
+  othersConsensus,
   computeStats,
   loadHistory,
   saveHistory,
@@ -133,6 +134,38 @@ ${cfLines}
 
 Output ONLY the JSON. No text before it, no text after it, no code fences.`;
 
+  return { system, user };
+}
+
+// Local models (Ollama, llama.cpp) run on the VPS CPU, where every prompt
+// and output token costs time. This prompt asks for the same JSON shape with
+// the rubric, but no long example, one-sentence notes and capped lists.
+const LOCAL_PROVIDERS = new Set(['gemma', 'ollama', 'llamacpp']);
+
+function buildCompactPrompts(criteria) {
+  const rubric = criteria
+    .map((c) => {
+      const top = c.levels?.[c.max_score] || c.levels?.[String(c.max_score)];
+      return `- ${c.key} (1-${c.max_score}): ${c.label}${top ? `. Top score means: ${top}` : ''}`;
+    })
+    .join('\n');
+  const scores = criteria.map((c) => `"${c.key}": <1-${c.max_score}>`).join(', ');
+  const notes = criteria.map((c) => `"${c.key}": "<one sentence>"`).join(', ');
+  const system =
+    'You are an essay grader that replies with one JSON object only. ' +
+    'Use the full score range and give different scores to different criteria when the essay warrants it.';
+  const user = `Grade the essay with this rubric:
+${rubric}
+
+Essay:
+"""
+{essay}
+"""
+
+Reply with JSON only, in this shape:
+{${scores}, "feedback": "<2-3 sentences>", "criterion_feedback": {${notes}}, "grammar_issues": [{"original": "<quote>", "correction": "<fix>", "explanation": "<short>"}], "recommendations": [{"title": "<short>", "issue": "<short>", "suggestion": "<short>"}]}
+
+At most 3 grammar_issues (only real errors; [] if none) and 3 recommendations.`;
   return { system, user };
 }
 
@@ -532,12 +565,122 @@ function ScoreComparison({ criteria, raters, primaryId, compareId, onPrimary, on
 // -----------------------------------------------------------------------------
 // Statistics: which AI the scoring belongs closest to
 // -----------------------------------------------------------------------------
+const REFERENCE_PHRASE = {
+  consensus: 'the other models',
+  system: 'the system evaluator',
+  teacher: 'your scores',
+};
+
+function agreementLevel(similarity) {
+  if (!isNum(similarity)) return { label: '—', className: 'bg-gray-100 text-gray-600' };
+  if (similarity >= 90) return { label: 'Strong agreement', className: 'bg-emerald-100 text-emerald-800' };
+  if (similarity >= 75) return { label: 'Moderate agreement', className: 'bg-blue-100 text-blue-800' };
+  return { label: 'Weak agreement', className: 'bg-amber-100 text-amber-800' };
+}
+
+// Each model's single biggest difference from the reference, in raw points.
+function biggestDifferences(stats, criteria) {
+  const byKey = Object.fromEntries(criteria.map((c) => [c.key, c]));
+  return stats.perRater
+    .map((r) => {
+      let best = null;
+      for (const [key, d] of Object.entries(r.perCriterion)) {
+        if (!best || Math.abs(d) > Math.abs(best.d)) best = { key, d };
+      }
+      if (!best || Math.abs(best.d) < 25) return null; // under about one level on a 1-4 scale
+      const c = byKey[best.key];
+      return { rater: r, criterion: c, points: (Math.abs(best.d) / 100) * (c.max_score - 1), higher: best.d > 0 };
+    })
+    .filter(Boolean);
+}
+
+function ClosestSummary({ stats, criteria, raters, referenceMode, referenceLabel, pending }) {
+  const scored = raters.filter((r) => r.scores);
+  const ranked = stats.perRater.filter((r) => isNum(r.mae)).sort((a, b) => a.mae - b.mae);
+  const phrase = REFERENCE_PHRASE[referenceMode];
+
+  if (referenceMode === 'consensus' && scored.length < 2) {
+    return (
+      <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 p-4 text-sm text-indigo-900" role="status">
+        <div className="font-semibold mb-1">Closest to Consensus</div>
+        Waiting for more models: {scored.length} of {raters.length} finished.
+        A model is compared with the average of the <em>other</em> models, so the comparison starts once two have scores.
+      </div>
+    );
+  }
+  if (!ranked.length) {
+    return (
+      <p className="text-sm text-gray-500">
+        {referenceMode === 'system' ? 'Score the essay with the system evaluator to compare against it.' : 'Enter your scores above to see which AI grades most like you.'}
+      </p>
+    );
+  }
+
+  const closest = ranked[0];
+  const differences = biggestDifferences(stats, criteria);
+
+  return (
+    <div className="rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-purple-50 p-4 space-y-4">
+      <div>
+        <div className="text-xs uppercase tracking-wide text-indigo-700 mb-1">Closest to {referenceLabel}</div>
+        <div className="flex flex-wrap items-center gap-3">
+          <SlotBadge rater={closest} />
+          <span className="text-2xl font-bold text-gray-900">{fmtPct(closest.similarity, 1)}</span>
+          <span className="text-sm text-gray-600">similar to {phrase}</span>
+          <span className={`text-xs px-2 py-0.5 rounded-full ${agreementLevel(closest.similarity).className}`}>
+            {agreementLevel(closest.similarity).label}
+          </span>
+        </div>
+        {stats.tie && ranked.length > 1 && (
+          <p className="text-xs text-amber-800 mt-1">
+            {referenceMode === 'consensus' && scored.length === 2
+              ? 'With two models, each is compared with the other, so they are always tied. Run a third model to see which one sits closest to the group.'
+              : `Near-tie: ${ranked[1].id} is within half a point.`}
+          </p>
+        )}
+      </div>
+
+      <ol className="space-y-2" aria-label="Models ranked by similarity">
+        {ranked.map((r, i) => (
+          <li key={r.id} className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-6 text-gray-500 font-semibold">{i + 1}.</span>
+            <SlotBadge rater={r} />
+            <div className="flex-1 min-w-[120px] h-2 bg-white rounded-full overflow-hidden border border-indigo-100" aria-hidden="true">
+              <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${Math.max(0, Math.min(100, r.similarity))}%` }} />
+            </div>
+            <span className="w-14 text-right font-semibold text-gray-800">{fmtPct(r.similarity, 0)}</span>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${r.tendency.className}`}>{r.tendency.label}</span>
+          </li>
+        ))}
+      </ol>
+
+      {differences.length > 0 && (
+        <ul className="text-sm text-gray-700 space-y-1 list-disc pl-5">
+          {differences.map(({ rater, criterion, points, higher }) => (
+            <li key={rater.id}>
+              <strong>{rater.id} · {rater.name}</strong> rates <strong>{criterion.label}</strong>{' '}
+              {points.toFixed(points < 1 ? 1 : 0)} point{points >= 1.5 ? 's' : ''} {higher ? 'higher' : 'lower'} than {phrase}
+              <span className="text-gray-500"> (on 1–{criterion.max_score})</span>.
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {pending > 0 && (
+        <p className="text-xs text-gray-600" role="status">
+          Partial result: {pending} model{pending === 1 ? ' is' : 's are'} still running, so this may change.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function StatisticsPanel({
   stats, raters, criteria, referenceMode, setReferenceMode, referenceLabel,
   teacherRef, setTeacherRef, systemRef, onRunSystem, systemLoading, canRunSystem,
-  onLogRun, logged, history, onClearHistory,
+  onLogRun, logged, history, onClearHistory, pending,
 }) {
-  const { closest, tie } = stats;
+  const { closest } = stats;
   const summary = summarizeHistory(history);
 
   return (
@@ -572,8 +715,8 @@ function StatisticsPanel({
 
       {referenceMode === 'consensus' && (
         <p className="text-xs text-gray-600 bg-gray-50 rounded-lg p-2">
-          Reference = the average of the three models on each criterion. The closest model is the most
-          “central” rater; an outlier sits far from the other two.
+          Each model is compared with the average of the <em>other</em> models (never with itself).
+          The closest model is the most “central” grader; an outlier sits far from the rest.
         </p>
       )}
 
@@ -620,22 +763,14 @@ function StatisticsPanel({
         </div>
       )}
 
-      {/* Headline */}
-      {closest ? (
-        <div className="rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-purple-50 p-4">
-          <div className="text-xs uppercase tracking-wide text-indigo-700 mb-1">Closest to {referenceLabel}</div>
-          <div className="flex flex-wrap items-center gap-3">
-            <SlotBadge rater={closest} />
-            <span className="text-2xl font-bold text-gray-900">{fmtPct(closest.similarity, 1)}</span>
-            <span className="text-sm text-gray-600">similar · avg distance {closest.mae.toFixed(1)} pts</span>
-            {tie && <span className="text-xs text-amber-700">(near-tie with the runner-up)</span>}
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-gray-500">
-          {referenceMode === 'consensus' ? 'Run at least one model to see statistics.' : 'Provide reference scores to see which AI is closest.'}
-        </p>
-      )}
+      <ClosestSummary
+        stats={stats}
+        criteria={criteria}
+        raters={raters}
+        referenceMode={referenceMode}
+        referenceLabel={referenceLabel}
+        pending={pending}
+      />
 
       {/* Per-model cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -716,7 +851,7 @@ function StatisticsPanel({
           <div className="flex gap-2">
             <button
               onClick={onLogRun}
-              disabled={!closest || logged}
+              disabled={!closest || logged || pending > 0}
               className="text-sm bg-indigo-600 text-white px-3 py-1 rounded-md hover:bg-indigo-700 disabled:opacity-50"
             >
               {logged ? '✓ Run saved' : '📌 Save this run'}
@@ -1030,11 +1165,22 @@ Now output the JSON for the essay above. Nothing else.`
     setSlots((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
 
-  const runSlot = async (slot, finalUserPrompt) => {
+  const runSlot = async (slot, essay) => {
     const started = performance.now();
     setRuns((prev) => ({ ...prev, [slot.id]: { status: 'loading', provider: slot.provider, model: slot.model } }));
+    // CPU models get the compact prompt unless an admin hand-edited the prompts.
+    const compact = LOCAL_PROVIDERS.has(slot.provider) && !promptsEdited.current;
+    const prompts = compact
+      ? buildCompactPrompts(rubricCriteria)
+      : { system: systemPrompt, user: userPromptTemplate };
     try {
-      const response = await testPrompt(slot.provider, systemPrompt, finalUserPrompt, slot.model || null);
+      const response = await testPrompt(
+        slot.provider,
+        prompts.system,
+        prompts.user.replace('{essay}', essay),
+        slot.model || null,
+        true,
+      );
       const result = response.result;
       const failed = result?.model === 'error';
       setRuns((prev) => ({
@@ -1044,6 +1190,8 @@ Now output the JSON for the essay above. Nothing else.`
           result,
           error: failed ? result.text : null,
           ms: performance.now() - started,
+          stats: result?.stats || null,
+          compact,
           provider: slot.provider,
           model: slot.model,
         },
@@ -1064,11 +1212,19 @@ Now output the JSON for the essay above. Nothing else.`
     if (user) {
       await autoSaveEssay();
     }
-    const finalUserPrompt = userPromptTemplate.replace('{essay}', essayText);
     setRunId((n) => n + 1);
     setSystemRef(null);
-    // Models run in parallel; each panel fills in as its response arrives.
-    await Promise.allSettled(slots.map((slot) => runSlot(slot, finalUserPrompt)));
+    // Cloud models run in parallel. CPU models on the VPS run one at a time:
+    // running them together makes each slower and risks timeouts.
+    const remote = slots.filter((s) => !LOCAL_PROVIDERS.has(s.provider));
+    const local = slots.filter((s) => LOCAL_PROVIDERS.has(s.provider));
+    setRuns(Object.fromEntries(slots.map((s) => [s.id, { status: 'queued', provider: s.provider, model: s.model }])));
+    await Promise.allSettled([
+      ...remote.map((slot) => runSlot(slot, essayText)),
+      (async () => {
+        for (const slot of local) await runSlot(slot, essayText);
+      })(),
+    ]);
     toast.success('All model runs finished');
   };
 
@@ -1078,7 +1234,7 @@ Now output the JSON for the essay above. Nothing else.`
       return;
     }
     setRunId((n) => n + 1);
-    runSlot(slot, userPromptTemplate.replace('{essay}', essayText));
+    runSlot(slot, essayText);
   };
 
   const handleRunSystem = async () => {
@@ -1125,7 +1281,7 @@ Now output the JSON for the essay above. Nothing else.`
 
   const reference = referenceMode === 'system' ? systemRef
     : referenceMode === 'teacher' ? teacherRef
-    : consensus;
+    : othersConsensus(criteria, raters);
   const referenceLabel = referenceMode === 'system' ? 'System evaluator'
     : referenceMode === 'teacher' ? 'Teacher'
     : 'Consensus';
@@ -1136,9 +1292,10 @@ Now output the JSON for the essay above. Nothing else.`
   );
 
   const anyRun = Object.keys(runs).length > 0;
-  const anyLoading = Object.values(runs).some((r) => r.status === 'loading');
+  const pendingCount = Object.values(runs).filter((r) => r.status === 'loading' || r.status === 'queued').length;
+  const anyLoading = pendingCount > 0;
   const scoredCount = raters.filter((r) => r.scores).length;
-  const logKey = `${runId}:${referenceMode}:${JSON.stringify(reference ?? {})}`;
+  const logKey = `${runId}:${referenceMode}:${JSON.stringify(referenceMode === 'consensus' ? consensus : reference ?? {})}`;
 
   const handleLogRun = () => {
     if (!stats.closest) return;
@@ -1383,10 +1540,12 @@ Now output the JSON for the essay above. Nothing else.`
                       aria-label={`Model name for ${slot.id}`}
                     />
                     <span className="w-20 text-xs text-right">
+                      {run?.status === 'queued' && <span className="text-gray-500">queued…</span>}
                       {run?.status === 'loading' && <span className="text-blue-600">running…</span>}
                       {run?.status === 'done' && (
                         <span className={parsedOk ? 'text-emerald-600' : 'text-amber-600'}>
                           {parsedOk ? '✓' : '⚠ not JSON'} {run.ms ? `${(run.ms / 1000).toFixed(0)}s` : ''}
+                          {run.stats?.tokens_per_second ? ` · ${run.stats.tokens_per_second} tok/s` : ''}
                         </span>
                       )}
                       {run?.status === 'error' && <span className="text-red-600">✕ failed</span>}
@@ -1462,6 +1621,7 @@ Now output the JSON for the essay above. Nothing else.`
             canRunSystem={!!user}
             onLogRun={handleLogRun}
             logged={loggedRunId === logKey}
+            pending={pendingCount}
             history={history}
             onClearHistory={handleClearHistory}
           />
@@ -1479,6 +1639,10 @@ Now output the JSON for the essay above. Nothing else.`
                 <div className="bg-gray-50 rounded-xl border p-4 min-h-[200px] max-h-[600px] overflow-auto">
                   {!run ? (
                     <p className="text-gray-500 text-center mt-16">Not run yet.</p>
+                  ) : run.status === 'queued' ? (
+                    <p className="text-gray-500 text-center mt-16 text-sm px-4">
+                      ⏳ Queued. Models on the VPS run one at a time so each finishes faster.
+                    </p>
                   ) : run.status === 'loading' ? (
                     <LoadingIndicator message={`Running ${rater.name}…`} />
                   ) : run.status === 'error' ? (
