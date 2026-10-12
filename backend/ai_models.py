@@ -29,6 +29,17 @@ def _stats(started, output_tokens=None):
     return stats
 
 
+def _error_reason(response):
+    """The server's own explanation of an error response, kept short."""
+    try:
+        body = response.json()
+        error = body.get("error", body)
+        message = error.get("message") if isinstance(error, dict) else error
+        return str(message)[:300]
+    except Exception:
+        return (response.text or f"HTTP {response.status_code}")[:300]
+
+
 def _check_deadline(started, provider):
     if time.time() - started > TOTAL_DEADLINE:
         raise TimeoutError(
@@ -148,15 +159,41 @@ def call_llamacpp(system_prompt, user_prompt, model=None, json_mode=False):
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
+    # Not every llama.cpp build / model accepts every option, and a long
+    # prompt plus max_tokens can exceed the server's context size (-c). On a
+    # 400, retry with progressively plainer requests instead of failing.
+    attempts = [
+        payload,
+        {k: v for k, v in payload.items() if k not in ("response_format", "cache_prompt")},
+        {**{k: v for k, v in payload.items() if k not in ("response_format", "cache_prompt")},
+         "max_tokens": MAX_OUTPUT_TOKENS // 2},
+    ]
+
     started = time.time()
     parts = []
     output_tokens = 0
-    with requests.post(
-        f"{llamacpp_url}/chat/completions",
-        json=payload,
-        stream=True,
-        timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT),
-    ) as response:
+    response = None
+    errors = []
+    for attempt in attempts:
+        response = requests.post(
+            f"{llamacpp_url}/chat/completions",
+            json=attempt,
+            stream=True,
+            timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT),
+        )
+        if response.status_code != 400:
+            break
+        reason = _error_reason(response)
+        errors.append(reason)
+        print(f"[llama.cpp] 400 Bad Request ({reason}); retrying with a simpler request")
+        response.close()
+    else:
+        raise RuntimeError(
+            f"llama.cpp rejected the request: {errors[-1]}. If it mentions the context size, "
+            "start llama.cpp with a larger -c (e.g. -c 4096)."
+        )
+
+    with response:
         response.raise_for_status()
         for raw in response.iter_lines():
             _check_deadline(started, "llama.cpp")
