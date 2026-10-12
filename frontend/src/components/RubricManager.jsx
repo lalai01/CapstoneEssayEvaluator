@@ -65,7 +65,7 @@ function newRow() {
   };
 }
 
-function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy }) {
+function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy, readOnly = false }) {
   const summary = toRows(rubric.criteria);
   const activeLabel = rubric.is_system ? 'Active school-wide' : 'My default';
   return (
@@ -87,7 +87,7 @@ function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy }) {
         </div>
       </div>
       <div className="flex flex-wrap gap-3 shrink-0">
-        {rubric.can_edit ? (
+        {rubric.can_edit && !readOnly ? (
           <>
             {!rubric.is_active && (
               <button onClick={() => onActivate(rubric)} className="text-emerald-700 text-sm hover:underline">
@@ -107,7 +107,8 @@ function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy }) {
   );
 }
 
-export default function RubricManager() {
+export default function RubricManager({ scope = 'teacher' }) {
+  const school = scope === 'school';
   const { user, isAdmin, isTeacher } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   const [listLoading, setListLoading] = useState(true);
@@ -267,12 +268,16 @@ export default function RubricManager() {
     }
   };
 
-  if (user && !isTeacher) {
+  if (user && (school ? !isAdmin : !isTeacher)) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
-        <div className="text-6xl mb-4">👩‍🏫</div>
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">Teachers only</h2>
-        <p className="text-gray-600">Ask an admin to add you as a teacher to create and manage rubrics.</p>
+        <div className="text-6xl mb-4">{school ? '🛡️' : '👩‍🏫'}</div>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">{school ? 'Admins only' : 'Teachers only'}</h2>
+        <p className="text-gray-600">
+          {school
+            ? 'The school-wide rubric is managed by administrators.'
+            : 'Ask an admin to add you as a teacher to create and manage rubrics.'}
+        </p>
       </div>
     );
   }
@@ -299,41 +304,42 @@ export default function RubricManager() {
   return (
     <div className="glass-card rounded-2xl shadow-xl p-6 max-w-6xl mx-auto">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-        <h2 className="text-2xl font-bold text-indigo-700">📐 Rubrics</h2>
+        <h2 className="text-2xl font-bold text-indigo-700">{school ? '🏫 School Rubric' : '📐 My Rubrics'}</h2>
         {!editing && (
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => startNew(false)}
-              className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
-            >
-              + New Rubric
-            </button>
-            {isAdmin && (
-              <button
-                onClick={() => startNew(true)}
-                className="border border-indigo-300 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-50 transition"
-              >
-                + New School-wide Rubric
-              </button>
-            )}
-          </div>
+          <button
+            onClick={() => startNew(school)}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+          >
+            {school ? '+ New School-wide Rubric' : '+ New Rubric'}
+          </button>
         )}
       </div>
 
       {!editing && (
         <>
           <div className="text-sm text-gray-700 bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 mb-6">
-            Your evaluations use{' '}
-            <strong>
-              {myDefault ? `your rubric “${myDefault.title}”` : schoolActive ? `the school-wide rubric “${schoolActive.title}”` : 'the built-in rubric (5 criteria, 1–4 each)'}
-            </strong>{' '}
-            unless you pick a different one on the Evaluate page.
+            {school ? (
+              <>
+                The active school-wide rubric is the default for every teacher who hasn't set their own:{' '}
+                <strong>{schoolActive ? `“${schoolActive.title}”` : 'none set, so the built-in rubric (5 criteria, 1–4 each) is used'}</strong>.
+                Teachers can view and copy it, but only admins can change it.
+              </>
+            ) : (
+              <>
+                Your evaluations use{' '}
+                <strong>
+                  {myDefault ? `your rubric “${myDefault.title}”` : schoolActive ? `the school-wide rubric “${schoolActive.title}”` : 'the built-in rubric (5 criteria, 1–4 each)'}
+                </strong>{' '}
+                unless you pick a different one on the Evaluate page.
+              </>
+            )}
           </div>
 
           {listLoading ? (
             <p className="text-gray-500">Loading rubrics…</p>
           ) : (
             <div className="space-y-8">
+              {!school && (
               <section>
                 <h3 className="font-semibold text-gray-800 mb-1">My rubrics</h3>
                 <p className="text-xs text-gray-500 mb-3">
@@ -348,19 +354,20 @@ export default function RubricManager() {
                   {myRubrics.map((r) => <RubricCard key={r.id} rubric={r} {...cardHandlers} />)}
                 </div>
               </section>
+              )}
 
               <section>
-                <h3 className="font-semibold text-gray-800 mb-1">School-wide {isAdmin ? 'rubrics' : 'rubric'}</h3>
+                <h3 className="font-semibold text-gray-800 mb-1">{school ? 'School-wide rubrics' : 'School-wide rubric'}</h3>
                 <p className="text-xs text-gray-500 mb-3">
-                  {isAdmin
-                    ? 'Set by admins. The active one is the default for every teacher without their own default.'
-                    : 'Set by the administrator. Used when you have no default rubric of your own.'}
+                  {school
+                    ? 'Only one is active at a time. Set one active to make it the default for teachers.'
+                    : 'Set by the administrator. Used when you have no default rubric of your own. Copy it to start your own.'}
                 </p>
                 <div className="space-y-3">
                   {systemRubrics.length === 0 && (
                     <p className="text-gray-500 text-sm">No school-wide rubric is set; the built-in rubric is used.</p>
                   )}
-                  {systemRubrics.map((r) => <RubricCard key={r.id} rubric={r} {...cardHandlers} />)}
+                  {systemRubrics.map((r) => <RubricCard key={r.id} rubric={r} {...cardHandlers} readOnly={!school} />)}
                 </div>
               </section>
             </div>

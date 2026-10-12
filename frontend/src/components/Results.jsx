@@ -255,7 +255,7 @@ export default function Results({
   suggestedChanges,
   setSuggestedChanges,
 }) {
-  const { user, isTeacher } = useAuth();
+  const { user, isTeacher, isAdmin } = useAuth();
   const [teacherScores, setTeacherScores] = React.useState({});
   const [submittingOverride, setSubmittingOverride] = React.useState(false);
   // 1–10 rating of how satisfied the user is with this evaluation.
@@ -590,7 +590,9 @@ export default function Results({
                   💾 Save to My Knowledge Base
                 </button>
                 <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
-                  🔒 Only teachers can approve evaluations or override AI scores. Ask an admin to add you as a teacher.
+                  {isAdmin
+                    ? '🔒 Approvals and overrides are done by teachers. To grade as well, add your email as a teacher in the Admin Dashboard.'
+                    : '🔒 Only teachers can approve evaluations or override AI scores. Ask an admin to add you as a teacher.'}
                 </p>
               </>
             )}

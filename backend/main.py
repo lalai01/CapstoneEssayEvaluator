@@ -321,13 +321,15 @@ def is_admin(user):
     return bool(email) and (email in _builtin_admin_emails() or email in _table_admin_emails())
 
 # Teachers ("approvers") may override AI evaluations, approve evaluations
-# into the shared Knowledge Base, and create their own rubrics. Admins are
-# always teachers. Everyone else signed in is a student: they can evaluate
-# essays and save them privately, but their saves are not approved.
+# into the shared Knowledge Base, and create their own rubrics. Admins run
+# the system (roles, surveys, OCR labels, the school-wide rubric) and are NOT
+# teachers unless they are also listed as one; one person can hold both
+# roles. Everyone else signed in is a student: they can evaluate essays and
+# save them privately, but their saves are not approved.
 def is_teacher(user):
     if not user:
         return False
-    if is_admin(user) or user.get("role") == "teacher":
+    if user.get("role") == "teacher":
         return True
     email = _confirmed_email(user)
     return bool(email) and email in _table_role_emails("teachers")
@@ -916,16 +918,20 @@ def _get_rubric_or_404(client: Client, rubric_id: int) -> dict:
     return result.data[0]
 
 def _check_can_edit(user: dict, row: dict):
-    _require_teacher(user, "change rubrics")
     if row.get("is_system"):
         if not is_admin(user):
             raise HTTPException(403, "Only admins can change school-wide rubrics.")
-    elif row.get("user_id") != user["id"]:
-        raise HTTPException(403, "You can only change your own rubrics.")
+    else:
+        _require_teacher(user, "change rubrics")
+        if row.get("user_id") != user["id"]:
+            raise HTTPException(403, "You can only change your own rubrics.")
 
 def _deactivate_others(client: Client, row: dict):
     """Keep one active rubric per scope: school-wide, or per teacher."""
-    query = client.table("rubrics").update({"is_active": False})         .neq("id", row["id"]).eq("is_active", True)
+    query = (
+        client.table("rubrics").update({"is_active": False})
+        .neq("id", row["id"]).eq("is_active", True)
+    )
     if row.get("is_system"):
         query = query.eq("is_system", True)
     else:
@@ -945,13 +951,15 @@ def create_rubric(rubric: RubricCreate,
                   user_client: Client = Depends(get_user_client)):
     if rubric.is_system and not is_admin(user):
         raise HTTPException(403, "Only admins can create school-wide rubrics.")
-    _require_teacher(user, "create rubrics")
+    if not rubric.is_system:
+        _require_teacher(user, "create rubrics")
     data = rubric.dict()
     data["criteria"] = _validate_criteria(rubric.criteria)
     data["user_id"] = user["id"]
     client = _rubric_client(user_client)
     result = client.table("rubrics").insert(data).execute()
-    row = result.data[0]
+    # Merge what was saved with what the database returned (id, timestamps).
+    row = {**data, **result.data[0]}
     if rubric.is_active:
         _deactivate_others(client, row)
     return {"id": row["id"]}
@@ -963,7 +971,11 @@ def list_rubrics(user: dict = Depends(get_current_user),
     only the active one for teachers)."""
     client = _rubric_client(user_client)
     try:
-        own = client.table("rubrics").select("*")             .eq("user_id", user["id"]).eq("is_system", False)             .order("created_at", desc=True).execute().data
+        own = (
+            client.table("rubrics").select("*")
+            .eq("user_id", user["id"]).eq("is_system", False)
+            .order("created_at", desc=True).execute().data
+        )
         system = client.table("rubrics").select("*").eq("is_system", True)
         if not is_admin(user):
             system = system.eq("is_active", True)
