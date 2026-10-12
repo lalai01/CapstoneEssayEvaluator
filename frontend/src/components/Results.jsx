@@ -13,6 +13,7 @@ import {
   gradeFromFraction,
   colorForFraction,
   errorMessage,
+  satisfactionStyle,
 } from '../lib/scoring';
 
 // ============================================================
@@ -204,8 +205,8 @@ function SatisfactionRating({ value, onChange }) {
     <div className="bg-gray-50 border border-gray-200 rounded-xl p-3">
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm font-semibold text-gray-700">How satisfied are you with this evaluation?</span>
-        <span className="text-xs text-gray-500">
-          {value !== null && <strong className="text-gray-800">{value}/10 · </strong>}
+        <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${satisfactionStyle(value).chip}`}>
+          {value !== null && <strong>{value}/10 · </strong>}
           {satisfactionLabel(value)}
         </span>
       </div>
@@ -254,7 +255,7 @@ export default function Results({
   suggestedChanges,
   setSuggestedChanges,
 }) {
-  const { user } = useAuth();
+  const { user, isTeacher } = useAuth();
   const [teacherScores, setTeacherScores] = React.useState({});
   const [submittingOverride, setSubmittingOverride] = React.useState(false);
   // 1–10 rating of how satisfied the user is with this evaluation.
@@ -304,7 +305,9 @@ export default function Results({
         ai_model: aiLabel,
       };
       await saveKnowledge(payload);
-      toast.success('Saved to knowledge base!');
+      toast.success(isTeacher
+        ? 'Approved and saved to the Knowledge Base'
+        : 'Saved to your Knowledge Base (not approved; a teacher must approve evaluations)');
     } catch (err) {
       toast.error('Failed to save: ' + errorMessage(err));
     }
@@ -434,14 +437,21 @@ export default function Results({
         {(aiLabel || scores?.rubric?.title) && (
           <div className="flex flex-wrap gap-2 -mt-2 mb-4 text-xs">
             {aiLabel && (
-              <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-1 rounded-full">
+              <span
+                className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-1 rounded-full"
+                title={scores?.evaluated_by?.reason || undefined}
+              >
                 🤖 Scored by {aiLabel}
+                {scores?.evaluated_by?.selection === 'auto' && ' · auto-selected'}
               </span>
             )}
             {scores?.rubric?.title && evalType !== 'holistic' && (
               <span className="bg-gray-50 text-gray-700 border border-gray-200 px-2 py-1 rounded-full">
                 📐 {scores.rubric.title}
               </span>
+            )}
+            {scores?.evaluated_by?.reason && (
+              <p className="w-full text-gray-500 mt-1">{scores.evaluated_by.reason}</p>
             )}
           </div>
         )}
@@ -556,20 +566,34 @@ export default function Results({
         {user ? (
           <div className="mt-5 space-y-3">
             <SatisfactionRating value={satisfaction} onChange={setSatisfaction} />
-            <div className="flex gap-3">
-              <button
-                onClick={handleSaveToKB}
-                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
-              >
-                💾 Save to KB
-              </button>
-              <button
-                onClick={handleReject}
-                className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
-              >
-                ✏️ Reject & Override
-              </button>
-            </div>
+            {isTeacher ? (
+              <div className="flex gap-3">
+                <button
+                  onClick={handleSaveToKB}
+                  className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                >
+                  ✅ Approve & Save to KB
+                </button>
+                <button
+                  onClick={handleReject}
+                  className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                >
+                  ✏️ Reject & Override
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={handleSaveToKB}
+                  className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                >
+                  💾 Save to My Knowledge Base
+                </button>
+                <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
+                  🔒 Only teachers can approve evaluations or override AI scores. Ask an admin to add you as a teacher.
+                </p>
+              </>
+            )}
             <button
               onClick={() => setShowReport(true)}
               className="w-full bg-gradient-to-r from-sky-500 to-cyan-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"

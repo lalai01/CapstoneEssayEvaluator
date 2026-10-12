@@ -29,6 +29,7 @@ class EvaluationState(TypedDict, total=False):
     _analysis: Optional[Dict[str, Any]]
     _validated: Optional[bool]
     rubric: Optional[Dict[str, Any]]
+    ai_model: Optional[str]   # "auto" | "deepseek" | "local"
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ def score_node(state: EvaluationState) -> dict:
             state["essay_text"],
             analysis,
             rubric=state.get("rubric"),
+            preference=state.get("ai_model") or "auto",
         )
         score = holistic_from_analytic(analytic, state.get("rubric"))
         scores = {
@@ -60,6 +62,7 @@ def score_node(state: EvaluationState) -> dict:
             state["essay_text"],
             analysis,
             rubric=state.get("rubric"),
+            preference=state.get("ai_model") or "auto",
         )
     return {"scores": scores, "_analysis": analysis}
 
@@ -135,12 +138,14 @@ evaluation_graph = build_graph()
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool, rubric=None) -> dict:
+def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool, rubric=None,
+                   ai_model: str = "auto") -> dict:
     initial: EvaluationState = {
         "essay_text": essay_text,
         "evaluation_type": evaluation_type,
         "use_rag": use_rag,
         "rubric": rubric,
+        "ai_model": ai_model,
         "scores": None,
         "feedback": None,
         "rag_context": None,

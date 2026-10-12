@@ -9,6 +9,7 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
   const { user } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   const [rubricId, setRubricId] = useState('');   // '' = the teacher's default
+  const [aiModel, setAiModel] = useState('auto');  // 'auto' | 'deepseek' | 'local'
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [evalTypeLocal, setEvalTypeLocal] = useState('analytic');
@@ -67,8 +68,8 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
     const chosenRubric = rubricId ? Number(rubricId) : null;
     try {
       const result = useRag
-        ? await evaluateEssayWithRag(essay, evalTypeLocal, chosenRubric)
-        : await evaluateEssay(essay, evalTypeLocal, chosenRubric);
+        ? await evaluateEssayWithRag(essay, evalTypeLocal, chosenRubric, aiModel)
+        : await evaluateEssay(essay, evalTypeLocal, chosenRubric, aiModel);
       setScores(result.scores);
       setFeedback(result.feedback);
       toast.success(`Evaluation complete${useRag ? ' (with RAG)' : ''}`);
@@ -138,6 +139,36 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
           {useRag && (
             <p className="text-xs text-purple-600 mt-1">
               Enhances feedback by including insights from previously saved evaluations.
+            </p>
+          )}
+        </div>
+
+        <div className="mb-5">
+          <span id="ai-model-label" className="block text-sm font-semibold text-gray-700 mb-2">AI model</span>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" role="radiogroup" aria-labelledby="ai-model-label">
+            {[
+              { id: 'auto', title: '✨ Auto (recommended)', hint: 'Picks the best model for this essay' },
+              { id: 'deepseek', title: '🌐 DeepSeek', hint: 'Cloud; reads long essays in full' },
+              { id: 'local', title: '🦙 Llama 3.2 (local)', hint: 'Private; essay stays on the server' },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={aiModel === opt.id}
+                onClick={() => setAiModel(opt.id)}
+                className={`text-left rounded-xl border p-2.5 transition ${
+                  aiModel === opt.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-300' : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
+                }`}
+              >
+                <div className="text-sm font-semibold text-gray-800">{opt.title}</div>
+                <div className="text-xs text-gray-500">{opt.hint}</div>
+              </button>
+            ))}
+          </div>
+          {aiModel === 'auto' && (
+            <p className="text-xs text-gray-500 mt-1">
+              Long essays (over about 650 words) and complex rubrics go to DeepSeek; others are scored locally. The result explains the choice.
             </p>
           )}
         </div>

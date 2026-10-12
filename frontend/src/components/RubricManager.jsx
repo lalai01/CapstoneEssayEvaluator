@@ -108,7 +108,7 @@ function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy }) {
 }
 
 export default function RubricManager() {
-  const { user, isAdmin } = useAuth();
+  const { user, isAdmin, isTeacher } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   const [listLoading, setListLoading] = useState(true);
   const [editing, setEditing] = useState(null);       // null | 'new' | rubric id
@@ -266,6 +266,16 @@ export default function RubricManager() {
       toast.error('Failed to delete: ' + errorMessage(err));
     }
   };
+
+  if (user && !isTeacher) {
+    return (
+      <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
+        <div className="text-6xl mb-4">👩‍🏫</div>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">Teachers only</h2>
+        <p className="text-gray-600">Ask an admin to add you as a teacher to create and manage rubrics.</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return (

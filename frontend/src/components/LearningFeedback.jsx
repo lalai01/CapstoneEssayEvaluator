@@ -15,6 +15,8 @@ import {
   countByAi,
   sortEntries,
   isNum,
+  satisfactionStyle,
+  entryApprovedBy,
 } from '../lib/scoring';
 
 function teacherScoresOf(item) {
@@ -69,7 +71,7 @@ function ScoreComparison({ item }) {
 }
 
 export default function LearningFeedback() {
-  const { user } = useAuth();
+  const { user, isTeacher } = useAuth();
   const [overrides, setOverrides] = useState([]);
   const [kbEssays, setKbEssays] = useState(new Set());
   const [selected, setSelected] = useState(null);
@@ -128,6 +130,16 @@ export default function LearningFeedback() {
     );
   }
 
+  if (!isTeacher) {
+    return (
+      <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
+        <div className="text-6xl mb-4">👩‍🏫</div>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">Teachers only</h2>
+        <p className="text-gray-600">The Learning Hub lists the overrides you submitted as a teacher.</p>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 bg-white/90 backdrop-blur-md">
@@ -146,7 +158,7 @@ export default function LearningFeedback() {
           </span>
         </div>
         <p className="text-sm text-gray-600 mb-4">
-          Essays where a teacher overrode the AI. Remarks here feed back into future evaluations.
+          Essays where you overrode the AI. Only you can see your overrides; your remarks feed back into future evaluations.
         </p>
 
         <EntryFilters
@@ -204,6 +216,11 @@ export default function LearningFeedback() {
                       </span>
                     )}
                     {inKb && <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">💾 In Knowledge Base</span>}
+                    {isNum(item.satisfaction) && (
+                      <span className={`px-2 py-0.5 rounded-full border ${satisfactionStyle(item.satisfaction).chip}`}>
+                        {item.satisfaction}/10
+                      </span>
+                    )}
                   </div>
                 </button>
               </li>
@@ -227,7 +244,12 @@ export default function LearningFeedback() {
                   🕒 {new Date(selected.created_at).toLocaleString()}
                 </span>
                 {selected.satisfaction != null && (
-                  <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">Satisfaction {selected.satisfaction}/10</span>
+                  <span className={`px-2 py-0.5 rounded-full border ${satisfactionStyle(selected.satisfaction).chip}`}>
+                    Satisfaction {selected.satisfaction}/10 · {satisfactionStyle(selected.satisfaction).label}
+                  </span>
+                )}
+                {entryApprovedBy(selected) && (
+                  <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">👩‍🏫 Approved by {entryApprovedBy(selected)}</span>
                 )}
               </div>
             </div>

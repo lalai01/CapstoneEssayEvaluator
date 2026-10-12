@@ -11,7 +11,7 @@ export const AuthProvider = ({ children }) => {
   // ADMIN_EMAILS and the admin_users table. The browser never decides this.
   // Stored with the user id it belongs to, so a previous user's answer never
   // leaks to the next one while /me is loading.
-  const [adminCheck, setAdminCheck] = useState({ userId: null, isAdmin: false })
+  const [adminCheck, setAdminCheck] = useState({ userId: null, isAdmin: false, isTeacher: false, role: null })
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -30,12 +30,20 @@ export const AuthProvider = ({ children }) => {
     if (!userId) return
     let cancelled = false
     getMe()
-      .then((me) => { if (!cancelled) setAdminCheck({ userId, isAdmin: !!me?.is_admin }) })
-      .catch(() => { if (!cancelled) setAdminCheck({ userId, isAdmin: false }) })
+      .then((me) => {
+        if (!cancelled) {
+          setAdminCheck({ userId, isAdmin: !!me?.is_admin, isTeacher: !!me?.is_teacher, role: me?.role || 'student' })
+        }
+      })
+      .catch(() => { if (!cancelled) setAdminCheck({ userId, isAdmin: false, isTeacher: false, role: 'student' }) })
     return () => { cancelled = true }
   }, [userId])
 
-  const isAdmin = !!userId && adminCheck.userId === userId && adminCheck.isAdmin
+  const checked = !!userId && adminCheck.userId === userId
+  const isAdmin = checked && adminCheck.isAdmin
+  // Teachers (approvers) can override and approve evaluations; admins are teachers too.
+  const isTeacher = checked && adminCheck.isTeacher
+  const role = checked ? adminCheck.role : null
 
   const signInWithEmail = async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
@@ -58,7 +66,7 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={{
-      user, isAdmin, loading,
+      user, isAdmin, isTeacher, role, loading,
       signInWithGoogle, signInWithYahoo, signInWithEmail, signInWithEmailLink, signOut,
     }}>
       {children}

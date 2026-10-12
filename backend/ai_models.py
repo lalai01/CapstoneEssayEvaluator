@@ -49,7 +49,7 @@ def _check_deadline(started, provider):
 
 
 # ---------- DeepSeek ----------
-def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=False):
+def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=False, temperature=0.3):
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY not set")
@@ -63,7 +63,7 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=F
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.3
+        "temperature": temperature
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
