@@ -250,16 +250,20 @@ def _table_role_emails(table: str, refresh: bool = False) -> set:
     cached = _role_cache.get(table)
     if not refresh and cached and now - cached["at"] < _ROLE_CACHE_SECONDS:
         return cached["emails"]
-    emails = set()
-    if supabase_admin:
-        try:
-            if table == "teachers":
-                emails = {r["email"] for r in _teacher_rows() if _teacher_status(r) == "active"}
-            else:
-                rows = supabase_admin.table(table).select("email").execute().data
-                emails = {r["email"].lower() for r in rows if r.get("email")}
-        except Exception as e:
-            print(f"⚠️ {table} lookup failed (table missing?): {e}")
+    if not supabase_admin:
+        return set()
+    try:
+        if table == "teachers":
+            emails = {r["email"] for r in _teacher_rows() if _teacher_status(r) == "active"}
+        else:
+            rows = supabase_admin.table(table).select("email").execute().data
+            emails = {r["email"].lower() for r in rows if r.get("email")}
+    except Exception as e:
+        # A brief database hiccup must not turn admins into students: keep the
+        # last good list and don't cache the failure, so the next request
+        # tries again.
+        print(f"⚠️ {table} lookup failed; using last known list: {e}")
+        return cached["emails"] if cached else set()
     _role_cache[table] = {"at": now, "emails": emails}
     return emails
 

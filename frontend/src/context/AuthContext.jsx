@@ -29,14 +29,36 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!userId) return
     let cancelled = false
-    getMe()
-      .then((me) => {
-        if (!cancelled) {
-          setAdminCheck({ userId, isAdmin: !!me?.is_admin, isTeacher: !!me?.is_teacher, role: me?.role || 'student' })
-        }
-      })
-      .catch(() => { if (!cancelled) setAdminCheck({ userId, isAdmin: false, isTeacher: false, role: 'student' }) })
-    return () => { cancelled = true }
+    let timer = null
+    let attempt = 0
+    // A failed check (backend restarting, network blip) must never be read as
+    // "this user is a student". Retry with backoff; if it still fails, keep
+    // the last known role for this user, or leave the role unknown.
+    const check = () => {
+      getMe()
+        .then((me) => {
+          if (!cancelled) {
+            setAdminCheck({ userId, isAdmin: !!me?.is_admin, isTeacher: !!me?.is_teacher, role: me?.role || 'student' })
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return
+          attempt += 1
+          if (attempt < 4) {
+            timer = setTimeout(check, 1500 * attempt)
+            return
+          }
+          console.warn('[auth] role check failed; keeping the last known role', err)
+          setAdminCheck((prev) => (prev.userId === userId
+            ? prev
+            : { userId, isAdmin: false, isTeacher: false, role: null }))
+        })
+    }
+    check()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [userId])
 
   const checked = !!userId && adminCheck.userId === userId

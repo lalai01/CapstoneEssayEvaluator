@@ -33,8 +33,11 @@ def _verify_with_supabase(token: str) -> dict:
         headers={"apikey": SUPABASE_KEY or "", "Authorization": f"Bearer {token}"},
         timeout=10,
     )
-    if response.status_code != 200:
+    if response.status_code in (401, 403):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if response.status_code != 200:
+        # Supabase itself is having trouble; the token may be fine.
+        raise HTTPException(status_code=503, detail="Sign-in check temporarily unavailable. Please try again.")
     data = response.json()
     return {
         "id": data.get("id"),
@@ -62,8 +65,9 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except HTTPException:
         raise
     except Exception as e:
+        # Network error or timeout reaching Supabase: not the user's fault.
         print(f"❌ Token verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Could not verify token")
+        raise HTTPException(status_code=503, detail="Sign-in check temporarily unavailable. Please try again.")
 
     with _cache_lock:
         if len(_cache) > 5000:
