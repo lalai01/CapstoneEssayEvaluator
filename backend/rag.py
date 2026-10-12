@@ -1,7 +1,11 @@
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from supabase_client import supabase
+from supabase_client import supabase, supabase_admin
+
+# knowledge_base and learning_feedback have row-level security on; the anon
+# key reads no rows there, so RAG uses the service key when available.
+_db = supabase_admin or supabase
 
 _past_essays = []
 _past_feedbacks = []
@@ -10,11 +14,11 @@ _vectorizer = None
 
 def load_past_data_from_db():
     essays, feedbacks = [], []
-    if not supabase:
+    if not _db:
         return essays, feedbacks
 
     try:
-        kb_result = supabase.table("knowledge_base") \
+        kb_result = _db.table("knowledge_base") \
             .select("essay, teacher_feedback, feedback") \
             .eq("accepted", True) \
             .execute()
@@ -28,7 +32,7 @@ def load_past_data_from_db():
         print(f"RAG kb query failed: {e}")
 
     try:
-        lf_result = supabase.table("learning_feedback") \
+        lf_result = _db.table("learning_feedback") \
             .select("original_essay, teacher_feedback") \
             .execute()
 
