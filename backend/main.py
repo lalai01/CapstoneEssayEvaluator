@@ -204,6 +204,15 @@ class OCRCorrection(BaseModel):
     sample_id: int
     corrected_text: str
 
+# ---------- Database client for private, per-user tables ----------
+# Tables like knowledge_base, learning_feedback and saved_essays have
+# row-level security on. Requests from the backend's anon key carry no user,
+# so RLS rejects inserts and silently returns no rows. The backend verifies
+# every user itself (auth.py) and always sets/filters user_id from that
+# verified identity, so it uses the service-role key for these tables.
+def _db():
+    return supabase_admin or supabase
+
 # ---------- Health ----------
 @app.get("/health")
 def health_check():
@@ -847,7 +856,7 @@ def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
         data = entry.dict()
         data["user_id"] = user["id"]
         print(f"[saved-essays] inserting user_id={user['id']} title={entry.title!r}")
-        result = supabase.table("saved_essays").insert(data).execute()
+        result = _db().table("saved_essays").insert(data).execute()
         print(f"[saved-essays] inserted id={result.data[0]['id']}")
         return {"id": result.data[0]["id"]}
     except Exception as e:
@@ -859,7 +868,7 @@ def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
 @app.get("/saved-essays")
 def list_saved_essays(user=Depends(get_current_user)):
     try:
-        result = supabase.table("saved_essays") \
+        result = _db().table("saved_essays") \
             .select("id,title,essay,created_at") \
             .eq("user_id", user["id"]) \
             .order("created_at", desc=True) \
@@ -871,7 +880,7 @@ def list_saved_essays(user=Depends(get_current_user)):
 @app.delete("/saved-essays/{id}")
 def delete_saved_essay(id: int, user=Depends(get_current_user)):
     try:
-        supabase.table("saved_essays").delete().eq("id", id).eq("user_id", user["id"]).execute()
+        _db().table("saved_essays").delete().eq("id", id).eq("user_id", user["id"]).execute()
         return {"status": "deleted"}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1119,7 +1128,7 @@ def _insert_tolerant(table: str, row: Dict[str, Any], optional: List[str],
     nest = nest or {}
     while True:
         try:
-            return supabase.table(table).insert(row).execute()
+            return _db().table(table).insert(row).execute()
         except Exception as e:
             message = str(e)
             missing = [c for c in optional if c in row and f"'{c}'" in message]
@@ -1154,7 +1163,7 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
 def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
     try:
         print(f"📚 Fetching knowledge for user: {user['id']}")
-        result = supabase.table("knowledge_base").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
+        result = _db().table("knowledge_base").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
         print(f"❌ Error listing knowledge: {e}")
@@ -1163,7 +1172,7 @@ def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
 @app.get("/knowledge/{id}")
 def get_knowledge(id: int, user=Depends(get_current_user)):
     try:
-        result = supabase.table("knowledge_base").select("*").eq("id", id).eq("user_id", user["id"]).execute()
+        result = _db().table("knowledge_base").select("*").eq("id", id).eq("user_id", user["id"]).execute()
         if result.data:
             return result.data[0]
         raise HTTPException(404, "Not found")
@@ -1210,7 +1219,7 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
 def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
     try:
         print(f"🧠 Fetching learning feedback for user: {user['id']}")
-        result = supabase.table("learning_feedback").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
+        result = _db().table("learning_feedback").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(limit).execute()
         return result.data
     except Exception as e:
         print(f"❌ Error listing learning feedback: {e}")
