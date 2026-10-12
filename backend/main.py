@@ -148,6 +148,7 @@ class PromptTestRequest(BaseModel):
     system_prompt: str
     user_prompt: str
     model: Optional[str] = None
+    json_mode: bool = False   # ask the model for strict JSON output
 
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
@@ -1224,7 +1225,8 @@ def test_ai_prompt(req: PromptTestRequest):
             ai_provider=req.ai_provider,
             system_prompt=req.system_prompt,
             user_prompt=req.user_prompt,
-            model=req.model
+            model=req.model,
+            json_mode=req.json_mode,
         )
         return PromptTestResponse(result=result)
     except Exception as e:

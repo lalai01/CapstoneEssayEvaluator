@@ -294,12 +294,15 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 
 ## Prompt Playground statistics
 
-Three slots (A, B, C) send the same prompt to the chosen models in parallel. Each slot can use DeepSeek, Gemma 2 2B, Llama 3.2 3B or Phi-3.5. The prompts are built automatically from the rubric that applies to the user, so nobody edits prompts by hand. Admins can still open **Advanced (admin): Edit Prompts** to change them. Once an admin edits them, rubric changes no longer overwrite their version until they click **Rebuild from rubric**.
+Three slots (A, B, C) send the essay to the chosen models. Each slot can use DeepSeek, Gemma 2 2B, Llama 3.2 3B or Phi-3.5.
+
+**Speed on the VPS CPU.** DeepSeek runs in the cloud, so it starts immediately. The local models (Ollama and llama.cpp) run **one at a time**, shown as "queued", because running them together makes each slower and causes timeouts. They also get a **compact prompt**: the same rubric with no long example, one-sentence notes, and at most 3 grammar fixes and 3 recommendations. Answers are requested in JSON mode, capped at 1,024 tokens, and **streamed**, so a slow but working model isn't cut off (overall limit 280 s). Ollama keeps models loaded for 30 minutes (`OLLAMA_KEEP_ALIVE`) to skip reload time. Each slot shows its time and tokens per second.
+ The prompts are built automatically from the rubric that applies to the user, so nobody edits prompts by hand. Admins can still open **Advanced (admin): Edit Prompts** to change them. Once an admin edits them, rubric changes no longer overwrite their version until they click **Rebuild from rubric**.
 
 **Scoring difference table:** each model's score per criterion, the consensus (mean of the three), the spread (max − min), every pairwise difference, and which model was closest per criterion. Rows where models are more than one rubric level apart are highlighted.
 
 **Reference:** what the models are compared against.
-- *Consensus*: mean of the three models.
+- *Consensus*: each model is compared with the average of the **other** models, never with itself. With one model finished there is nothing to compare yet; with two, they are compared with each other and always tie.
 - *System evaluator*: this app's own `/evaluate` result.
 - *Teacher scores*: scores you type in, to find which model grades most like you.
 
