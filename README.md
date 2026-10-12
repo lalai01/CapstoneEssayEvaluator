@@ -37,7 +37,8 @@ A web app that scores essays against a configurable rubric, gives written feedba
 | **Learning Hub** | Teacher overrides, with essay title, the AI that was overridden, AI-vs-teacher scores, remarks and suggestions. The same search, sort and AI filter, plus filters for "scores changed" and "also in Knowledge Base". |
 | **AI Prompt Playground** | Runs the same prompt on three models side by side. A **Score Comparison** table (Category / Primary / Compare / Diff) compares any two of them and can be saved as a PDF report. Agreement statistics are described [below](#prompt-playground-statistics). |
 | **Rubrics** (teachers only) | Teachers create their own rubrics. Each criterion has its own maximum score (1–2 up to 1–10), weight and level descriptors, and teachers can add criteria of their own. A teacher's **default** rubric is used for their evaluations. They can copy the school-wide rubric as a starting point. Personal rubrics are private to their owner. |
-| **School-wide rubric** (admin only) | Admins create and activate the school-wide rubric, the default for every teacher without their own. Teachers can view it but not change it; the backend rejects such changes with 403. |
+| **School Rubric** (admin only) | Admins create and activate the school-wide rubric, the default for every teacher without their own. Teachers can view and copy it but not change it; the backend rejects such changes with 403. |
+| **Navigation** | A top bar shows the main pages to everyone, plus a **Teacher** menu (Learning Hub, My Rubrics) for teachers and an **Admin** menu (Admin Dashboard, School Rubric, Manage Surveys, OCR Labeler) for admins. People only see menus their role allows; on small screens the menu collapses into a drawer. The account menu shows the email, role badges and Sign out. |
 | **Admin Dashboard** (admin only) | Add teachers and admins by email (no SQL needed). Each teacher is **Active**, **Inactive** (keeps the record but removes teacher rights until reactivated) or **Removed** (a soft delete, restorable). Summary cards show the counts, and an **activity log** records who added, removed, activated or deactivated whom, and when. |
 | **Surveys** | Admins create surveys; logged-in users answer them in the **Surveys** tab. |
 | **OCR Labeler** (admin) | Correct OCR output on uploaded images to build TrOCR fine-tuning data. |
@@ -49,9 +50,9 @@ A web app that scores essays against a configurable rubric, gives written feedba
 |---|---|
 | **Student** (default) | Evaluate essays, save them privately (not approved), use the Playground |
 | **Teacher · Approver** | Everything a student can, plus override AI scores, approve evaluations into the Knowledge Base, and create rubrics |
-| **Admin** | Everything a teacher can, plus manage roles, surveys, OCR labels and the school-wide rubric |
+| **Admin** | Run the system: manage roles, surveys, OCR labels and the **school-wide rubric**. Admins are **not** teachers: they don't override, approve or keep personal rubrics, unless their email is also added as a teacher (then they hold both roles) |
 
-These rules are enforced on the server: a student who calls the API directly still can't override or approve. Teachers are managed in the **🛡️ Admin Dashboard** (stored in the `teachers` table); only **active**, not-removed teachers have teacher rights. A user whose `app_metadata.role` is `teacher` is also a teacher. Admins are always teachers.
+These rules are enforced on the server: a student who calls the API directly still can't override or approve. Teachers are managed in the **🛡️ Admin Dashboard** (stored in the `teachers` table); only **active**, not-removed teachers have teacher rights. A user whose `app_metadata.role` is `teacher` is also a teacher. Admin and teacher are separate roles; one person can hold both.
 
 **Who is an admin** is decided only by the backend (`GET /me`). No admin emails are stored in this repository. A user is an admin if any of these is true:
 1. their email is in the `admin_users` table in Supabase. Add the first admin with SQL (see [Database](#database-supabase)), then manage the rest in the **👥 Admins** tab;

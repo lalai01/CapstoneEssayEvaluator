@@ -285,7 +285,7 @@ export default function KnowledgeBase() {
                     ✅ Approved{entryApprovedBy(selectedEntry) ? ` by ${entryApprovedBy(selectedEntry)}` : ''}
                   </span>
                 ) : (
-                  <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">Not approved: saved by a student</span>
+                  <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">Not approved: saved without a teacher's approval</span>
                 )}
               </div>
             </div>

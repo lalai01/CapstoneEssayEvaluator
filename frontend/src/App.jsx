@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import toast, { Toaster } from 'react-hot-toast';
+import { Toaster } from 'react-hot-toast';
 import EssayInput from './components/EssayInput';
 import Results from './components/Results';
 import KnowledgeBase from './components/KnowledgeBase';
@@ -14,7 +14,41 @@ import RubricManager from './components/RubricManager';
 import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
+import NavBar from './components/NavBar';
 import { useAuth } from './context/AuthContext';
+
+// Who may open each page. Admins and teachers are separate roles: admins run
+// the system, teachers do the grading. One person can hold both roles, and
+// then sees both menus. The server enforces the same rules on every request.
+//   public  - everyone, signed in or not
+//   user    - any signed-in user (students included)
+//   teacher - teachers (approvers)
+//   admin   - admins
+const PAGES = [
+  { id: 'home', label: 'Home', icon: 'home', access: 'public', group: 'main' },
+  { id: 'evaluate', label: 'Evaluate', icon: 'evaluate', access: 'public', group: 'main' },
+  { id: 'playground', label: 'Playground', icon: 'playground', access: 'public', group: 'main' },
+  { id: 'knowledge', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'main' },
+  { id: 'surveys', label: 'Surveys', icon: 'surveys', access: 'user', group: 'main' },
+  { id: 'rateus', label: 'Rate Us', icon: 'rateus', access: 'public', group: 'main' },
+  { id: 'learning', label: 'Learning Hub', icon: 'learning', access: 'teacher', group: 'teacher', description: 'Your overrides, remarks and score changes' },
+  { id: 'rubrics', label: 'My Rubrics', icon: 'rubrics', access: 'teacher', group: 'teacher', description: 'Create rubrics and choose your default' },
+  { id: 'admins', label: 'Admin Dashboard', icon: 'dashboard', access: 'admin', group: 'admin', description: 'Teachers, admins and the activity log' },
+  { id: 'school-rubric', label: 'School Rubric', icon: 'school', access: 'admin', group: 'admin', description: 'Default rubric for every teacher' },
+  { id: 'admin', label: 'Manage Surveys', icon: 'list', access: 'admin', group: 'admin', description: 'Create surveys and read responses' },
+  { id: 'ocr-labeler', label: 'OCR Labeler', icon: 'tag', access: 'admin', group: 'admin', description: 'Correct OCR samples for training' },
+];
+
+const MENU_GROUPS = [
+  { id: 'teacher', label: 'Teacher', caption: 'Teacher tools', icon: 'teacher' },
+  { id: 'admin', label: 'Admin', caption: 'Administration', icon: 'shield' },
+];
+
+const ROLE_BADGES = {
+  admin: { label: 'Admin', className: 'bg-indigo-100 text-indigo-800' },
+  teacher: { label: 'Teacher · Approver', className: 'bg-emerald-100 text-emerald-800' },
+  student: { label: 'Student', className: 'bg-slate-100 text-slate-700' },
+};
 
 function App() {
   const [scores, setScores] = useState(null);
@@ -33,45 +67,22 @@ function App() {
 
   const { user, isAdmin, isTeacher, role, signOut } = useAuth();
 
-  // Role tag shown next to the signed-in email.
-  const ROLE_TAGS = {
-    admin: { label: 'Admin', className: 'bg-indigo-600 text-white' },
-    teacher: { label: 'Teacher · Approver', className: 'bg-emerald-600 text-white' },
-    student: { label: 'Student', className: 'bg-gray-200 text-gray-800' },
-  };
-  const roleTag = role ? ROLE_TAGS[role] : null;
-
-
-  // Each tab declares who may use it; people only see the tabs their role
-  // allows. The server enforces the same rules on every request.
-  //   public  - everyone, signed in or not
-  //   user    - any signed-in user (students included)
-  //   teacher - teachers (approvers) and admins
-  //   admin   - admins only
-  const ACCESS_LEVEL = { public: 0, user: 1, teacher: 2, admin: 3 };
-  const myLevel = isAdmin ? 3 : isTeacher ? 2 : user ? 1 : 0;
-  const TABS = [
-    { id: 'home', label: '🏠 Home', access: 'public', group: 'main' },
-    { id: 'evaluate', label: '✍️ Evaluate Essay', access: 'public', group: 'main' },
-    { id: 'knowledge', label: '📚 Knowledge Base', access: 'user', group: 'main' },
-    { id: 'playground', label: '🧪 AI Playground', access: 'public', group: 'main' },
-    { id: 'surveys', label: '📋 Surveys', access: 'user', group: 'main' },
-    { id: 'rateus', label: '⭐ Rate Us', access: 'public', group: 'main' },
-    { id: 'learning', label: '🧠 Learning Hub', access: 'teacher', group: 'teacher' },
-    { id: 'rubrics', label: '📐 Rubrics', access: 'teacher', group: 'teacher' },
-    { id: 'admins', label: '🛡️ Admin Dashboard', access: 'admin', group: 'admin' },
-    { id: 'admin', label: '🔧 Manage Surveys', access: 'admin', group: 'admin' },
-    { id: 'ocr-labeler', label: '🏷️ OCR Labeler', access: 'admin', group: 'admin' },
-  ];
-  const TAB_GROUPS = [
-    { id: 'main', label: null },
-    { id: 'teacher', label: '👩‍🏫 Teacher tools' },
-    { id: 'admin', label: '🛡️ Admin' },
-  ];
-  const tabs = TABS.filter((t) => ACCESS_LEVEL[t.access] <= myLevel);
-  // If the current tab is no longer allowed (signed out, role changed),
+  const canOpen = (access) =>
+    access === 'public' ||
+    (access === 'user' && !!user) ||
+    (access === 'teacher' && isTeacher) ||
+    (access === 'admin' && isAdmin);
+  const pages = PAGES.filter((p) => canOpen(p.access));
+  // If the current page is no longer allowed (signed out, role changed),
   // show Home instead of a page the user can't use.
-  const currentTab = tabs.some((t) => t.id === activeTab) ? activeTab : 'home';
+  const currentTab = pages.some((p) => p.id === activeTab) ? activeTab : 'home';
+
+  // An admin who is also a teacher shows both badges.
+  const roleBadges = !role ? [] : [
+    ...(isAdmin ? [ROLE_BADGES.admin] : []),
+    ...(isTeacher ? [ROLE_BADGES.teacher] : []),
+    ...(!isAdmin && !isTeacher ? [ROLE_BADGES.student] : []),
+  ];
 
   return (
     <div className="relative min-h-screen">
@@ -80,83 +91,16 @@ function App() {
       <div className="relative z-10 min-h-screen">
         <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
 
-        <header className="relative z-20 flex items-center justify-between px-4 md:px-6 py-3 bg-white/20 backdrop-blur-md border-b border-white/30 shadow-sm">
-          <div className="flex flex-col">
-            <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-              AI Essay Evaluator
-            </h1>
-            <p className="text-xs md:text-sm text-indigo-200 font-medium">
-              Your personal writing assistant
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {user ? (
-              <>
-                <span className="text-sm bg-white/70 backdrop-blur-sm px-3 py-1.5 rounded-full hidden sm:inline-block">
-                  {user.email}
-                </span>
-                {roleTag && (
-                  <span
-                    className={`text-xs font-semibold px-2.5 py-1 rounded-full ${roleTag.className}`}
-                    title={role === 'student' ? 'Students can evaluate essays. Ask an admin to be added as a teacher to override and approve.' : undefined}
-                  >
-                    {roleTag.label}
-                  </span>
-                )}
-                <button
-                  onClick={signOut}
-                  className="bg-red-100/80 backdrop-blur-sm text-red-700 px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-red-200 transition-all"
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={() => setShowLoginModal(true)}
-                className="bg-indigo-600/90 backdrop-blur-sm text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-all"
-              >
-                Sign In
-              </button>
-            )}
-          </div>
-        </header>
-
-        <div className="container mx-auto px-4 pt-6">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-gray-300/40 pb-1" role="navigation" aria-label="Sections">
-            {TAB_GROUPS.map((group) => {
-              const groupTabs = tabs.filter((t) => t.group === group.id);
-              if (groupTabs.length === 0) return null;
-              return (
-                <div key={group.id} className="flex flex-wrap items-center gap-2" role="group" aria-label={group.label || 'Main'}>
-                  {group.label && (
-                    <span className="ml-1 mr-0.5 pl-3 border-l border-gray-400/50 text-xs font-semibold uppercase tracking-wide text-indigo-100/90">
-                      {group.label}
-                    </span>
-                  )}
-                  {groupTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      aria-current={currentTab === tab.id ? 'page' : undefined}
-                      className={`px-5 py-2.5 font-medium rounded-lg transition-all ${
-                        currentTab === tab.id
-                          ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
-                          : group.id === 'admin'
-                            ? 'bg-indigo-950/60 backdrop-blur-sm text-indigo-100 hover:bg-indigo-900/80 hover:text-white border border-indigo-400/40'
-                            : group.id === 'teacher'
-                              ? 'bg-emerald-950/50 backdrop-blur-sm text-emerald-50 hover:bg-emerald-900/70 hover:text-white border border-emerald-400/40'
-                              : 'bg-gray-800/60 backdrop-blur-sm text-gray-200 hover:bg-gray-700/80 hover:text-white border border-gray-600/50'
-                      }`}
-                      onClick={() => setActiveTab(tab.id)}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <NavBar
+          items={pages}
+          groups={MENU_GROUPS}
+          currentTab={currentTab}
+          onSelect={setActiveTab}
+          user={user}
+          roleBadges={roleBadges}
+          onSignIn={() => setShowLoginModal(true)}
+          onSignOut={signOut}
+        />
 
         <div className="container mx-auto px-4 py-8 max-w-7xl">
           {currentTab === 'home' && <HomePage setActiveTab={setActiveTab} />}
@@ -193,7 +137,8 @@ function App() {
           {currentTab === 'rateus' && <RateUs />}
           {currentTab === 'surveys' && <UserSurveys />}
           {currentTab === 'admin' && <AdminSurveys />}
-          {currentTab === 'rubrics' && <RubricManager />}
+          {currentTab === 'rubrics' && <RubricManager scope="teacher" />}
+          {currentTab === 'school-rubric' && <RubricManager scope="school" key="school" />}
           {currentTab === 'ocr-labeler' && <OcrLabeler />}
           {currentTab === 'admins' && <AdminUsers />}
         </div>
