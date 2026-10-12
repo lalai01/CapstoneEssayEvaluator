@@ -1,11 +1,13 @@
 import os
+import time
+import hashlib
+import threading
 import requests
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL:
     raise ValueError("SUPABASE_URL environment variable is required")
@@ -13,50 +15,62 @@ if not SUPABASE_URL:
 security = HTTPBearer()
 optional_security = HTTPBearer(auto_error=False)
 
+# Verified tokens are cached briefly so each request doesn't call Supabase.
+_CACHE_SECONDS = 120
+_cache = {}
+_cache_lock = threading.Lock()
+
+
+def _verify_with_supabase(token: str) -> dict:
+    """
+    Ask Supabase Auth who this token belongs to. This verifies the signature
+    and expiry for every JWT signing scheme (legacy HS256 secret or the newer
+    asymmetric keys), and returns server-controlled fields such as
+    app_metadata and email_confirmed_at.
+    """
+    response = requests.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={"apikey": SUPABASE_KEY or "", "Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    data = response.json()
+    return {
+        "id": data.get("id"),
+        "email": (data.get("email") or "").lower() or None,
+        # Only app_metadata is trusted for roles: users can edit their own
+        # user_metadata from the browser, so a role there means nothing.
+        "role": (data.get("app_metadata") or {}).get("role"),
+        "email_confirmed": bool(data.get("email_confirmed_at") or data.get("confirmed_at")),
+        "full_name": (data.get("user_metadata") or {}).get("full_name"),
+    }
+
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
-    print(f"🔑 Token received: {token[:50]}...")
-    
-    # Helper to extract common fields from payload
-    def extract_user_info(payload):
-        user_id = payload.get("sub")
-        email = payload.get("email")
-        # ✅ Extract role from user_metadata or app_metadata (Supabase injects both into the JWT)
-        role = (payload.get("user_metadata") or {}).get("role") \
-            or (payload.get("app_metadata") or {}).get("role")
-        return {"id": user_id, "email": email, "role": role}
+    key = hashlib.sha256(token.encode()).hexdigest()
+    now = time.time()
 
-    # Approach 1: Use the JWT_SECRET directly (works for legacy tokens)
-    if SUPABASE_JWT_SECRET:
-        try:
-            payload = jwt.decode(
-                token,
-                SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                audience="authenticated",
-                options={"verify_signature": True, "verify_aud": True}
-            )
-            user_info = extract_user_info(payload)
-            print(f"✅ Token valid (HS256) for: {user_info['email']}, role: {user_info['role']}")
-            return user_info
-        except Exception as e:
-            print(f"⚠️ HS256 verification failed: {e}")
-    
-    # Approach 2: Skip signature verification (for development only)
+    with _cache_lock:
+        cached = _cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+
     try:
-        print("🔄 Trying without signature verification...")
-        payload = jwt.decode(
-            token,
-            "",
-            algorithms=["HS256", "RS256", "ES256"],
-            options={"verify_signature": False, "verify_aud": False}
-        )
-        user_info = extract_user_info(payload)
-        print(f"✅ Token parsed (no verification) for: {user_info['email']}, role: {user_info['role']}")
-        return user_info
+        user = _verify_with_supabase(token)
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"❌ All verification attempts failed: {e}")
-        raise HTTPException(status_code=401, detail="Invalid token")
+        print(f"❌ Token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Could not verify token")
+
+    with _cache_lock:
+        if len(_cache) > 5000:
+            _cache.clear()
+        _cache[key] = (now + _CACHE_SECONDS, user)
+    return user
+
 
 async def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(optional_security)):
     """Like get_current_user, but returns None for anonymous requests."""

@@ -9,6 +9,7 @@ import HomePage from './components/HomePage';
 import RateUs from './components/RateUs';
 import AdminSurveys from './components/AdminSurveys';
 import UserSurveys from './components/UserSurveys';
+import AdminUsers from './components/AdminUsers';
 import RubricManager from './components/RubricManager';
 import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
@@ -47,6 +48,7 @@ function App() {
     ...(isAdmin ? [
       { id: 'admin', label: '🔧 Admin Surveys' },
       { id: 'ocr-labeler', label: '🏷️ OCR Labeler' },
+      { id: 'admins', label: '👥 Admins' },
     ] : []),
   ];
 
@@ -146,6 +148,7 @@ function App() {
           {activeTab === 'admin' && <AdminSurveys />}
           {activeTab === 'rubrics' && <RubricManager />}
           {activeTab === 'ocr-labeler' && <OcrLabeler />}
+          {activeTab === 'admins' && <AdminUsers />}
         </div>
       </div>
 
