@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { evaluateEssay, evaluateEssayWithRag, listRubrics } from '../api';
 import FileUpload from './FileUpload';
+import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
 
@@ -51,6 +52,12 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
       toast.success(`OCR complete: ${confidence.toFixed(1)}% confidence`);
     };
 
+  // Essays below SHORT_ESSAY_WORDS ask for confirmation; below MIN_WORDS the
+  // server can't evaluate them at all.
+  const MIN_WORDS = 20;
+  const SHORT_ESSAY_WORDS = 150;
+  const [shortDialog, setShortDialog] = useState(null); // { words }
+
   const handleEvaluate = async () => {
     const essay = text.trim() || extractedText.trim();
     if (!essay) {
@@ -61,6 +68,16 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
       toast.error('Please enter a title for your essay.');
       return;
     }
+    const words = essay.split(/s+/).filter(Boolean).length;
+    if (words < SHORT_ESSAY_WORDS) {
+      setShortDialog({ words });
+      return;
+    }
+    await runEvaluation(essay);
+  };
+
+  const runEvaluation = async (essay) => {
+    setShortDialog(null);
     setLoading(true);
     setCurrentEssay(essay);
     setEvalType(evalTypeLocal);
@@ -246,6 +263,32 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
           {loading ? <div className="spinner mx-auto"></div> : (useRag ? '✨ Evaluate with RAG' : '✨ Evaluate Essay')}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={!!shortDialog}
+        tone={shortDialog && shortDialog.words < MIN_WORDS ? 'error' : 'warning'}
+        icon="✍️"
+        title={shortDialog && shortDialog.words < MIN_WORDS ? 'Essay too short to evaluate' : 'This essay is quite short'}
+        confirmLabel={shortDialog && shortDialog.words >= MIN_WORDS ? 'Evaluate anyway' : undefined}
+        cancelLabel={shortDialog && shortDialog.words < MIN_WORDS ? 'OK, keep writing' : 'Keep writing'}
+        onConfirm={() => runEvaluation(text.trim() || extractedText.trim())}
+        onCancel={() => setShortDialog(null)}
+      >
+        {shortDialog && shortDialog.words < MIN_WORDS ? (
+          <p>
+            It has <strong>{shortDialog.words} {shortDialog.words === 1 ? 'word' : 'words'}</strong>.
+            An essay needs at least {MIN_WORDS} words to be evaluated.
+          </p>
+        ) : (
+          <>
+            <p>
+              It has <strong>{shortDialog?.words} words</strong>. Essays under {SHORT_ESSAY_WORDS} words usually
+              don't show enough of the thesis, evidence and organization, so scores can be less reliable.
+            </p>
+            <p>Do you want to evaluate it anyway?</p>
+          </>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

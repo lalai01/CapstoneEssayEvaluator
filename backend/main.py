@@ -85,6 +85,14 @@ class OCRResponse(BaseModel):
     page_count: Optional[int] = None
     engine: Optional[str] = None
     low_confidence: bool = False
+    word_count: Optional[int] = None
+
+NOT_ESSAY_MESSAGE = ("This doesn't look like an essay. Please attach a clear photo, scan, PDF or "
+                     "Word file of a written or printed English essay.")
+
+def _not_essay(reason: str):
+    """422 the frontend recognises (code "not_essay") and shows as a prompt."""
+    raise HTTPException(422, {"code": "not_essay", "message": NOT_ESSAY_MESSAGE, "reason": reason})
 
 class KnowledgeEntry(BaseModel):
     title: Optional[str] = None
@@ -1100,6 +1108,9 @@ async def ocr_from_file(file: UploadFile = File(...)):
             text = ocr_utils.extract_docx_text(contents)
         except Exception as e:
             raise HTTPException(500, f"Failed to read DOCX: {e}")
+        from text_quality import looks_like_english_text
+        if not looks_like_english_text(text):
+            _not_essay("The document doesn't contain English paragraphs.")
 
         try:
             supabase.table("ocr_training_data").insert({
@@ -1116,6 +1127,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
             method="DOCX text extraction",
             engine="python-docx",
             low_confidence=False,
+            word_count=len(text.split()),
         )
 
     # ---------- Single-image path ----------
@@ -1124,32 +1136,14 @@ async def ocr_from_file(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        # 1. Preprocess
-        from image_preprocess import preprocess_for_ocr
-        try:
-            enhanced_path = preprocess_for_ocr(contents)
-        except Exception:
-            enhanced_path = tmp_path
-
-        # 2. Extract with automatic engine selection
-        candidates = []
-        for path in (tmp_path, enhanced_path):
-            try:
-                t, c, e = ocr_utils.extract_text_from_image(path)
-                if t and t.strip():
-                    candidates.append((len(t.strip()), t, c, e))
-            except Exception as ex:
-                print(f"OCR failed on {path}: {ex}")
-
-        trocr_candidates = [c for c in candidates if "trocr" in (c[3] or "")]
-        if trocr_candidates:
-            _, text, confidence, engine = max(trocr_candidates, key=lambda x: x[0])
-        elif candidates:
-            _, text, confidence, engine = max(candidates, key=lambda x: x[0])
-        else:
-            text, confidence, engine = "", 0.0, "tesseract"
-
-        print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}")
+        # 1-2. Check it's a page of writing, then read it with whichever
+        # reader (printed or handwriting) produces more real English.
+        result = ocr_utils.read_essay_image(contents)
+        if not result["is_text"]:
+            _not_essay(result["reason"])
+        text, confidence, engine = result["text"], result["confidence"], result["engine"]
+        print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}, "
+              f"English={result['quality']:.0%}")
 
         # 3. AI correction — different prompts for printed vs handwriting.
         if text and len(text.strip()) > 20:
@@ -1201,17 +1195,14 @@ async def ocr_from_file(file: UploadFile = File(...)):
             method=f"Auto-selected OCR ({engine})",
             engine=engine,
             low_confidence=confidence < 60.0,
+            word_count=len(text.split()),
         )
     finally:
         try:
             os.unlink(tmp_path)
         except Exception:
             pass
-        try:
-            if 'enhanced_path' in locals() and enhanced_path != tmp_path:
-                os.unlink(enhanced_path)
-        except Exception:
-            pass
+
         
 @app.get("/ocr/pending")
 def list_pending_ocr(
@@ -1263,7 +1254,7 @@ def get_ocr_status(job_id: str):
                 "low_confidence": conf < 60.0,
             }
         elif status['status'] == 'failed':
-            return {"status": "failed", "error": status['error']}
+            return {"status": "failed", "error": status['error'], "code": status.get('code')}
         else:
             return {
                 "status": "processing",

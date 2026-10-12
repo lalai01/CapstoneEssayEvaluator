@@ -76,7 +76,7 @@ FastAPI backend (Docker, Contabo VPS)
    ├── evaluation_graph.py   LangGraph pipeline: validate → score → RAG → feedback
    ├── evaluator.py          rubric normalization, AI scoring, heuristic fallback, feedback
    ├── ai_models.py          DeepSeek / Ollama / llama.cpp clients (Prompt Playground)
-   ├── ocr_utils.py, handwriting_ocr.py, ocr_jobs.py, image_preprocess.py
+   ├── ocr_utils.py, handwriting_ocr.py, ocr_jobs.py, essay_image_check.py
    │                         Tesseract for print, TrOCR for handwriting, background PDF jobs
    └── rag.py                TF-IDF retrieval over the knowledge base and teacher overrides
    │
@@ -107,9 +107,10 @@ backend/
   supabase_client.py      anon + service-role Supabase clients
   rag.py                  similar-essay retrieval
   ocr_utils.py            engine selection, DOCX/PDF extraction
+  essay_image_check.py    rejects images that aren't pages of writing
+  text_quality.py         checks OCR output is English paragraphs
   handwriting_ocr.py      TrOCR line segmentation and transcription
   ocr_jobs.py             background PDF OCR jobs
-  image_preprocess.py     image cleanup before OCR
   export_training_data.py exports labeled OCR samples for fine-tuning
   train_trocr.py          fine-tunes TrOCR on Google Colab (T4)
   Dockerfile, requirements.txt
@@ -173,6 +174,8 @@ npm run dev                       # http://localhost:5173
 | `LLAMACPP_MODEL` | no | Default `Phi-3.5-mini-instruct-Q4_K_M.gguf` |
 | `ADMIN_EMAILS` | no | Optional extra admin emails, comma-separated. Prefer the `admin_users` table so emails stay out of config files. |
 | `PDF_OCR_WORKERS` | no | Scanned PDF pages OCR'd at once. Default `min(4, CPU cores)` |
+| `HANDWRITING_BEAMS` | no | Beam width for handwriting OCR. Default `3`; `1` is faster but reads less accurately |
+| `TROCR_PATH` | no | Folder with the TrOCR model. Default `/opt/trocr` |
 | `TROCR_QUANTIZE` | no | `1` runs TrOCR with int8 quantization: about 2× faster handwriting OCR, slightly less accurate. Off by default. |
 
 ### Frontend (`frontend/.env.production`, `frontend/.env.local`)
@@ -378,16 +381,18 @@ All distances use the normalized 0–100 scale, so criteria with different range
 
 ## OCR and handwriting
 
-- **Images:** the original and a preprocessed copy are both run through OCR. TrOCR output is preferred for handwriting, otherwise the longest result wins. The text is then corrected by DeepSeek (with Ollama as fallback) under strict limits: the length ratio must stay within 0.85–1.15 and similarity must be at least 0.85, so the AI can only fix misread characters, not rewrite the essay.
+- **Is it an essay?** Before any OCR, `essay_image_check.py` checks that the image looks like a page of writing: enough letter-sized marks, most of them sitting in rows next to other letters, a light mostly-uncoloured background. Photos of faces, cars, food and so on fail this and `/ocr` returns `422 {"code": "not_essay"}`. The frontend shows this as an "attach a proper essay" dialog instead of continuing. The same applies when the text that comes out isn't English paragraphs (`text_quality.py`: at least 8 words, at least half of them real English words), including scanned PDFs and DOCX files.
+- **Images:** Tesseract reads the page first. If it returns a confident, fully English printed page, that's used and the handwriting model is skipped. Otherwise TrOCR reads it too, and whichever result has the larger share of real English words wins (handwriting gets a small preference). TrOCR first straightens the page (deskew), finds each line from the gaps between rows of letters, and cuts out each line with only its own strokes so letter tails from neighbouring lines don't confuse the model. The text is then corrected by DeepSeek (with Ollama as fallback) under strict limits: the length ratio must stay within 0.85–1.15 and similarity must be at least 0.85, so the AI can only fix misread characters, not rewrite the essay.
 - **English only:** Tesseract runs with the English model only (`-l eng`), and TrOCR is an English handwriting model.
 - **PDF:** processed as a background job, with the frontend checking `/ocr/status/{job_id}` every 1.5 s. Each page is handled on its own:
   - pages with a text layer are read directly (instant);
   - blank pages are skipped;
   - scanned or handwritten pages are OCR'd in parallel (`PDF_OCR_WORKERS`). TrOCR pages share one model and take turns, while Tesseract pages run alongside them.
 
-  Tesseract reads each page once, returning text and confidence together. TrOCR uses greedy decoding, batches of 8 lines and at most 64 tokens per line.
+  Tesseract reads each page once, returning text and confidence together. TrOCR uses beam search (`HANDWRITING_BEAMS`, default 3), batches of 8 lines and at most 64 tokens per line.
 - **DOCX:** text is extracted directly, without OCR.
-- **Fine-tuning:** admins correct samples in **OCR Labeler**. `backend/export_training_data.py` exports them to `training-data/`, and `backend/train_trocr.py` fine-tunes `microsoft/trocr-base-handwritten` on Google Colab.
+- **Short essays:** when an essay has fewer than 150 words, **Evaluate** asks for confirmation first, because short essays give less reliable scores. Under 20 words it can't be evaluated at all, and the dialog says so.
+- **Fine-tuning:** admins correct samples in **OCR Labeler**. `backend/export_training_data.py` cuts them into lines the same way the app reads them and writes `training-data/`; `--pages <folder>` does the same for a folder of page images whose `.txt` transcript has one text line per written line. `backend/train_trocr.py` fine-tunes `microsoft/trocr-base-handwritten` on a GPU (Colab or Kaggle) using `training-data/` plus the IAM lines in `handwriting_dataset/` and `full_dataset/`. It keeps the epoch with the lowest character error rate and saves `training_report.png` (loss, CER and accuracy per epoch, CER per handwriting style), `sample_predictions.png` and `training_history.csv` next to the model.
 
 ---
 

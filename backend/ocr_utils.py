@@ -112,35 +112,92 @@ def extract_text_from_image(image_path):
         return extract_text_from_image_bytes(f.read())
 
 
-def extract_text_from_image_bytes(image_bytes):
-    import pytesseract
+# A page Tesseract reads this cleanly is printed text: skip the slow
+# handwriting model.
+PRINTED_MIN_RATIO = 0.9
+PRINTED_MIN_CONFIDENCE = 75
+PRINTED_MIN_WORDS = 20
+# When both readers return text, prefer the handwriting model unless
+# Tesseract reads clearly more real words.
+HANDWRITING_PREFERENCE = 0.05
+
+
+def read_essay_image(image_bytes, check_page=True):
+    """
+    Read an English essay from an image (handwritten or printed).
+
+    1. Reject images that aren't a page of writing (a face, a car...).
+    2. Tesseract first: if it reads clean English with high confidence, the
+       page is printed and the handwriting model is skipped.
+    3. Otherwise run the handwriting model (TrOCR) and keep whichever result
+       has more real English words. (Earlier this choice was made from an
+       image "messiness" score, which sent neat handwriting to Tesseract.)
+    4. Reject results that don't read as English.
+
+    Returns {"text", "confidence", "engine", "quality", "is_text", "reason"}.
+    """
     from PIL import Image
+    from text_quality import english_quality, looks_like_english_text
 
+    not_text = lambda reason: {"text": "", "confidence": 0.0, "engine": "none",  # noqa: E731
+                               "quality": 0.0, "is_text": False, "reason": reason}
+
+    if check_page:
+        from essay_image_check import looks_like_page
+        is_page, metrics, reason = looks_like_page(image_bytes)
+        print(f"[OCR] page check: {is_page} {metrics}")
+        if not is_page:
+            return not_text(reason)
+
+    candidates = []
     try:
-        messiness = assess_handwriting_messiness(image_bytes)
-        print(f"[OCR] messiness = {messiness:.3f}")
-
-        if messiness > 0.2:
-            try:
-                from handwriting_ocr import ocr_handwriting_image
-                text, conf = ocr_handwriting_image(image_bytes)
-                print(f"[OCR] TrOCR returned {len(text)} chars, conf={conf:.1f}")
-                if text and len(text.strip()) >= 30:
-                    return text, conf, "trocr-handwriting"
-                print("[OCR] TrOCR output too short; falling back to Tesseract")
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"[OCR] TrOCR failed, falling back to Tesseract: {e}")
-
         pil = Image.open(BytesIO(image_bytes))
         text, conf = tesseract_text_and_confidence(pil)
-        if not text.strip():
-            return "", 0.0, "tesseract"
-        return text, conf, "tesseract"
+        q = english_quality(text)
+        candidates.append({"text": text, "confidence": conf, "engine": "tesseract", "q": q})
+        print(f"[OCR] tesseract: {q['words']} words, {q['ratio']:.0%} English, conf {conf:.0f}")
+        if (q["ratio"] >= PRINTED_MIN_RATIO and conf >= PRINTED_MIN_CONFIDENCE
+                and q["words"] >= PRINTED_MIN_WORDS):
+            print("[OCR] printed page: skipping the handwriting model")
+            return {"text": text, "confidence": conf, "engine": "tesseract",
+                    "quality": q["ratio"], "is_text": True, "reason": ""}
+    except Exception as e:
+        print(f"[OCR] tesseract failed: {e}")
+
+    try:
+        from handwriting_ocr import ocr_handwriting_image
+        text, conf = ocr_handwriting_image(image_bytes)
+        q = english_quality(text)
+        candidates.append({"text": text, "confidence": conf, "engine": "trocr-handwriting", "q": q})
+        print(f"[OCR] handwriting: {q['words']} words, {q['ratio']:.0%} English, conf {conf:.0f}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[OCR] handwriting model failed: {e}")
+
+    usable = [c for c in candidates if c["q"]["words"] > 0]
+    if not usable:
+        return not_text("No readable text was found in the image.")
+
+    def score(c):
+        bonus = HANDWRITING_PREFERENCE if c["engine"] != "tesseract" else 0.0
+        return c["q"]["ratio"] + bonus
+    best = max(usable, key=score)
+
+    if not looks_like_english_text(best["text"]):
+        return not_text("The image doesn't contain readable English paragraphs.")
+    return {"text": best["text"], "confidence": best["confidence"], "engine": best["engine"],
+            "quality": best["q"]["ratio"], "is_text": True, "reason": ""}
+
+
+def extract_text_from_image_bytes(image_bytes):
+    """(text, confidence, engine) for one page; empty text if it isn't an essay page."""
+    try:
+        r = read_essay_image(image_bytes)
+        return r["text"], r["confidence"], r["engine"]
     except Exception as e:
         print(f"extract_text_from_image_bytes failed: {e}")
-        return "", 0.0, "tesseract"
+        return "", 0.0, "none"
 
 
 # English only: one language model keeps Tesseract fast and avoids
