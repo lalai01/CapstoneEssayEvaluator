@@ -5,7 +5,7 @@ A web app that scores essays against a configurable rubric, gives written feedba
 - **Frontend:** React 19 + Vite + Tailwind, hosted on Firebase Hosting (`https://capstoneessayevaluator.web.app`)
 - **Backend:** FastAPI (Python 3.11) in Docker on a Contabo VPS (`https://essay-evaluator.duckdns.org`, set as `VITE_API_URL`)
 - **Data and auth:** Supabase (Postgres, Auth with Google/Yahoo, Storage)
-- **AI models:** DeepSeek API, Ollama (Llama 3.2 3B, Gemma 2 2B) and llama.cpp (Phi-3.5 Mini), all reachable from the backend
+- **AI models:** DeepSeek API and Ollama (Llama 3.2 3B, Gemma 2 2B), reachable from the backend. llama.cpp (Phi-3.5 Mini) is still supported by the API but no longer offered in the Playground, because it was too slow on the VPS CPU.
 
 ---
 
@@ -294,7 +294,7 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 
 ## Prompt Playground statistics
 
-Three slots (A, B, C) send the essay to the chosen models. Each slot can use DeepSeek, Gemma 2 2B, Llama 3.2 3B or Phi-3.5.
+Three slots (A, B, C) send the essay to the chosen models. By default: A = DeepSeek, B = Gemma 2 2B (Ollama), C = Llama 3.2 3B (Ollama). Any slot can use any of the three.
 
 **Speed on the VPS CPU.** DeepSeek runs in the cloud, so it starts immediately. The local models (Ollama and llama.cpp) run **one at a time**, shown as "queued", because running them together makes each slower and causes timeouts. They also get a **compact prompt**: the same rubric with no long example, one-sentence notes, and at most 3 grammar fixes and 3 recommendations. Answers are requested in JSON mode, capped at 1,024 tokens, and **streamed**, so a slow but working model isn't cut off (overall limit 280 s). Ollama keeps models loaded for 30 minutes (`OLLAMA_KEEP_ALIVE`) to skip reload time. Each slot shows its time and tokens per second.
  The prompts are built automatically from the rubric that applies to the user, so nobody edits prompts by hand. Admins can still open **Advanced (admin): Edit Prompts** to change them. Once an admin edits them, rubric changes no longer overwrite their version until they click **Rebuild from rubric**.

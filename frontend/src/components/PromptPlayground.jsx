@@ -43,14 +43,14 @@ const TEXT_COLORS = ['text-blue-700', 'text-emerald-700', 'text-purple-700', 'te
 const SLOTS = [
   { id: 'A', defaultProvider: 'deepseek', badge: 'bg-blue-100 text-blue-800 border-blue-200',       dot: 'bg-blue-500' },
   { id: 'B', defaultProvider: 'gemma',    badge: 'bg-emerald-100 text-emerald-800 border-emerald-200', dot: 'bg-emerald-500' },
-  { id: 'C', defaultProvider: 'llamacpp', badge: 'bg-purple-100 text-purple-800 border-purple-200', dot: 'bg-purple-500' },
+  { id: 'C', defaultProvider: 'ollama', badge: 'bg-purple-100 text-purple-800 border-purple-200', dot: 'bg-purple-500' },
 ];
 const SLOT_STYLE = Object.fromEntries(SLOTS.map((s) => [s.id, s]));
 
 const PROVIDER_NAMES = {
   deepseek: 'DeepSeek',
   gemma: 'Gemma (Ollama)',
-  ollama: 'Ollama',
+  ollama: 'Llama 3.2 3B (Ollama)',
   llamacpp: 'Llama.cpp (Phi-3.5)',
 };
 
@@ -919,18 +919,6 @@ const MODEL_INFO = [
     bestFor: 'Complex analytical essays, quick iterations, cost‑sensitive projects.',
   },
   {
-    provider: 'llamacpp',
-    name: 'Llama.cpp (Phi-3.5)',
-    icon: '🦙',
-    color: 'border-purple-300 bg-purple-50',
-    advantages: [
-      '100% local – no API keys',
-      'Phi-3.5 Mini (3.8B)',
-      'Good balance of quality/speed',
-    ],
-    bestFor: 'Privacy‑sensitive evaluations, offline use, medium‑complexity essays.',
-  },
-  {
     provider: 'gemma',
     name: 'Ollama (Gemma 2B)',
     icon: '🟢',
@@ -941,6 +929,18 @@ const MODEL_INFO = [
       'Easy to set up',
     ],
     bestFor: 'Quick drafts, low‑resource VPS, simple feedback.',
+  },
+  {
+    provider: 'ollama',
+    name: 'Ollama (Llama 3.2 3B)',
+    icon: '🦙',
+    color: 'border-purple-300 bg-purple-50',
+    advantages: [
+      '100% local – no API keys',
+      'Same model the essay evaluator uses, so it is usually already loaded',
+      'Reliable JSON output through Ollama',
+    ],
+    bestFor: 'Privacy‑sensitive evaluations, offline use, a local second opinion.',
   },
 ];
 
@@ -1528,8 +1528,7 @@ Now output the JSON for the essay above. Nothing else.`
                     >
                       <option value="deepseek">DeepSeek</option>
                       <option value="gemma">Gemma (Ollama)</option>
-                      <option value="ollama">Llama 3.2 (Ollama)</option>
-                      <option value="llamacpp">Llama.cpp (Phi-3.5)</option>
+                      <option value="ollama">Llama 3.2 3B (Ollama)</option>
                     </select>
                     <input
                       type="text"
