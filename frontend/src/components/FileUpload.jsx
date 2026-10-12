@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { uploadFile, pollOcrStatus } from '../api';
 import ConfirmDialog from './ConfirmDialog';
@@ -26,11 +26,36 @@ export default function FileUpload({ onExtracted }) {
   const [fileName, setFileName] = useState('');
   const [progress, setProgress] = useState('');
   const [notEssay, setNotEssay] = useState(null); // { message, reason }
+  const [dragging, setDragging] = useState(false);
 
-  const handleFileChange = async (e) => {
+  // A file dropped anywhere else on the page would make the browser open or
+  // download it instead of attaching it; ignore those drops.
+  useEffect(() => {
+    const block = (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+    };
+    window.addEventListener('dragover', block);
+    window.addEventListener('drop', block);
+    return () => {
+      window.removeEventListener('dragover', block);
+      window.removeEventListener('drop', block);
+    };
+  }, []);
+
+  const handleFileChange = (e) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    e.target.value = ''; // allow choosing the same file again
+    if (file) processFile(file);
+  };
 
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file && !uploading) processFile(file);
+  };
+
+  const processFile = async (file) => {
     setFileName(file.name);
     setUploading(true);
     setProgress('Uploading file...');
@@ -101,12 +126,18 @@ export default function FileUpload({ onExtracted }) {
       setUploading(false);
       setProgress('');
       setFileName('');
-      e.target.value = ''; // allow choosing the same file again
     }
   };
 
   return (
-    <div className="rounded-xl border-2 border-dashed border-blue-300 bg-blue-50/50 p-6 text-center">
+    <div
+      className={`rounded-xl border-2 border-dashed p-6 text-center transition ${
+        dragging ? 'border-blue-600 bg-blue-100' : 'border-blue-300 bg-blue-50/50'
+      }`}
+      onDragOver={(e) => { e.preventDefault(); if (!uploading) setDragging(true); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
+      onDrop={handleDrop}
+    >
       <input
         type="file"
         accept=".png,.jpg,.jpeg,.bmp,.tiff,.pdf,.docx"
@@ -125,7 +156,8 @@ export default function FileUpload({ onExtracted }) {
       >
         {uploading ? '⏳ Processing...' : '📂 Browse File'}
       </label>
-      <p className="text-xs text-gray-600 mt-3">
+      <p className="text-sm text-gray-600 mt-3">or drag and drop a file here</p>
+      <p className="text-xs text-gray-600 mt-1">
         Supported: photos or scans (PNG, JPG, BMP, TIFF), PDF and Word (DOCX) of an English essay
       </p>
       {fileName && (
