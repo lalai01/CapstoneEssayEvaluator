@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 import ocr_utils
 import evaluator
 from supabase_client import supabase, supabase_admin
@@ -71,6 +71,8 @@ class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
     rubric_id: Optional[int] = None   # omit to use the teacher's default rubric
+    # "auto" picks a model per essay; or force "deepseek" / "local"
+    ai_model: Literal["auto", "deepseek", "local"] = "auto"
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -232,34 +234,110 @@ def _builtin_admin_emails() -> List[str]:
     raw = os.environ.get("ADMIN_EMAILS", "")
     return [e.strip().lower() for e in raw.split(",") if e.strip()]
 
-_ADMIN_CACHE_SECONDS = 60
-_admin_cache = {"at": 0.0, "emails": set()}
+_ROLE_CACHE_SECONDS = 60
+_role_cache = {}  # table -> {"at": float, "emails": set}
 
-def _table_admin_emails(refresh: bool = False) -> set:
+def _table_role_emails(table: str, refresh: bool = False) -> set:
+    """Emails listed in a role table (admin_users or teachers), cached briefly."""
     import time
     now = time.time()
-    if not refresh and now - _admin_cache["at"] < _ADMIN_CACHE_SECONDS:
-        return _admin_cache["emails"]
+    cached = _role_cache.get(table)
+    if not refresh and cached and now - cached["at"] < _ROLE_CACHE_SECONDS:
+        return cached["emails"]
     emails = set()
     if supabase_admin:
         try:
-            rows = supabase_admin.table("admin_users").select("email").execute().data
-            emails = {r["email"].lower() for r in rows if r.get("email")}
+            if table == "teachers":
+                emails = {r["email"] for r in _teacher_rows() if _teacher_status(r) == "active"}
+            else:
+                rows = supabase_admin.table(table).select("email").execute().data
+                emails = {r["email"].lower() for r in rows if r.get("email")}
         except Exception as e:
-            print(f"⚠️ admin_users lookup failed (table missing?): {e}")
-    _admin_cache.update(at=now, emails=emails)
+            print(f"⚠️ {table} lookup failed (table missing?): {e}")
+    _role_cache[table] = {"at": now, "emails": emails}
     return emails
+
+
+# ---------- Teacher records and the role activity log ----------
+# A teacher row is never hard-deleted: "Remove" sets deleted_at/deleted_by
+# (soft delete, restorable), and "Inactive" keeps the row but removes the
+# teacher rights until an admin reactivates it. Every change is written to
+# role_audit_log with the admin who made it.
+
+def _teacher_rows() -> List[Dict[str, Any]]:
+    try:
+        rows = supabase_admin.table("teachers").select("*").order("created_at").execute().data
+    except Exception as e:
+        if "teachers" in str(e):
+            raise HTTPException(500, "Database migration needed: create the teachers table (see README).")
+        raise
+    for r in rows:
+        r["email"] = (r.get("email") or "").lower()
+    return rows
+
+def _teacher_status(row) -> str:
+    """active | inactive | removed. Rows from before the migration count as active."""
+    if row.get("deleted_at"):
+        return "removed"
+    return "inactive" if row.get("status") == "inactive" else "active"
+
+def _log_role_change(role: str, email: str, action: str, actor: Optional[str], details: Optional[dict] = None):
+    """Record who changed a role. Logging never blocks the change itself."""
+    try:
+        supabase_admin.table("role_audit_log").insert({
+            "role": role, "email": email, "action": action,
+            "actor": actor, "details": details or {},
+        }).execute()
+    except Exception as e:
+        print(f"⚠️ role_audit_log write failed (run the README migration): {e}")
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+def _update_teacher(email: str, changes: dict):
+    """Update a teacher row, with a clear message if the status columns are missing."""
+    try:
+        supabase_admin.table("teachers").update(changes).eq("email", email).execute()
+    except Exception as e:
+        if any(f"'{c}'" in str(e) for c in changes):
+            raise HTTPException(500, "Database migration needed: add the teacher status columns (see README).")
+        raise
+
+def _table_admin_emails(refresh: bool = False) -> set:
+    return _table_role_emails("admin_users", refresh)
+
+def _confirmed_email(user) -> str:
+    """The user's email if confirmed; unconfirmed emails could belong to anyone."""
+    email = (user.get("email") or "").lower()
+    return email if email and user.get("email_confirmed", True) else ""
 
 def is_admin(user):
     if not user:
         return False
     if user.get("role") == "admin":
         return True
-    email = (user.get("email") or "").lower()
-    if not email or not user.get("email_confirmed", True):
-        # An unconfirmed email could belong to someone else.
+    email = _confirmed_email(user)
+    return bool(email) and (email in _builtin_admin_emails() or email in _table_admin_emails())
+
+# Teachers ("approvers") may override AI evaluations, approve evaluations
+# into the shared Knowledge Base, and create their own rubrics. Admins are
+# always teachers. Everyone else signed in is a student: they can evaluate
+# essays and save them privately, but their saves are not approved.
+def is_teacher(user):
+    if not user:
         return False
-    return email in _builtin_admin_emails() or email in _table_admin_emails()
+    if is_admin(user) or user.get("role") == "teacher":
+        return True
+    email = _confirmed_email(user)
+    return bool(email) and email in _table_role_emails("teachers")
+
+def role_of(user) -> str:
+    return "admin" if is_admin(user) else "teacher" if is_teacher(user) else "student"
+
+def _require_teacher(user, action="do this"):
+    if not is_teacher(user):
+        raise HTTPException(403, f"Only teachers can {action}. Ask an admin to add you as a teacher.")
 
 class AdminEmail(BaseModel):
     email: str
@@ -276,8 +354,14 @@ def _require_service_key():
 
 @app.get("/me")
 def who_am_i(user: dict = Depends(get_current_user)):
-    """Who the caller is and whether they are an admin (drives the admin tabs)."""
-    return {"id": user["id"], "email": user.get("email"), "is_admin": is_admin(user)}
+    """Who the caller is and their role (drives the tabs and role tag)."""
+    return {
+        "id": user["id"],
+        "email": user.get("email"),
+        "role": role_of(user),
+        "is_admin": is_admin(user),
+        "is_teacher": is_teacher(user),
+    }
 
 @app.get("/admin/admins")
 def list_admins(user: dict = Depends(get_current_user)):
@@ -304,6 +388,7 @@ def add_admin(entry: AdminEmail, user: dict = Depends(get_current_user)):
         {"email": email, "added_by": user.get("email")}, on_conflict="email"
     ).execute()
     _table_admin_emails(refresh=True)
+    _log_role_change("admin", email, "added", user.get("email"))
     return {"status": "added", "email": email}
 
 @app.delete("/admin/admins/{email}")
@@ -317,7 +402,90 @@ def remove_admin(email: str, user: dict = Depends(get_current_user)):
         raise HTTPException(400, "You can't remove your own admin access.")
     supabase_admin.table("admin_users").delete().eq("email", email).execute()
     _table_admin_emails(refresh=True)
+    _log_role_change("admin", email, "removed", user.get("email"))
     return {"status": "removed", "email": email}
+
+class TeacherStatusUpdate(BaseModel):
+    status: Literal["active", "inactive"]
+
+@app.get("/admin/teachers")
+def list_teachers(include_removed: bool = True, user: dict = Depends(get_current_user)):
+    """All teacher records with their status: active, inactive or removed."""
+    _require_admin(user)
+    _require_service_key()
+    rows = [{**r, "status": _teacher_status(r)} for r in _teacher_rows()]
+    return rows if include_removed else [r for r in rows if r["status"] != "removed"]
+
+@app.post("/admin/teachers")
+def add_teacher(entry: AdminEmail, user: dict = Depends(get_current_user)):
+    """Add a teacher, or restore one that was removed."""
+    _require_admin(user)
+    _require_service_key()
+    email = entry.email.strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(422, "Enter a valid email address.")
+    existing = next((r for r in _teacher_rows() if r["email"] == email), None)
+    actor = user.get("email")
+    if existing is None:
+        supabase_admin.table("teachers").insert({"email": email, "added_by": actor}).execute()
+        action = "added"
+    elif _teacher_status(existing) == "removed":
+        _update_teacher(email, {"deleted_at": None, "deleted_by": None, "status": "active",
+                                "updated_by": actor, "updated_at": _now_iso()})
+        action = "restored"
+    else:
+        raise HTTPException(409, f"{email} is already a teacher ({_teacher_status(existing)}).")
+    _table_role_emails("teachers", refresh=True)
+    _log_role_change("teacher", email, action, actor)
+    return {"status": action, "email": email}
+
+@app.patch("/admin/teachers/{email}")
+def set_teacher_status(email: str, update: TeacherStatusUpdate, user: dict = Depends(get_current_user)):
+    """Activate or deactivate a teacher. Inactive teachers keep their record
+    but lose teacher rights until reactivated."""
+    _require_admin(user)
+    _require_service_key()
+    email = email.strip().lower()
+    existing = next((r for r in _teacher_rows() if r["email"] == email), None)
+    if existing is None or _teacher_status(existing) == "removed":
+        raise HTTPException(404, f"{email} is not a current teacher. Restore them first.")
+    if _teacher_status(existing) == update.status:
+        return {"status": update.status, "email": email}
+    actor = user.get("email")
+    _update_teacher(email, {"status": update.status, "updated_by": actor, "updated_at": _now_iso()})
+    _table_role_emails("teachers", refresh=True)
+    _log_role_change("teacher", email, "activated" if update.status == "active" else "deactivated", actor)
+    return {"status": update.status, "email": email}
+
+@app.delete("/admin/teachers/{email}")
+def remove_teacher(email: str, user: dict = Depends(get_current_user)):
+    """Soft delete: the record stays (with who removed it and when) and can be restored."""
+    _require_admin(user)
+    _require_service_key()
+    email = email.strip().lower()
+    existing = next((r for r in _teacher_rows() if r["email"] == email), None)
+    if existing is None or _teacher_status(existing) == "removed":
+        raise HTTPException(404, f"{email} is not a current teacher.")
+    actor = user.get("email")
+    _update_teacher(email, {"deleted_at": _now_iso(), "deleted_by": actor, "status": "inactive",
+                            "updated_by": actor, "updated_at": _now_iso()})
+    _table_role_emails("teachers", refresh=True)
+    _log_role_change("teacher", email, "removed", actor)
+    return {"status": "removed", "email": email}
+
+@app.get("/admin/role-log")
+def role_log(limit: int = 100, user: dict = Depends(get_current_user)):
+    """Who added, removed, activated or deactivated teachers and admins."""
+    _require_admin(user)
+    _require_service_key()
+    limit = max(1, min(limit, 500))
+    try:
+        return supabase_admin.table("role_audit_log").select("*") \
+            .order("created_at", desc=True).limit(limit).execute().data
+    except Exception as e:
+        if "role_audit_log" in str(e):
+            raise HTTPException(500, "Database migration needed: create the role_audit_log table (see README).")
+        raise
 
 # ---------- Comments & Reactions ----------
 @app.post("/comments")
@@ -748,6 +916,7 @@ def _get_rubric_or_404(client: Client, rubric_id: int) -> dict:
     return result.data[0]
 
 def _check_can_edit(user: dict, row: dict):
+    _require_teacher(user, "change rubrics")
     if row.get("is_system"):
         if not is_admin(user):
             raise HTTPException(403, "Only admins can change school-wide rubrics.")
@@ -767,7 +936,7 @@ def _with_flags(row: dict, user: dict) -> dict:
     return {
         **row,
         "is_system": bool(row.get("is_system")),
-        "can_edit": is_admin(user) if row.get("is_system") else row.get("user_id") == user["id"],
+        "can_edit": is_admin(user) if row.get("is_system") else (row.get("user_id") == user["id"] and is_teacher(user)),
     }
 
 @app.post("/rubrics")
@@ -776,6 +945,7 @@ def create_rubric(rubric: RubricCreate,
                   user_client: Client = Depends(get_user_client)):
     if rubric.is_system and not is_admin(user):
         raise HTTPException(403, "Only admins can create school-wide rubrics.")
+    _require_teacher(user, "create rubrics")
     data = rubric.dict()
     data["criteria"] = _validate_criteria(rubric.criteria)
     data["user_id"] = user["id"]
@@ -1086,7 +1256,8 @@ def get_ocr_status(job_id: str):
 
 def _run_evaluate(req: EvaluationRequest, user: dict, use_rag: bool):
     criteria, rubric_info = resolve_rubric(user["id"], req.rubric_id)
-    result = run_evaluation(req.text, req.evaluation_type, use_rag=use_rag, rubric=criteria)
+    result = run_evaluation(req.text, req.evaluation_type, use_rag=use_rag, rubric=criteria,
+                            ai_model=req.ai_model)
     if result.get("error"):
         return EvaluationResponse(
             scores={"main_statement": 0, "organization": 0,
@@ -1149,9 +1320,15 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
         data["user_id"] = user["id"]
+        # Approved entries feed RAG for everyone, so only a teacher's save is
+        # approved; a student's save is kept privately as not approved.
+        teacher = is_teacher(user)
+        data["accepted"] = teacher
+        data["approved_by"] = user.get("email") if teacher else None
         result = _insert_tolerant(
-            "knowledge_base", data, optional=["scores", "ai_model"],
-            nest={"scores": "criterion_feedback", "ai_model": "criterion_feedback"},
+            "knowledge_base", data, optional=["scores", "ai_model", "approved_by"],
+            nest={"scores": "criterion_feedback", "ai_model": "criterion_feedback",
+                  "approved_by": "criterion_feedback"},
         )
         print(f"✅ Knowledge saved for user: {user['id']}")
         return {"id": result.data[0]["id"]}
@@ -1188,11 +1365,13 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
     Save a teacher override. `teacher_feedback` is the teacher's remarks
     (required) and `suggested_changes` their suggestions for the student.
     """
+    _require_teacher(user, "override evaluations")
     if not override.teacher_feedback.strip():
         raise HTTPException(422, "Teacher remarks are required.")
 
     data = override.dict()
     data["user_id"] = user["id"]
+    data["approved_by"] = user.get("email")
     if not data.get("teacher_scores"):
         data.pop("teacher_scores", None)
     if not data.get("ai_model"):
@@ -1202,11 +1381,11 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
     try:
         result = _insert_tolerant(
             "learning_feedback", data,
-            optional=["teacher_scores", "title", "ai_model"],
+            optional=["teacher_scores", "title", "ai_model", "approved_by"],
             # Without these columns the values still survive inside the
             # original_scores jsonb, and the Learning Hub reads them there.
             nest={"teacher_scores": "original_scores", "title": "original_scores",
-                  "ai_model": "original_scores"},
+                  "ai_model": "original_scores", "approved_by": "original_scores"},
         )
     except Exception as e:
         print(f"❌ Error saving override: {e}")

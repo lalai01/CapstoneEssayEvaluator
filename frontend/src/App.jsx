@@ -31,26 +31,47 @@ function App() {
 
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  const { user, isAdmin, signOut } = useAuth();
+  const { user, isAdmin, isTeacher, role, signOut } = useAuth();
+
+  // Role tag shown next to the signed-in email.
+  const ROLE_TAGS = {
+    admin: { label: 'Admin', className: 'bg-indigo-600 text-white' },
+    teacher: { label: 'Teacher · Approver', className: 'bg-emerald-600 text-white' },
+    student: { label: 'Student', className: 'bg-gray-200 text-gray-800' },
+  };
+  const roleTag = role ? ROLE_TAGS[role] : null;
 
 
-  const tabs = [
-    { id: 'home', label: '🏠 Home' },
-    { id: 'evaluate', label: '✍️ Evaluate Essay' },
-    { id: 'knowledge', label: '📚 Knowledge Base' },
-    { id: 'learning', label: '🧠 Learning Hub' },
-    { id: 'playground', label: '🧪 AI Playground' },
-    { id: 'rateus', label: '⭐ Rate Us' },
-    ...(user ? [
-      { id: 'rubrics', label: '📐 Rubrics' },
-      { id: 'surveys', label: '📋 Surveys' },
-    ] : []),
-    ...(isAdmin ? [
-      { id: 'admin', label: '🔧 Admin Surveys' },
-      { id: 'ocr-labeler', label: '🏷️ OCR Labeler' },
-      { id: 'admins', label: '👥 Admins' },
-    ] : []),
+  // Each tab declares who may use it; people only see the tabs their role
+  // allows. The server enforces the same rules on every request.
+  //   public  - everyone, signed in or not
+  //   user    - any signed-in user (students included)
+  //   teacher - teachers (approvers) and admins
+  //   admin   - admins only
+  const ACCESS_LEVEL = { public: 0, user: 1, teacher: 2, admin: 3 };
+  const myLevel = isAdmin ? 3 : isTeacher ? 2 : user ? 1 : 0;
+  const TABS = [
+    { id: 'home', label: '🏠 Home', access: 'public', group: 'main' },
+    { id: 'evaluate', label: '✍️ Evaluate Essay', access: 'public', group: 'main' },
+    { id: 'knowledge', label: '📚 Knowledge Base', access: 'user', group: 'main' },
+    { id: 'playground', label: '🧪 AI Playground', access: 'public', group: 'main' },
+    { id: 'surveys', label: '📋 Surveys', access: 'user', group: 'main' },
+    { id: 'rateus', label: '⭐ Rate Us', access: 'public', group: 'main' },
+    { id: 'learning', label: '🧠 Learning Hub', access: 'teacher', group: 'teacher' },
+    { id: 'rubrics', label: '📐 Rubrics', access: 'teacher', group: 'teacher' },
+    { id: 'admins', label: '🛡️ Admin Dashboard', access: 'admin', group: 'admin' },
+    { id: 'admin', label: '🔧 Manage Surveys', access: 'admin', group: 'admin' },
+    { id: 'ocr-labeler', label: '🏷️ OCR Labeler', access: 'admin', group: 'admin' },
   ];
+  const TAB_GROUPS = [
+    { id: 'main', label: null },
+    { id: 'teacher', label: '👩‍🏫 Teacher tools' },
+    { id: 'admin', label: '🛡️ Admin' },
+  ];
+  const tabs = TABS.filter((t) => ACCESS_LEVEL[t.access] <= myLevel);
+  // If the current tab is no longer allowed (signed out, role changed),
+  // show Home instead of a page the user can't use.
+  const currentTab = tabs.some((t) => t.id === activeTab) ? activeTab : 'home';
 
   return (
     <div className="relative min-h-screen">
@@ -75,6 +96,14 @@ function App() {
                 <span className="text-sm bg-white/70 backdrop-blur-sm px-3 py-1.5 rounded-full hidden sm:inline-block">
                   {user.email}
                 </span>
+                {roleTag && (
+                  <span
+                    className={`text-xs font-semibold px-2.5 py-1 rounded-full ${roleTag.className}`}
+                    title={role === 'student' ? 'Students can evaluate essays. Ask an admin to be added as a teacher to override and approve.' : undefined}
+                  >
+                    {roleTag.label}
+                  </span>
+                )}
                 <button
                   onClick={signOut}
                   className="bg-red-100/80 backdrop-blur-sm text-red-700 px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-red-200 transition-all"
@@ -94,26 +123,44 @@ function App() {
         </header>
 
         <div className="container mx-auto px-4 pt-6">
-          <div className="flex flex-wrap gap-2 border-b border-gray-300/40 pb-1">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                className={`px-5 py-2.5 font-medium rounded-lg transition-all ${
-                  activeTab === tab.id
-                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
-                    : 'bg-gray-800/60 backdrop-blur-sm text-gray-200 hover:bg-gray-700/80 hover:text-white border border-gray-600/50'
-                }`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-gray-300/40 pb-1" role="navigation" aria-label="Sections">
+            {TAB_GROUPS.map((group) => {
+              const groupTabs = tabs.filter((t) => t.group === group.id);
+              if (groupTabs.length === 0) return null;
+              return (
+                <div key={group.id} className="flex flex-wrap items-center gap-2" role="group" aria-label={group.label || 'Main'}>
+                  {group.label && (
+                    <span className="ml-1 mr-0.5 pl-3 border-l border-gray-400/50 text-xs font-semibold uppercase tracking-wide text-indigo-100/90">
+                      {group.label}
+                    </span>
+                  )}
+                  {groupTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      aria-current={currentTab === tab.id ? 'page' : undefined}
+                      className={`px-5 py-2.5 font-medium rounded-lg transition-all ${
+                        currentTab === tab.id
+                          ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
+                          : group.id === 'admin'
+                            ? 'bg-indigo-950/60 backdrop-blur-sm text-indigo-100 hover:bg-indigo-900/80 hover:text-white border border-indigo-400/40'
+                            : group.id === 'teacher'
+                              ? 'bg-emerald-950/50 backdrop-blur-sm text-emerald-50 hover:bg-emerald-900/70 hover:text-white border border-emerald-400/40'
+                              : 'bg-gray-800/60 backdrop-blur-sm text-gray-200 hover:bg-gray-700/80 hover:text-white border border-gray-600/50'
+                      }`}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </div>
 
         <div className="container mx-auto px-4 py-8 max-w-7xl">
-          {activeTab === 'home' && <HomePage setActiveTab={setActiveTab} />}
-          {activeTab === 'evaluate' && (
+          {currentTab === 'home' && <HomePage setActiveTab={setActiveTab} />}
+          {currentTab === 'evaluate' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
               <EssayInput
                 setScores={setScores}
@@ -140,15 +187,15 @@ function App() {
               />
             </div>
           )}
-          {activeTab === 'knowledge' && <KnowledgeBase />}
-          {activeTab === 'learning' && <LearningFeedback />}
-          {activeTab === 'playground' && <PromptPlayground />}
-          {activeTab === 'rateus' && <RateUs />}
-          {activeTab === 'surveys' && <UserSurveys />}
-          {activeTab === 'admin' && <AdminSurveys />}
-          {activeTab === 'rubrics' && <RubricManager />}
-          {activeTab === 'ocr-labeler' && <OcrLabeler />}
-          {activeTab === 'admins' && <AdminUsers />}
+          {currentTab === 'knowledge' && <KnowledgeBase />}
+          {currentTab === 'learning' && <LearningFeedback />}
+          {currentTab === 'playground' && <PromptPlayground />}
+          {currentTab === 'rateus' && <RateUs />}
+          {currentTab === 'surveys' && <UserSurveys />}
+          {currentTab === 'admin' && <AdminSurveys />}
+          {currentTab === 'rubrics' && <RubricManager />}
+          {currentTab === 'ocr-labeler' && <OcrLabeler />}
+          {currentTab === 'admins' && <AdminUsers />}
         </div>
       </div>
 

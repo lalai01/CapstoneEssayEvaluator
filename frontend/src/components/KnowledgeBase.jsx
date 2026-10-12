@@ -20,6 +20,8 @@ import {
   countByAi,
   sortEntries,
   isNum,
+  satisfactionStyle,
+  entryApprovedBy,
 } from '../lib/scoring';
 
 // ---------- Safe value renderer ----------
@@ -130,7 +132,7 @@ export default function KnowledgeBase() {
       const overridden = (overridesByEssay.get(essayKey(entry.essay)) || []).length > 0;
       return (
         (aiFilter === 'all' || entryAiLabel(entry) === aiFilter) &&
-        (status === 'all' || (status === 'overridden' && overridden) || (status === 'saved-only' && !overridden)) &&
+        (status === 'all' || (status === 'overridden' && overridden) || (status === 'saved-only' && !overridden) || (status === 'approved' && entry.accepted)) &&
         matchesSearch(search, entryTitle(entry), entry.essay, entry.feedback)
       );
     });
@@ -183,6 +185,7 @@ export default function KnowledgeBase() {
           onSort={setSort}
           extraFilters={[
             { id: 'all', label: 'All' },
+            { id: 'approved', label: '✅ Approved' },
             { id: 'saved-only', label: '💾 Saved only' },
             { id: 'overridden', label: '✏️ Also overridden' },
           ]}
@@ -238,7 +241,16 @@ export default function KnowledgeBase() {
                     </div>
                     <div className="flex flex-wrap gap-1.5 mt-2 text-xs">
                       <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">🤖 {entryAiLabel(entry)}</span>
-                      <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">💾 Saved</span>
+                      {entry.accepted ? (
+                        <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">✅ Approved</span>
+                      ) : (
+                        <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">💾 Saved · not approved</span>
+                      )}
+                      {isNum(entry.satisfaction) && (
+                        <span className={`px-2 py-0.5 rounded-full border ${satisfactionStyle(entry.satisfaction).chip}`}>
+                          {entry.satisfaction}/10
+                        </span>
+                      )}
                       {overridden && <span className="bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full">✏️ Overridden</span>}
                     </div>
                   </button>
@@ -265,9 +277,16 @@ export default function KnowledgeBase() {
                 <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
                   🕒 {new Date(selectedEntry.created_at).toLocaleString()}
                 </span>
-                <span className="bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full">
-                  Satisfaction {selectedEntry.satisfaction ?? '—'}/10
+                <span className={`px-2 py-0.5 rounded-full border ${satisfactionStyle(selectedEntry.satisfaction).chip}`}>
+                  Satisfaction {selectedEntry.satisfaction ?? '—'}/10 · {satisfactionStyle(selectedEntry.satisfaction).label}
                 </span>
+                {selectedEntry.accepted ? (
+                  <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
+                    ✅ Approved{entryApprovedBy(selectedEntry) ? ` by ${entryApprovedBy(selectedEntry)}` : ''}
+                  </span>
+                ) : (
+                  <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">Not approved: saved by a student</span>
+                )}
               </div>
             </div>
 
@@ -348,9 +367,7 @@ export default function KnowledgeBase() {
             <div>
               <h4 className="font-semibold text-gray-800 mb-2 flex items-center gap-2">
                 <span>🤖 AI Feedback</span>
-                {selectedEntry.accepted && (
-                  <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Accepted</span>
-                )}
+
               </h4>
               <div className="bg-gray-50 p-4 rounded-lg text-sm leading-relaxed text-gray-800">
                 <RichText

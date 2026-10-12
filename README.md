@@ -29,19 +29,29 @@ A web app that scores essays against a configurable rubric, gives written feedba
 
 | Area | What it does |
 |---|---|
-| **Evaluate Essay** | Paste text or upload an image, PDF or DOCX. Analytic mode scores every rubric criterion. Holistic mode gives one 1–5 score. Optional RAG adds feedback from similar past essays. Signed-in teachers choose which rubric to score with. |
+| **Evaluate Essay** | Paste text or upload an image, PDF or DOCX. Analytic mode scores every rubric criterion. Holistic mode gives one 1–5 score. Optional RAG adds feedback from similar past essays. Teachers choose which rubric to score with. **AI model:** Auto (recommended), DeepSeek, or Llama 3.2 (local); see [Choosing the AI model](#choosing-the-ai-model). |
 | **Evaluation report** | **Generate Evaluation Report** creates a multi-page PDF. It includes student, class and teacher details, the rubric used, the total, percentage, weighted score and grade, a per-criterion breakdown (with override scores beside the AI's), strengths and focus areas, criterion comments, feedback, grammar fixes, recommendations, a teacher comment and signature area, and optionally the full essay. |
-| **Satisfaction rating** | After an evaluation, the user rates it 1–10. The rating is stored with Knowledge Base entries and teacher overrides. |
-| **Teacher override** | **Reject & Override** an evaluation. The teacher enters their own score per criterion, **teacher's remarks** (required, in their own words, with the AI feedback shown for reference) and **suggestions for the student** (optional). Overrides go to the Learning Hub, feed back into RAG, and the remarks fill the teacher comments in the evaluation report. |
-| **Knowledge Base** | Evaluations the teacher accepted and saved. Each entry shows which AI scored it, its rubric, and whether the same essay was also overridden (with those remarks inline). Search, sort, filter by AI model, and filter by saved-only or also-overridden. |
+| **Satisfaction rating** | After an evaluation, the user rates it 1–10, colored red (1–3), amber (4–6) or green (7–10) wherever it appears. The rating is stored with Knowledge Base entries and teacher overrides. |
+| **Teacher override** (teachers only) | **Reject & Override** an evaluation. The teacher enters their own score per criterion, **teacher's remarks** (required, in their own words, with the AI feedback shown for reference) and **suggestions for the student** (optional). The approving teacher is recorded. Overrides go to the Learning Hub, feed back into RAG, and the remarks fill the teacher comments in the evaluation report. |
+| **Knowledge Base** | Saved evaluations. A teacher's save is **✅ Approved** (and used by RAG); a student's save is kept privately as **not approved**. Each entry shows which AI scored it, its rubric, its approval, its satisfaction, and whether the essay was also overridden. Search, sort, and filter by AI model, approval, and override status. |
 | **Learning Hub** | Teacher overrides, with essay title, the AI that was overridden, AI-vs-teacher scores, remarks and suggestions. The same search, sort and AI filter, plus filters for "scores changed" and "also in Knowledge Base". |
 | **AI Prompt Playground** | Runs the same prompt on three models side by side. A **Score Comparison** table (Category / Primary / Compare / Diff) compares any two of them and can be saved as a PDF report. Agreement statistics are described [below](#prompt-playground-statistics). |
-| **Rubrics** (signed-in teachers) | Teachers create their own rubrics. Each criterion has its own maximum score (1–2 up to 1–10), weight and level descriptors, and teachers can add criteria of their own. A teacher's **default** rubric is used for their evaluations. They can copy the school-wide rubric as a starting point. Personal rubrics are private to their owner. |
+| **Rubrics** (teachers only) | Teachers create their own rubrics. Each criterion has its own maximum score (1–2 up to 1–10), weight and level descriptors, and teachers can add criteria of their own. A teacher's **default** rubric is used for their evaluations. They can copy the school-wide rubric as a starting point. Personal rubrics are private to their owner. |
 | **School-wide rubric** (admin only) | Admins create and activate the school-wide rubric, the default for every teacher without their own. Teachers can view it but not change it; the backend rejects such changes with 403. |
-| **Admins** (admin only) | Grant or remove admin access by typing someone's email. The person can then sign in with any method using that address. |
+| **Admin Dashboard** (admin only) | Add teachers and admins by email (no SQL needed). Each teacher is **Active**, **Inactive** (keeps the record but removes teacher rights until reactivated) or **Removed** (a soft delete, restorable). Summary cards show the counts, and an **activity log** records who added, removed, activated or deactivated whom, and when. |
 | **Surveys** | Admins create surveys; logged-in users answer them in the **Surveys** tab. |
 | **OCR Labeler** (admin) | Correct OCR output on uploaded images to build TrOCR fine-tuning data. |
 | **Rate Us** | Public ratings with threaded comments and reactions. |
+
+**Roles.** Every signed-in user has one role, decided only by the backend (`GET /me`) and shown as a tag next to their email:
+
+| Role | Can |
+|---|---|
+| **Student** (default) | Evaluate essays, save them privately (not approved), use the Playground |
+| **Teacher · Approver** | Everything a student can, plus override AI scores, approve evaluations into the Knowledge Base, and create rubrics |
+| **Admin** | Everything a teacher can, plus manage roles, surveys, OCR labels and the school-wide rubric |
+
+These rules are enforced on the server: a student who calls the API directly still can't override or approve. Teachers are managed in the **🛡️ Admin Dashboard** (stored in the `teachers` table); only **active**, not-removed teachers have teacher rights. A user whose `app_metadata.role` is `teacher` is also a teacher. Admins are always teachers.
 
 **Who is an admin** is decided only by the backend (`GET /me`). No admin emails are stored in this repository. A user is an admin if any of these is true:
 1. their email is in the `admin_users` table in Supabase. Add the first admin with SQL (see [Database](#database-supabase)), then manage the rest in the **👥 Admins** tab;
@@ -233,6 +243,35 @@ alter table learning_feedback add column if not exists teacher_scores jsonb;
 alter table learning_feedback add column if not exists title text;
 alter table learning_feedback add column if not exists ai_model text;
 
+-- Teachers (approvers), managed in the Admin Dashboard (required for teachers).
+create table if not exists teachers (
+  email      text primary key,
+  added_by   text,
+  created_at timestamptz not null default now()
+);
+alter table teachers enable row level security;
+
+-- Teacher status and soft delete, plus the role activity log (required for the Admin Dashboard).
+alter table teachers add column if not exists status     text not null default 'active';
+alter table teachers add column if not exists updated_by text;
+alter table teachers add column if not exists updated_at timestamptz;
+alter table teachers add column if not exists deleted_by text;
+alter table teachers add column if not exists deleted_at timestamptz;
+create table if not exists role_audit_log (
+  id         bigserial primary key,
+  role       text not null,          -- 'teacher' | 'admin'
+  email      text not null,          -- whose role changed
+  action     text not null,          -- added | removed | restored | activated | deactivated
+  actor      text,                   -- the admin who made the change
+  details    jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+alter table role_audit_log enable row level security;
+
+-- Who approved an evaluation or override (recommended).
+alter table knowledge_base    add column if not exists approved_by text;
+alter table learning_feedback add column if not exists approved_by text;
+
 -- Admins managed in the app's Admins tab (required for that tab).
 -- RLS on with no policies: only the backend's service-role key can read or write it.
 create table if not exists admin_users (
@@ -291,6 +330,19 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 **Limitation:** `knowledge_base` only has columns for the five built-in criteria, so scores for admin-added criteria aren't stored when an evaluation is saved to the Knowledge Base.
 
 ---
+
+## Choosing the AI model
+
+On the Evaluate page the teacher picks **Auto** (default), **DeepSeek** or **Llama 3.2 (local)**. Auto decides per essay:
+
+| Situation | Model | Why |
+|---|---|---|
+| Essay longer than about 650 words (4,000 characters) | DeepSeek | The local model only reads the first 4,000 characters; DeepSeek reads up to 16,000 |
+| Rubric with more than 6 criteria, or scores above 1–6 | DeepSeek | The larger model follows complex rubrics more reliably |
+| Anything else | Llama 3.2 3B (local) | Fast enough, free, and the essay stays on the server |
+| `DEEPSEEK_API_KEY` not set | Llama 3.2 3B | Nothing else is available |
+
+If the chosen model fails, Auto tries the other one, then falls back to rule-based scoring. An explicit **local** choice never sends the essay to the cloud, even as a fallback. The result card shows which model scored the essay and why.
 
 ## Prompt Playground statistics
 

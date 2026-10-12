@@ -47,6 +47,33 @@ export const removeAdmin = async (email) => {
   return response.data;
 };
 
+// Teacher records with status: 'active' | 'inactive' | 'removed' (soft-deleted).
+export const listTeachers = async (includeRemoved = true) => {
+  const response = await apiClient.get('/admin/teachers', { params: { include_removed: includeRemoved } });
+  return response.data;
+};
+
+export const setTeacherStatus = async (email, status) => {
+  const response = await apiClient.patch(`/admin/teachers/${encodeURIComponent(email)}`, { status });
+  return response.data;
+};
+
+// Who added, removed, activated or deactivated teachers and admins.
+export const listRoleLog = async (limit = 100) => {
+  const response = await apiClient.get('/admin/role-log', { params: { limit } });
+  return response.data;
+};
+
+export const addTeacher = async (email) => {
+  const response = await apiClient.post('/admin/teachers', { email });
+  return response.data;
+};
+
+export const removeTeacher = async (email) => {
+  const response = await apiClient.delete(`/admin/teachers/${encodeURIComponent(email)}`);
+  return response.data;
+};
+
 // ---------- OCR ----------
 export const uploadFile = async (file) => {
   const formData = new FormData();
@@ -81,19 +108,20 @@ export const deleteSavedEssay = async (id) => {
 
 // ---------- Evaluation ----------
 // rubricId: a rubric from GET /rubrics, or null for the teacher's default.
-export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null) => {
+// aiModel: 'auto' (chosen per essay), 'deepseek' or 'local'.
+export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto') => {
   const response = await apiClient.post(
     '/evaluate',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel },
     { timeout: 180000 }  // 3 min — extended prompt with criterion_feedback
   );
   return response.data;
 };
 
-export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null) => {
+export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto') => {
   const response = await apiClient.post(
     '/evaluate-rag',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel },
     { timeout: 180000 }
   );
   return response.data;

@@ -390,14 +390,68 @@ def evaluated_by(model=None):
             "label": MODEL_LABELS.get(model, model)}
 
 
+LOCAL_SCORING_MODEL = "llama3.2:3b"
+CLOUD_SCORING_MODEL = "deepseek-chat"
+# How much essay text each model is given. The local model's context is
+# small, so it reads roughly the first 650 words; DeepSeek reads far more.
+LOCAL_ESSAY_CHARS = 4000
+CLOUD_ESSAY_CHARS = 16000
+SCORING_PREFERENCES = ("auto", "deepseek", "local")
+
+
+def _cloud_available():
+    return bool(os.environ.get("DEEPSEEK_API_KEY"))
+
+
+def choose_scoring_model(essay_text, criteria, preference="auto"):
+    """
+    Pick the model that scores an essay. Returns
+    {"provider", "model", "reason", "preference"}.
+
+    preference: "auto" (decide from the essay and rubric), "deepseek" or
+    "local". Auto sends long essays and complex rubrics to DeepSeek, and
+    keeps everything else on the local model (free, and the essay stays on
+    the server).
+    """
+    preference = preference if preference in SCORING_PREFERENCES else "auto"
+    words = len(essay_text.split())
+    local = {"provider": "ollama", "model": LOCAL_SCORING_MODEL, "preference": preference}
+    cloud = {"provider": "deepseek", "model": CLOUD_SCORING_MODEL, "preference": preference}
+
+    if preference == "local":
+        return {**local, "reason": "You chose the local model, so the essay stayed on the server."}
+    if preference == "deepseek":
+        if _cloud_available():
+            return {**cloud, "reason": "You chose DeepSeek."}
+        return {**local, "reason": "DeepSeek isn't configured on the server, so the local model was used."}
+
+    if not _cloud_available():
+        return {**local, "reason": "Auto: DeepSeek isn't configured on the server, so the local model was used."}
+    if len(essay_text) > LOCAL_ESSAY_CHARS:
+        return {**cloud, "reason": (
+            f"Auto: this essay is long ({words} words). The local model only reads about the "
+            "first 650 words, so DeepSeek was used to read all of it."
+        )}
+    many = len(criteria) > 6
+    wide = any(c["max_score"] > 6 for c in criteria.values())
+    if many or wide:
+        what = "many criteria" if many else "wide score ranges"
+        return {**cloud, "reason": f"Auto: this rubric has {what}, which DeepSeek follows more reliably."}
+    return {**local, "reason": (
+        f"Auto: a {words}-word essay with this rubric is well within the local model's range, "
+        "so it was scored on the server (free and private)."
+    )}
+
+
 def _is_default_rubric_shape(criteria):
     return set(criteria) == set(ANALYTIC_RUBRIC) and all(
         c["max_score"] == 4 for c in criteria.values()
     )
 
 
-def ai_score_all_criteria(essay_text, rubric=None, model="llama3.2:3b"):
+def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, provider="ollama"):
     criteria = normalize_rubric(rubric)
+    essay_limit = CLOUD_ESSAY_CHARS if provider == "deepseek" else LOCAL_ESSAY_CHARS
 
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
@@ -487,7 +541,7 @@ SCORING RULES:
 {calibration_block}
 Essay:
 \"\"\"
-{essay_text[:4000]}
+{essay_text[:essay_limit]}
 \"\"\"
 
 Return ONLY this JSON object (no explanation, no markdown):
@@ -521,24 +575,30 @@ RULES:
 """
 
     try:
-        response = requests.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.0},
-            },
-            timeout=120,
-        )
-        if response.status_code != 200:
-            print(f"Ollama returned status {response.status_code}")
-            return None
+        if provider == "deepseek":
+            from ai_models import call_deepseek
+            content = call_deepseek(
+                system_msg, user_msg, model=model, json_mode=True, temperature=0.0
+            )["text"].strip()
+        else:
+            response = requests.post(
+                f"{ollama_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0.0},
+                },
+                timeout=120,
+            )
+            if response.status_code != 200:
+                print(f"Ollama returned status {response.status_code}")
+                return None
 
-        content = response.json().get("message", {}).get("content", "").strip()
+            content = response.json().get("message", {}).get("content", "").strip()
 
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()
@@ -743,14 +803,40 @@ def _heuristic_scores_for_rubric(essay_text, analysis, criteria):
     return result
 
 
-def calculate_analytic_scores(essay_text, analysis, rubric=None):
+def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="auto"):
     criteria = normalize_rubric(rubric)
-    ai = ai_score_all_criteria(essay_text, rubric=criteria)
-    if ai is not None:
-        print("✅ AI scoring succeeded")
-        return ai
+    choice = choose_scoring_model(essay_text, criteria, preference)
+
+    # If the chosen model fails, try the other one, except that an explicit
+    # "local" choice never sends the essay to the cloud.
+    attempts = [choice]
+    if choice["provider"] == "deepseek":
+        attempts.append({"provider": "ollama", "model": LOCAL_SCORING_MODEL})
+    elif choice["preference"] == "auto" and _cloud_available():
+        attempts.append({"provider": "deepseek", "model": CLOUD_SCORING_MODEL})
+
+    for i, attempt in enumerate(attempts):
+        ai = ai_score_all_criteria(
+            essay_text, rubric=criteria, model=attempt["model"], provider=attempt["provider"]
+        )
+        if ai is not None:
+            reason = choice["reason"]
+            if i > 0:
+                reason += (f" {MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond, "
+                           f"so {MODEL_LABELS.get(attempt['model'], attempt['model'])} was used instead.")
+            ai["evaluated_by"] = {**ai["evaluated_by"], "selection": choice["preference"], "reason": reason}
+            print(f"✅ AI scoring succeeded with {attempt['model']}")
+            return ai
+        print(f"⚠️ AI scoring with {attempt['model']} failed")
+
     print("⚠️ AI scoring failed, using heuristics")
-    return _heuristic_scores_for_rubric(essay_text, analysis, criteria)
+    result = _heuristic_scores_for_rubric(essay_text, analysis, criteria)
+    result["evaluated_by"] = {
+        **result["evaluated_by"],
+        "selection": choice["preference"],
+        "reason": "No AI model responded, so the built-in rule-based scoring was used.",
+    }
+    return result
 
 
 def weighted_fraction(scores, rubric=None):
@@ -765,8 +851,8 @@ def weighted_fraction(scores, rubric=None):
     return weighted_sum / total_weight if total_weight else 0.0
 
 
-def calculate_holistic_score(essay_text, analysis, rubric=None):
-    analytic = calculate_analytic_scores(essay_text, analysis, rubric=rubric)
+def calculate_holistic_score(essay_text, analysis, rubric=None, preference="auto"):
+    analytic = calculate_analytic_scores(essay_text, analysis, rubric=rubric, preference=preference)
     return holistic_from_analytic(analytic, rubric)
 
 

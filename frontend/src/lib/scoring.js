@@ -125,6 +125,24 @@ export function colorForFraction(f) {
   return gradeFromFraction(f).color;
 }
 
+// ---------- Satisfaction (1–10) ----------
+// Same bands as the rating picker: 1–3 red, 4–6 amber, 7–10 green.
+export function satisfactionStyle(value) {
+  if (!isNum(value)) {
+    return { label: 'Not rated', chip: 'bg-gray-100 text-gray-600 border-gray-200', text: 'text-gray-500', solid: 'bg-gray-400' };
+  }
+  if (value >= 9) return { label: 'Very satisfied', chip: 'bg-emerald-100 text-emerald-800 border-emerald-200', text: 'text-emerald-700', solid: 'bg-emerald-500' };
+  if (value >= 7) return { label: 'Satisfied', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', text: 'text-emerald-600', solid: 'bg-emerald-500' };
+  if (value >= 4) return { label: value >= 5 ? 'Neutral' : 'Unsatisfied', chip: 'bg-amber-50 text-amber-800 border-amber-200', text: 'text-amber-700', solid: 'bg-amber-500' };
+  return { label: value >= 3 ? 'Unsatisfied' : 'Very unsatisfied', chip: 'bg-red-50 text-red-700 border-red-200', text: 'text-red-600', solid: 'bg-red-500' };
+}
+
+// Who approved a saved entry (teachers only), from its column or the
+// jsonb fallback used before the README migration.
+export function entryApprovedBy(entry) {
+  return entry?.approved_by || entry?.criterion_feedback?.approved_by || entry?.original_scores?.approved_by || null;
+}
+
 export function errorMessage(err) {
   const detail = err?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
