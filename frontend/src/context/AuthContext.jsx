@@ -60,7 +60,15 @@ export const AuthProvider = ({ children }) => {
     if (error) throw error
   }
 
-  const signInWithGoogle = () => supabase.auth.signInWithOAuth({ provider: 'google' })
+  // prompt=select_account makes Google show its account chooser every time,
+  // instead of silently reusing the last Google account used in this browser.
+  const signInWithGoogle = () => supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: window.location.origin,
+      queryParams: { prompt: 'select_account' },
+    },
+  })
   const signInWithYahoo = () => supabase.auth.signInWithOAuth({ provider: 'custom:yahoo' })
   const signOut = () => supabase.auth.signOut()
 
