@@ -158,7 +158,7 @@ export const testPrompt = async (aiProvider, systemPrompt, userPrompt, model = n
     model: model,
     json_mode: jsonMode,
   }, {
-    timeout: 300000,  // 5 min — Phi-3.5 and other local models are slow
+    timeout: 300000,  // 5 min — local CPU models are slow; the backend stops at 280 s
   });
   return response.data;
 };
