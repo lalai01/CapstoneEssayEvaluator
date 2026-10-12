@@ -3,7 +3,7 @@
 A web app that scores essays against a configurable rubric, gives written feedback, reads handwritten and printed essays with OCR, and lets teachers correct the AI so later evaluations improve.
 
 - **Frontend:** React 19 + Vite + Tailwind, hosted on Firebase Hosting (`https://capstoneessayevaluator.web.app`)
-- **Backend:** FastAPI (Python 3.11) in Docker on a Contabo VPS (`https://api.essay-evaluator.duckdns.org`)
+- **Backend:** FastAPI (Python 3.11) in Docker on a Contabo VPS (`https://essay-evaluator.duckdns.org`, set as `VITE_API_URL`)
 - **Data and auth:** Supabase (Postgres, Auth with Google/Yahoo, Storage)
 - **AI models:** DeepSeek API, Ollama (Llama 3.2 3B, Gemma 2 2B) and llama.cpp (Phi-3.5 Mini), all reachable from the backend
 
@@ -38,11 +38,19 @@ A web app that scores essays against a configurable rubric, gives written feedba
 | **AI Prompt Playground** | Runs the same prompt on three models side by side. A **Score Comparison** table (Category / Primary / Compare / Diff) compares any two of them and can be saved as a PDF report. Agreement statistics are described [below](#prompt-playground-statistics). |
 | **Rubrics** (signed-in teachers) | Teachers create their own rubrics. Each criterion has its own maximum score (1–2 up to 1–10), weight and level descriptors, and teachers can add criteria of their own. A teacher's **default** rubric is used for their evaluations. They can copy the school-wide rubric as a starting point. Personal rubrics are private to their owner. |
 | **School-wide rubric** (admin only) | Admins create and activate the school-wide rubric, the default for every teacher without their own. Teachers can view it but not change it; the backend rejects such changes with 403. |
+| **Admins** (admin only) | Grant or remove admin access by typing someone's email. The person can then sign in with any method using that address. |
 | **Surveys** | Admins create surveys; logged-in users answer them in the **Surveys** tab. |
 | **OCR Labeler** (admin) | Correct OCR output on uploaded images to build TrOCR fine-tuning data. |
 | **Rate Us** | Public ratings with threaded comments and reactions. |
 
-A user is an admin if their Supabase `user_metadata.role` or `app_metadata.role` is `admin`, or if their email is in `ADMIN_EMAILS` (backend) / `VITE_ADMIN_EMAILS` (frontend). Both lists default to `admin_essay_capstone@gmail.com,galangec24@gmail.com`; keep them identical. Admins sign in through **Sign In → Admin Login** (email and password) or with Google if their email is listed.
+**Who is an admin** is decided only by the backend (`GET /me`). No admin emails are stored in this repository. A user is an admin if any of these is true:
+1. their email is in the `admin_users` table in Supabase. Add the first admin with SQL (see [Database](#database-supabase)), then manage the rest in the **👥 Admins** tab;
+2. their Supabase `app_metadata.role` is `admin`;
+3. their email is in the optional `ADMIN_EMAILS` environment variable on the server (empty by default).
+
+Email-based admin access only counts once the email is **confirmed**. `user_metadata` is never trusted, because users can edit it themselves from the browser.
+
+An admin can sign in with Google, Yahoo, email and password (**Sign In → Admin Login**), or **Email Me a Sign-in Link** (passwordless). An email can be made admin before the person has ever signed in.
 
 ---
 
@@ -83,7 +91,7 @@ backend/
   evaluation_graph.py     LangGraph evaluation pipeline
   evaluator.py            scoring, rubric handling, feedback, OCR text correction
   ai_models.py            model clients for the Prompt Playground
-  auth.py                 Supabase JWT verification
+  auth.py                 verifies sign-in tokens with Supabase Auth (cached 2 min)
   supabase_client.py      anon + service-role Supabase clients
   rag.py                  similar-essay retrieval
   ocr_utils.py            engine selection, DOCX/PDF extraction
@@ -145,13 +153,13 @@ npm run dev                       # http://localhost:5173
 |---|---|---|
 | `SUPABASE_URL` | yes | Supabase project URL |
 | `SUPABASE_KEY` | yes | Supabase anon key |
-| `SUPABASE_SERVICE_KEY` | recommended | Service-role key for admin writes (rubrics, surveys) and reading the active rubric past RLS |
-| `SUPABASE_JWT_SECRET` | recommended | Verifies user tokens. Without it, tokens are decoded **without** signature verification, which is fine for development only. |
+| `SUPABASE_SERVICE_KEY` | yes | Service-role key: admin management (`admin_users`), admin writes (rubrics, surveys), reading the active rubric past RLS |
+| `SUPABASE_JWT_SECRET` | no | No longer used. Tokens are verified by Supabase Auth itself (`/auth/v1/user`), which works with both legacy and new signing keys. |
 | `DEEPSEEK_API_KEY` | for DeepSeek | OCR correction and the Playground DeepSeek slot |
 | `OLLAMA_URL` | no | Default `http://ollama:11434` |
 | `LLAMACPP_URL` | no | Default `http://llamacpp:8080/v1` |
 | `LLAMACPP_MODEL` | no | Default `Phi-3.5-mini-instruct-Q4_K_M.gguf` |
-| `ADMIN_EMAILS` | no | Comma-separated admin emails |
+| `ADMIN_EMAILS` | no | Optional extra admin emails, comma-separated. Prefer the `admin_users` table so emails stay out of config files. |
 | `PDF_OCR_WORKERS` | no | Scanned PDF pages OCR'd at once. Default `min(4, CPU cores)` |
 | `TROCR_QUANTIZE` | no | `1` runs TrOCR with int8 quantization: about 2× faster handwriting OCR, slightly less accurate. Off by default. |
 
@@ -162,7 +170,6 @@ npm run dev                       # http://localhost:5173
 | `VITE_API_URL` | Backend base URL |
 | `VITE_SUPABASE_URL` | Supabase project URL |
 | `VITE_SUPABASE_ANON_KEY` | Supabase anon key (safe to expose; protect data with RLS) |
-| `VITE_ADMIN_EMAILS` | Optional comma-separated admin emails; must match the backend's `ADMIN_EMAILS` |
 
 ---
 
@@ -225,7 +232,26 @@ alter table knowledge_base    add column if not exists ai_model text;
 alter table learning_feedback add column if not exists teacher_scores jsonb;
 alter table learning_feedback add column if not exists title text;
 alter table learning_feedback add column if not exists ai_model text;
+
+-- Admins managed in the app's Admins tab (required for that tab).
+-- RLS on with no policies: only the backend's service-role key can read or write it.
+create table if not exists admin_users (
+  email      text primary key,
+  added_by   text,
+  created_at timestamptz not null default now()
+);
+alter table admin_users enable row level security;
+
+-- Add the first admin(s); after that, use the Admins tab in the app.
+insert into admin_users (email, added_by) values ('you@example.com', 'setup')
+on conflict (email) do nothing;
 ```
+
+If every admin is ever removed, add one back with the `insert` above.
+
+**Supabase Auth settings** (Dashboard → Authentication):
+- Keep **Confirm email** enabled, so nobody can register an admin's email address with a password without owning the inbox.
+- For email sign-in links, add your site (`https://capstoneessayevaluator.web.app`) under **URL Configuration → Redirect URLs**.
 
 - Without `rubrics.is_system`, evaluations still work and use the latest active rubric, but the Rubrics tab shows a "migration needed" error.
 - Without the other columns, nothing is lost: saves drop the missing columns and keep their values inside an existing jsonb column (`knowledge_base.criterion_feedback` or `learning_feedback.original_scores`), and the app reads either location.
@@ -330,4 +356,4 @@ All routes except `/health`, `/ocr*`, `/test-prompt`, `/rubric*`, `/suggestions`
 | … | `/surveys…`, `/questions/{id}` | Surveys (admin writes) and responses |
 | … | `/ratings…`, `/comments…`, `/reactions` | Rate Us |
 
-Interactive docs: `https://api.essay-evaluator.duckdns.org/docs`.
+Interactive docs: `https://essay-evaluator.duckdns.org/docs`.

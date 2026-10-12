@@ -26,6 +26,27 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+// ---------- Account & admins ----------
+export const getMe = async () => {
+  const response = await apiClient.get('/me');
+  return response.data;
+};
+
+export const listAdmins = async () => {
+  const response = await apiClient.get('/admin/admins');
+  return response.data;
+};
+
+export const addAdmin = async (email) => {
+  const response = await apiClient.post('/admin/admins', { email });
+  return response.data;
+};
+
+export const removeAdmin = async (email) => {
+  const response = await apiClient.delete(`/admin/admins/${encodeURIComponent(email)}`);
+  return response.data;
+};
+
 // ---------- OCR ----------
 export const uploadFile = async (file) => {
   const formData = new FormData();

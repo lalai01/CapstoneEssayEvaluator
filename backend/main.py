@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -206,13 +207,106 @@ class OCRCorrection(BaseModel):
 def health_check():
     return {"status": "ok"}
 
+# ---------- Admins ----------
+# No admin emails live in the code. A user is an admin when any of these holds:
+#   - their confirmed email is in the admin_users table in Supabase (seeded
+#     with SQL, then managed in the app's Admins tab). Emails can be added
+#     before the person ever signs in, and any sign-in method works.
+#   - app_metadata.role == "admin" (set server-side in Supabase; users
+#     cannot change app_metadata themselves)
+#   - their confirmed email is in the optional ADMIN_EMAILS server setting
+#     (environment variable on the VPS; empty by default)
+
+def _builtin_admin_emails() -> List[str]:
+    raw = os.environ.get("ADMIN_EMAILS", "")
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+_ADMIN_CACHE_SECONDS = 60
+_admin_cache = {"at": 0.0, "emails": set()}
+
+def _table_admin_emails(refresh: bool = False) -> set:
+    import time
+    now = time.time()
+    if not refresh and now - _admin_cache["at"] < _ADMIN_CACHE_SECONDS:
+        return _admin_cache["emails"]
+    emails = set()
+    if supabase_admin:
+        try:
+            rows = supabase_admin.table("admin_users").select("email").execute().data
+            emails = {r["email"].lower() for r in rows if r.get("email")}
+        except Exception as e:
+            print(f"⚠️ admin_users lookup failed (table missing?): {e}")
+    _admin_cache.update(at=now, emails=emails)
+    return emails
+
 def is_admin(user):
-    # Default mirrors the frontend's admin check in App.jsx / AdminRubrics.jsx.
-    admin_emails = os.environ.get(
-        "ADMIN_EMAILS", "admin_essay_capstone@gmail.com,galangec24@gmail.com"
-    ).split(",")
-    admin_emails = [e.strip() for e in admin_emails if e.strip()]
-    return (user.get("role") == "admin") or (user.get("email") in admin_emails)
+    if not user:
+        return False
+    if user.get("role") == "admin":
+        return True
+    email = (user.get("email") or "").lower()
+    if not email or not user.get("email_confirmed", True):
+        # An unconfirmed email could belong to someone else.
+        return False
+    return email in _builtin_admin_emails() or email in _table_admin_emails()
+
+class AdminEmail(BaseModel):
+    email: str
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+def _require_admin(user):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+
+def _require_service_key():
+    if not supabase_admin:
+        raise HTTPException(500, "SUPABASE_SERVICE_KEY is not set on the server; admin management needs it.")
+
+@app.get("/me")
+def who_am_i(user: dict = Depends(get_current_user)):
+    """Who the caller is and whether they are an admin (drives the admin tabs)."""
+    return {"id": user["id"], "email": user.get("email"), "is_admin": is_admin(user)}
+
+@app.get("/admin/admins")
+def list_admins(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    _require_service_key()
+    try:
+        rows = supabase_admin.table("admin_users").select("*").order("created_at").execute().data
+    except Exception as e:
+        if "admin_users" in str(e):
+            raise HTTPException(500, "Database migration needed: create the admin_users table (see README).")
+        raise
+    builtin = [{"email": e, "builtin": True, "added_by": "server setting (ADMIN_EMAILS)"} for e in _builtin_admin_emails()]
+    added = [{**r, "builtin": False} for r in rows if r["email"] not in _builtin_admin_emails()]
+    return builtin + added
+
+@app.post("/admin/admins")
+def add_admin(entry: AdminEmail, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    _require_service_key()
+    email = entry.email.strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(422, "Enter a valid email address.")
+    supabase_admin.table("admin_users").upsert(
+        {"email": email, "added_by": user.get("email")}, on_conflict="email"
+    ).execute()
+    _table_admin_emails(refresh=True)
+    return {"status": "added", "email": email}
+
+@app.delete("/admin/admins/{email}")
+def remove_admin(email: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    _require_service_key()
+    email = email.strip().lower()
+    if email in _builtin_admin_emails():
+        raise HTTPException(400, "This admin is set in the server's ADMIN_EMAILS setting and can't be removed here.")
+    if email == (user.get("email") or "").lower():
+        raise HTTPException(400, "You can't remove your own admin access.")
+    supabase_admin.table("admin_users").delete().eq("email", email).execute()
+    _table_admin_emails(refresh=True)
+    return {"status": "removed", "email": email}
 
 # ---------- Comments & Reactions ----------
 @app.post("/comments")
