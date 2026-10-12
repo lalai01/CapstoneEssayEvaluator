@@ -2,19 +2,12 @@ import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { apiClient, getRubric } from '../api';
 import { useAuth } from '../context/AuthContext';
-import { DEFAULT_CRITERIA, labelFromKey, errorMessage } from '../lib/scoring';
+import { DEFAULT_CRITERIA, labelFromKey, errorMessage, slugify } from '../lib/scoring';
 
 const MIN_SCORE = 2;
 const MAX_SCORE = 10;
 const DEFAULT_WEIGHTS = Object.fromEntries(DEFAULT_CRITERIA.map((c) => [c.key, c.weight]));
 
-function slugify(text) {
-  return text
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
 
 // Stored criteria (legacy {key: {"4": "..."}} or configurable
 // {key: {label, max_score, weight, levels}}) → editable rows.
@@ -26,7 +19,6 @@ function toRows(criteria) {
     return {
       id: `${key}-${Math.random().toString(36).slice(2)}`,
       key,
-      keyTouched: true,
       label: (configurable && value.label) || DEFAULT_CRITERIA.find((c) => c.key === key)?.label || labelFromKey(key),
       max_score: Number((configurable && value.max_score) || Math.max(4, ...levelNums)),
       weight: Number(configurable && value.weight !== undefined ? value.weight : DEFAULT_WEIGHTS[key] ?? 1),
@@ -43,7 +35,7 @@ function toCriteria(rows) {
       const text = (r.levels[lvl] || '').trim();
       if (text) levels[lvl] = text;
     }
-    criteria[r.key] = {
+    criteria[slugify(r.label)] = {
       label: r.label.trim(),
       max_score: r.max_score,
       weight: Number(r.weight) || 0,
@@ -57,7 +49,6 @@ function newRow() {
   return {
     id: `new-${Math.random().toString(36).slice(2)}`,
     key: '',
-    keyTouched: false,
     label: '',
     max_score: 4,
     weight: 1,
@@ -155,7 +146,7 @@ export default function RubricManager({ scope = 'teacher' }) {
       rubricTitle: '',
       rubricDescription: '',
       editorRows: defaultCriteria ? toRows(defaultCriteria) : DEFAULT_CRITERIA.map((c) => ({
-        ...newRow(), key: c.key, keyTouched: true, label: c.label, weight: c.weight,
+        ...newRow(), key: c.key, label: c.label, weight: c.weight,
       })),
     });
   };
@@ -183,10 +174,7 @@ export default function RubricManager({ scope = 'teacher' }) {
   const updateRow = (id, patch) => {
     setRows((prev) => prev.map((r) => {
       if (r.id !== id) return r;
-      const next = { ...r, ...patch };
-      // Auto-derive the key from the label until the teacher edits it directly.
-      if (patch.label !== undefined && !r.keyTouched) next.key = slugify(patch.label);
-      return next;
+      return { ...r, ...patch };
     }));
   };
 
@@ -209,12 +197,13 @@ export default function RubricManager({ scope = 'teacher' }) {
   const validate = () => {
     if (!title.trim()) return 'Title is required.';
     if (rows.length === 0) return 'Add at least one criterion.';
-    const seen = new Set();
+    const seen = new Map();
     for (const r of rows) {
       if (!r.label.trim()) return 'Every criterion needs a name.';
-      if (!/^[a-z0-9_]+$/.test(r.key)) return `"${r.label}" needs a key of lowercase letters, numbers and underscores.`;
-      if (seen.has(r.key)) return `Duplicate key "${r.key}".`;
-      seen.add(r.key);
+      const key = slugify(r.label);
+      if (!key) return `"${r.label}" needs at least one letter or number in its name.`;
+      if (seen.has(key)) return `"${seen.get(key)}" and "${r.label}" are too similar: both become the AI key "${key}". Rename one.`;
+      seen.set(key, r.label);
       if (!(r.max_score >= MIN_SCORE && r.max_score <= MAX_SCORE)) return `"${r.label}" max score must be ${MIN_SCORE}–${MAX_SCORE}.`;
       if (!(r.weight >= 0)) return `"${r.label}" weight must be 0 or more.`;
     }
@@ -426,13 +415,16 @@ export default function RubricManager({ scope = 'teacher' }) {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Key (used by the AI)</label>
-                  <input
-                    value={row.key}
-                    onChange={(e) => updateRow(row.id, { key: slugify(e.target.value), keyTouched: true })}
-                    className="w-full border rounded-lg p-2 text-sm font-mono"
-                    placeholder="creativity"
-                  />
+                  <span className="block text-xs text-gray-500 mb-1">AI key (automatic)</span>
+                  <div
+                    className="w-full border border-dashed rounded-lg p-2 text-sm font-mono bg-gray-100 text-gray-700 truncate"
+                    title="Generated from the criterion name; this is the name the AI scores under."
+                  >
+                    {slugify(row.label) || '—'}
+                  </div>
+                  {row.key && slugify(row.label) && row.key !== slugify(row.label) && (
+                    <span className="block text-[11px] text-amber-700 mt-0.5">was: {row.key}</span>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Max score</label>

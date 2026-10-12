@@ -171,3 +171,15 @@ export function sortEntries(entries, sort, titleOf) {
   const dir = sort === 'oldest' ? 1 : -1;
   return list.sort((a, b) => dir * (new Date(a.created_at) - new Date(b.created_at)));
 }
+
+// The AI key is always derived from the criterion name, so it matches what
+// was set: "Main Statement" -> main_statement, "Gramática" -> gramatica.
+export function slugify(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
