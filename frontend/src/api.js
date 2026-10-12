@@ -150,13 +150,15 @@ export const listLearningFeedback = async () => {
 };
 
 // ---------- AI Prompt Testing ----------
-export const testPrompt = async (aiProvider, systemPrompt, userPrompt, model = null, jsonMode = false) => {
+// jsonSchema: optional JSON schema the answer must follow (used by Ollama).
+export const testPrompt = async (aiProvider, systemPrompt, userPrompt, model = null, jsonMode = false, jsonSchema = null) => {
   const response = await apiClient.post('/test-prompt', {
     ai_provider: aiProvider,
     system_prompt: systemPrompt,
     user_prompt: userPrompt,
     model: model,
     json_mode: jsonMode,
+    json_schema: jsonSchema,
   }, {
     timeout: 300000,  // 5 min — local CPU models are slow; the backend stops at 280 s
   });
