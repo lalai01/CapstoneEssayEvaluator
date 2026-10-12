@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { saveKnowledge, saveOverride } from '../api';
 import { useAuth } from '../context/AuthContext';
 import ReportDialog from './ReportDialog';
+import AnnotatedEssay from './AnnotatedEssay';
 import {
   getCriteria,
   totalScore,
@@ -616,6 +617,8 @@ export default function Results({
       <div className="glass-card rounded-2xl shadow-xl p-6">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">📖 Detailed Feedback</h2>
 
+        <AnnotatedEssay essay={essayText} scores={scores} />
+
         {/* RAG — now formatted as recommendation-style cards */}
         {ragItems.length > 0 && (
           <details className="mb-4 bg-purple-50 p-3 rounded-lg border border-purple-200">
@@ -697,6 +700,9 @@ export default function Results({
                     <div className="text-gray-800">
                       <span className="font-medium text-amber-800">Try:</span> {rec.suggestion}
                     </div>
+                  )}
+                  {rec.quote && (
+                    <div className="text-xs text-violet-800 mt-1 italic">In your essay: “{rec.quote}”</div>
                   )}
                 </div>
               ))}

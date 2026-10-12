@@ -16,6 +16,7 @@ import {
   gradeFromFraction,
   isNum,
 } from './scoring';
+import { buildAnnotations, segmentText, ANNOTATION_TYPES } from './annotate';
 
 export const PAGE = { margin: 48, top: 56, bottom: 56 };
 export const COLORS = {
@@ -193,18 +194,176 @@ export class ReportWriter {
   }
 }
 
+// Per-word version of clean(): same character mapping, but no trimming, so
+// essay positions found by annotate.js stay valid.
+function cleanInline(text) {
+  return String(text ?? '')
+    .replace(/[\u2018\u2019\u201A\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/[\u2013\u2014\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '');
+}
+
+const MARK_FILL = {
+  grammar: [254, 226, 226],        // red-100
+  recommendation: [237, 233, 254], // violet-100
+  vague: [254, 243, 199],          // amber-100
+};
+const LONG_LINE = [14, 165, 233];  // sky-500
+const NUMBERED = new Set(['grammar', 'recommendation']);
+
+// The essay with the same marks as on screen: coloured backgrounds, a blue
+// underline for long sentences, and [n] markers explained after the essay.
+function drawHighlightedEssay(w, essayText, scores) {
+  const { doc } = w;
+  const text = String(essayText || '').replace(/\r\n/g, '\n');
+  const { annotations, unlocated } = buildAnnotations(text, scores);
+  const pieces = segmentText(text, annotations);
+
+  const numbered = annotations
+    .filter((a) => NUMBERED.has(a.type))
+    .sort((a, b) => a.start - b.start);
+  const numberOf = new Map(numbered.map((a, i) => [a, i + 1]));
+
+  // Legend
+  w.ensureSpace(30);
+  let lx = PAGE.margin;
+  w.setFont('normal', 8, COLORS.muted);
+  for (const [type, info] of Object.entries(ANNOTATION_TYPES)) {
+    if (MARK_FILL[type]) {
+      doc.setFillColor(...MARK_FILL[type]);
+      doc.rect(lx, w.y - 7, 10, 9, 'F');
+    } else {
+      doc.setDrawColor(...LONG_LINE);
+      doc.setLineWidth(1.2);
+      doc.line(lx, w.y + 2, lx + 10, w.y + 2);
+    }
+    doc.text(info.label, lx + 14, w.y);
+    lx += 14 + doc.getTextWidth(info.label) + 16;
+  }
+  w.y += 20;
+
+  const size = 10.5;
+  const lineH = 17;
+  const left = PAGE.margin;
+  const right = PAGE.margin + w.contentWidth;
+  let x = left;
+  let y = w.y;
+  const newLine = () => {
+    x = left;
+    y += lineH;
+    if (y > w.height - PAGE.bottom) {
+      doc.addPage();
+      y = PAGE.top;
+    }
+  };
+  const marked = new Set();
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(size);
+  for (const piece of pieces) {
+    const bg = piece.annotations.find((a) => MARK_FILL[a.type]);
+    const long = piece.annotations.some((a) => a.type === 'long');
+    for (const tok of piece.text.split(/(\n|[ \t]+)/)) {
+      if (!tok) continue;
+      if (tok === '\n') { newLine(); continue; }
+      if (/^[ \t]+$/.test(tok)) {
+        if (x === left) continue;
+        const sw = doc.getTextWidth(' ');
+        if (x + sw > right) { newLine(); continue; }
+        if (bg) { doc.setFillColor(...MARK_FILL[bg.type]); doc.rect(x, y - 11.5, sw, 15, 'F'); }
+        if (long) { doc.setDrawColor(...LONG_LINE); doc.setLineWidth(0.9); doc.line(x, y + 2.5, x + sw, y + 2.5); }
+        x += sw;
+        continue;
+      }
+      const word = cleanInline(tok);
+      if (!word) continue;
+      const ww = doc.getTextWidth(word);
+      if (x + ww > right && x > left) newLine();
+      if (bg) { doc.setFillColor(...MARK_FILL[bg.type]); doc.rect(x - 0.5, y - 11.5, ww + 1, 15, 'F'); }
+      doc.setTextColor(...COLORS.text);
+      doc.text(word, x, y);
+      if (long) { doc.setDrawColor(...LONG_LINE); doc.setLineWidth(0.9); doc.line(x, y + 2.5, x + ww, y + 2.5); }
+      x += ww;
+    }
+    // [n] marker right after each numbered mark ends.
+    for (const a of piece.annotations) {
+      if (!NUMBERED.has(a.type) || a.end !== piece.end || marked.has(a)) continue;
+      marked.add(a);
+      const label = `[${numberOf.get(a)}]`;
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'bold');
+      const lw = doc.getTextWidth(label);
+      if (x + lw > right) newLine();
+      doc.setTextColor(...(a.type === 'grammar' ? COLORS.bad : [109, 40, 217]));
+      doc.text(label, x + 0.5, y - 5);
+      x += lw + 1.5;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(size);
+    }
+  }
+  w.y = y + lineH + 6;
+
+  // What each number means.
+  if (numbered.length || unlocated.length) {
+    w.heading('Marked Issues');
+    numbered.forEach((a) => {
+      w.ensureSpace(30);
+      const kind = a.type === 'grammar' ? 'Grammar' : 'Improve';
+      w.paragraph(`[${numberOf.get(a)}] ${kind}: "${text.slice(a.start, a.end)}"`, {
+        style: 'bold', size: 9.5, color: a.type === 'grammar' ? COLORS.bad : [109, 40, 217],
+      });
+      w.paragraph(`${a.title}${a.detail ? `. ${a.detail}` : ''}`, { indent: 14, size: 9.5 });
+    });
+    if (unlocated.length) {
+      w.paragraph(`${unlocated.length} further suggestion(s) could not be matched to an exact spot in the text; see the Grammar and Recommendations sections.`,
+        { size: 8.5, color: COLORS.muted });
+    }
+  }
+  const counts = { vague: 0, long: 0 };
+  for (const a of annotations) if (a.type in counts) counts[a.type] += 1;
+  if (counts.vague || counts.long) {
+    w.paragraph(
+      `Also marked: ${counts.vague} vague word(s) (amber) and ${counts.long} sentence(s) over 30 words (blue underline).`,
+      { size: 8.5, color: COLORS.muted }
+    );
+  }
+}
+
+// AI-revised reference version of the essay.
+function drawRevision(w, revision) {
+  const { doc } = w;
+  doc.addPage();
+  w.y = PAGE.top;
+  w.heading('Reference: AI-Revised Version');
+  w.paragraph(
+    `Generated by ${revision.evaluated_by?.label || 'an AI model'} as an example of how this essay could be improved. ` +
+    'It keeps the student\'s position and ideas. Text in [square brackets] marks where the student should add their own ' +
+    'evidence. This is a reference for revision, not the student\'s work.',
+    { size: 8.5, color: COLORS.muted }
+  );
+  if (revision.changes?.length) {
+    w.paragraph('Main changes', { style: 'bold', size: 10 });
+    revision.changes.forEach((c) => w.paragraph(`- ${c}`, { indent: 10, size: 9.5 }));
+    w.gap(6);
+  }
+  w.paragraph(revision.revised_essay, { size: 10, lineGap: 1.5 });
+}
+
 /**
  * options: {
  *   title, essayText, feedback, scores, evalType,
  *   studentName, section, teacherName, teacherComments,
- *   teacherScores, includeEssay
+ *   teacherScores, includeEssay,
+ *   revision   // optional { revised_essay, changes, evaluated_by } from /revise-essay
  * }
  */
 export function generateEvaluationReport(options) {
   const {
     title, essayText, feedback, scores, evalType,
     studentName, section, teacherName, teacherComments,
-    teacherScores, includeEssay = true,
+    teacherScores, includeEssay = true, revision = null,
   } = options;
 
   const w = new ReportWriter();
@@ -387,12 +546,17 @@ export function generateEvaluationReport(options) {
     { size: 8, color: COLORS.muted }
   );
 
-  // ---------- Essay appendix ----------
+  // ---------- Essay appendix (highlighted like the screen) ----------
   if (includeEssay && clean(essayText)) {
     doc.addPage();
     w.y = PAGE.top;
-    w.heading('Appendix: Essay Text');
-    w.paragraph(essayText, { size: 10, lineGap: 1.5 });
+    w.heading('Appendix: Essay with Highlights');
+    drawHighlightedEssay(w, essayText, scores);
+  }
+
+  // ---------- AI-revised reference ----------
+  if (revision?.revised_essay) {
+    drawRevision(w, revision);
   }
 
   const namePart = studentName ? `${safeFileName(studentName)}_` : '';
