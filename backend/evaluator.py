@@ -562,7 +562,8 @@ Return ONLY this JSON object (no explanation, no markdown):
     {{
       "title":      "<short label>",
       "issue":      "<what is weak in the essay>",
-      "suggestion": "<concrete, actionable fix that references a specific part of the essay>"
+      "suggestion": "<concrete, actionable fix that references a specific part of the essay>",
+      "quote":      "<the exact sentence or phrase from the essay this refers to, copied word for word>"
     }}
   ]
 }}
@@ -571,6 +572,7 @@ RULES:
 - If there are no grammar errors, use "grammar_issues": [].
 - Never include a grammar_issues entry where original equals correction.
 - Provide 3–5 recommendations. Each must reference a specific part of the essay.
+- Each recommendation's "quote" must be copied exactly from the essay (it is highlighted for the student).
 - Every criterion_feedback value must be a plain string of 2-3 sentences.
 """
 
@@ -849,6 +851,207 @@ def weighted_fraction(scores, rubric=None):
             weighted_sum += c["weight"] * (v - 1) / (c["max_score"] - 1)
             total_weight += c["weight"]
     return weighted_sum / total_weight if total_weight else 0.0
+
+
+def _parse_json_object(content):
+    """First JSON object in a model reply (tolerates code fences and prose)."""
+    content = (content or "").strip()
+    if content.startswith("```"):
+        content = content.strip("`").replace("json", "", 1).strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        start, end = content.find("{"), content.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(content[start:end + 1])
+
+
+HOLISTIC_PLAIN = {
+    level: re.sub(r"^[^A-Za-z]+", "", text) for level, text in HOLISTIC_RUBRIC.items()
+}
+
+
+def ai_holistic_score(essay_text, preference="auto"):
+    """
+    Genuine holistic scoring: ONE short model call that reads the essay as a
+    whole and returns a single 1-5 score for overall coherence, organization,
+    style and content, plus brief feedback. Far fewer output tokens than the
+    analytic call, and no second call to rewrite feedback.
+
+    Returns a scores dict, or None if every model failed.
+    """
+    choice = choose_scoring_model(essay_text, normalize_rubric(None), preference)
+    attempts = [choice]
+    if choice["provider"] == "deepseek":
+        attempts.append({"provider": "ollama", "model": LOCAL_SCORING_MODEL})
+    elif choice["preference"] == "auto" and _cloud_available():
+        attempts.append({"provider": "deepseek", "model": CLOUD_SCORING_MODEL})
+
+    levels = "\n".join(f"{k}: {v}" for k, v in sorted(HOLISTIC_PLAIN.items(), reverse=True))
+    system_msg = (
+        "You are an experienced essay examiner doing HOLISTIC scoring: you judge the essay "
+        "as a whole and give ONE overall score. You reply with a single JSON object only."
+    )
+
+    for i, attempt in enumerate(attempts):
+        limit = CLOUD_ESSAY_CHARS if attempt["provider"] == "deepseek" else LOCAL_ESSAY_CHARS
+        user_msg = f"""Read the whole essay and give ONE holistic score from 1 to 5 that reflects
+its overall coherence, organization, style and content together. Do not score
+criteria separately.
+
+Scale:
+{levels}
+
+Essay:
+\"\"\"
+{essay_text[:limit]}
+\"\"\"
+
+Reply with JSON only:
+{{"holistic_score": <1-5>,
+  "summary": "<2-3 sentences on overall coherence, organization, style and content>",
+  "strengths": ["<short>", "<short>"],
+  "improvements": ["<short, concrete>", "<short, concrete>"],
+  "grammar_issues": [{{"original": "<text copied exactly from the essay>", "correction": "<fix>", "explanation": "<short>"}}]}}
+At most 5 grammar_issues, only real errors ([] if none)."""
+        try:
+            if attempt["provider"] == "deepseek":
+                from ai_models import call_deepseek
+                content = call_deepseek(system_msg, user_msg, model=attempt["model"],
+                                        json_mode=True, temperature=0.0)["text"]
+            else:
+                from ai_models import call_ollama
+                content = call_ollama(system_msg, user_msg, model=attempt["model"],
+                                      json_mode=True, temperature=0.0, max_tokens=600)["text"]
+            parsed = _parse_json_object(content)
+            score = int(parsed["holistic_score"])
+            if not 1 <= score <= 5:
+                raise ValueError(f"holistic_score out of range: {score}")
+        except Exception as e:
+            print(f"⚠️ Holistic scoring with {attempt['model']} failed: {e}")
+            continue
+
+        listify = lambda v: [str(x) for x in v if str(x).strip()][:3] if isinstance(v, list) else []  # noqa: E731
+        issues = parsed.get("grammar_issues")
+        reason = choice["reason"]
+        if i > 0:
+            reason += (f" {MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond, "
+                       f"so {MODEL_LABELS.get(attempt['model'], attempt['model'])} was used instead.")
+        return {
+            "holistic_score": score,
+            "level_description": HOLISTIC_RUBRIC[score],
+            "holistic_feedback": {
+                "summary": str(parsed.get("summary") or "").strip(),
+                "strengths": listify(parsed.get("strengths")),
+                "improvements": listify(parsed.get("improvements")),
+            },
+            "grammar_issues": [g for g in issues if isinstance(g, dict)][:5] if isinstance(issues, list) else [],
+            "evaluated_by": {**evaluated_by(attempt["model"]), "selection": choice["preference"],
+                             "reason": reason, "method": "holistic"},
+        }
+    return None
+
+
+def revise_essay(essay_text, grammar_issues=None, recommendations=None, preference="auto"):
+    """
+    Produce an AI-revised reference version of an essay for the evaluation
+    report: same position, ideas and structure, with grammar fixed and the
+    recommendations applied. It must not invent facts; where evidence is
+    missing it leaves a bracketed placeholder for the student to fill.
+
+    Revising is a long output, so DeepSeek is preferred when available (the
+    local model is slow on the VPS CPU). Returns
+    {"revised_essay", "changes", "evaluated_by"} or None.
+    """
+    attempts = []
+    if preference != "local" and _cloud_available():
+        attempts.append({"provider": "deepseek", "model": CLOUD_SCORING_MODEL})
+    if preference != "deepseek" or not _cloud_available():
+        attempts.append({"provider": "ollama", "model": LOCAL_SCORING_MODEL})
+
+    fixes = "\n".join(
+        f'- "{g.get("original")}" -> "{g.get("correction")}"'
+        for g in (grammar_issues or []) if isinstance(g, dict) and g.get("original")
+    )[:2000]
+    advice = "\n".join(
+        f'- {r.get("title", "")}: {r.get("suggestion", "")}'
+        for r in (recommendations or []) if isinstance(r, dict) and r.get("suggestion")
+    )[:2000]
+
+    system_msg = (
+        "You are a writing teacher preparing a model revision of a student's essay as a reference. "
+        "You reply with a single JSON object only."
+    )
+    for attempt in attempts:
+        limit = CLOUD_ESSAY_CHARS if attempt["provider"] == "deepseek" else LOCAL_ESSAY_CHARS
+        # Length of the text this model actually receives.
+        words = len(essay_text[:limit].split())
+        user_msg = f"""Revise the essay below into an improved version the student can learn from.
+
+Rules:
+- Keep the student's position, main ideas and paragraph structure.
+- Fix grammar, spelling and punctuation; improve clarity, transitions and word choice.
+- Apply the recommendations where they fit.
+- Do NOT invent facts, statistics, studies or quotes. Where evidence is needed,
+  insert a placeholder in square brackets, e.g. [cite a source on screen time here].
+- Keep roughly the same length (about {words} words, within 20%).
+- Keep paragraph breaks as blank lines.
+
+Grammar fixes already found:
+{fixes or "- none"}
+
+Recommendations:
+{advice or "- none"}
+
+Essay:
+\"\"\"
+{essay_text[:limit]}
+\"\"\"
+
+Reply with JSON only:
+{{"revised_essay": "<the full revised essay>", "changes": ["<short description of a change>", "..."]}}
+List at most 6 changes."""
+        try:
+            if attempt["provider"] == "deepseek":
+                from ai_models import call_deepseek
+                content = call_deepseek(system_msg, user_msg, model=attempt["model"],
+                                        json_mode=True, temperature=0.3)["text"]
+            else:
+                from ai_models import call_ollama
+                # Prompt (~1,500 tokens) + answer must fit Ollama's 4,096-token window.
+                content = call_ollama(system_msg, user_msg, model=attempt["model"], json_mode=True,
+                                      temperature=0.3, max_tokens=min(2400, int(words * 2) + 300))["text"]
+            parsed = _parse_json_object(content)
+            revised = str(parsed.get("revised_essay") or "").strip()
+            if len(revised.split()) < max(20, words * 0.5):
+                raise ValueError(f"revision too short ({len(revised.split())} words)")
+        except Exception as e:
+            print(f"⚠️ Essay revision with {attempt['model']} failed: {e}")
+            continue
+        changes = parsed.get("changes")
+        return {
+            "revised_essay": revised,
+            "changes": [str(c) for c in changes if str(c).strip()][:6] if isinstance(changes, list) else [],
+            "evaluated_by": evaluated_by(attempt["model"]),
+        }
+    return None
+
+
+def holistic_feedback_text(scores, rag_context=""):
+    """Feedback for a holistic result, built from the model's own answer."""
+    fb = scores.get("holistic_feedback") or {}
+    parts = []
+    if rag_context:
+        parts += ["[RAG_INSIGHTS_START]", rag_context, "[RAG_INSIGHTS_END]"]
+    parts.append(f"Holistic score: {scores['holistic_score']}/5. {HOLISTIC_PLAIN[scores['holistic_score']]}")
+    if fb.get("summary"):
+        parts += ["", fb["summary"]]
+    if fb.get("strengths"):
+        parts += ["", "Strengths:"] + [f"• {s}" for s in fb["strengths"]]
+    if fb.get("improvements"):
+        parts += ["", "To improve:"] + [f"• {s}" for s in fb["improvements"]]
+    return "\n".join(parts)
 
 
 def calculate_holistic_score(essay_text, analysis, rubric=None, preference="auto"):

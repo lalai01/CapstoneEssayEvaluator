@@ -145,6 +145,12 @@ class OverrideRequest(BaseModel):
     accepted: bool = False
     satisfaction: Optional[int] = 5
 
+class RevisionRequest(BaseModel):
+    text: str
+    grammar_issues: Optional[List[Dict[str, Any]]] = None
+    recommendations: Optional[List[Dict[str, Any]]] = None
+    ai_model: Literal["auto", "deepseek", "local"] = "auto"
+
 class PromptTestRequest(BaseModel):
     ai_provider: str
     system_prompt: str
@@ -1325,6 +1331,18 @@ def _insert_tolerant(table: str, row: Dict[str, Any], optional: List[str],
                 if target and value is not None:
                     row[target] = {**(row.get(target) or {}), column: value}
 
+
+@app.post("/revise-essay")
+def revise_essay_endpoint(req: RevisionRequest, user: dict = Depends(get_current_user)):
+    """AI-revised reference version of an essay, for the evaluation report.
+    Teachers only, so students can't generate a finished essay to hand in."""
+    _require_teacher(user, "generate a revised reference essay")
+    if len(req.text.split()) < 20:
+        raise HTTPException(422, "The essay is too short to revise.")
+    result = evaluator.revise_essay(req.text, req.grammar_issues, req.recommendations, req.ai_model)
+    if result is None:
+        raise HTTPException(503, "No AI model could produce a revision right now. Try again in a moment.")
+    return result
 
 #region Knowledge Base
 @app.post("/knowledge")

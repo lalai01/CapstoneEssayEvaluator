@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import toast from 'react-hot-toast';
 import { generateEvaluationReport } from '../lib/report';
+import { reviseEssay } from '../api';
+import { useAuth } from '../context/AuthContext';
+import { errorMessage } from '../lib/scoring';
 
 // Collects the details a printed report needs (who it's for, who evaluated
 // it, teacher comments) and generates the PDF.
@@ -9,11 +12,30 @@ export default function ReportDialog({ onClose, defaults, reportData }) {
   const [section, setSection] = useState('');
   const [teacherName, setTeacherName] = useState(defaults.teacherName || '');
   const [teacherComments, setTeacherComments] = useState(defaults.teacherComments || '');
+  const { isTeacher } = useAuth();
   const [includeEssay, setIncludeEssay] = useState(true);
-  const [generating, setGenerating] = useState(false);
+  const [includeRevision, setIncludeRevision] = useState(false);
+  const [revision, setRevision] = useState(null); // reused if the PDF is downloaded again
+  const [step, setStep] = useState(''); // '' | 'revising' | 'pdf'
 
-  const generate = () => {
-    setGenerating(true);
+  const generate = async () => {
+    let revised = revision;
+    if (includeRevision && isTeacher && !revised) {
+      setStep('revising');
+      try {
+        revised = await reviseEssay(
+          reportData.essayText,
+          reportData.scores?.grammar_issues || [],
+          reportData.scores?.recommendations || [],
+        );
+        setRevision(revised);
+      } catch (err) {
+        setStep('');
+        toast.error('Could not generate the revised version: ' + errorMessage(err));
+        return;
+      }
+    }
+    setStep('pdf');
     try {
       generateEvaluationReport({
         ...reportData,
@@ -22,6 +44,7 @@ export default function ReportDialog({ onClose, defaults, reportData }) {
         teacherName: teacherName.trim(),
         teacherComments: teacherComments.trim(),
         includeEssay,
+        revision: includeRevision ? revised : null,
       });
       toast.success('Report downloaded');
       onClose();
@@ -29,9 +52,10 @@ export default function ReportDialog({ onClose, defaults, reportData }) {
       console.error('[report] generation failed', err);
       toast.error('Could not generate the report: ' + err.message);
     } finally {
-      setGenerating(false);
+      setStep('');
     }
   };
+  const generating = step !== '';
 
   const field = 'w-full border rounded-xl p-2.5 focus:ring-2 focus:ring-blue-500 bg-white';
 
@@ -74,10 +98,28 @@ export default function ReportDialog({ onClose, defaults, reportData }) {
           />
         </label>
 
-        <label className="flex items-center gap-2 text-sm text-gray-700 mb-5 cursor-pointer">
+        <label className="flex items-center gap-2 text-sm text-gray-700 mb-3 cursor-pointer">
           <input type="checkbox" checked={includeEssay} onChange={(e) => setIncludeEssay(e.target.checked)} className="w-4 h-4" />
-          Include the full essay text as an appendix
+          Include the essay with the issues highlighted (appendix)
         </label>
+
+        {isTeacher && (
+          <label className="flex items-start gap-2 text-sm text-gray-700 mb-5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={includeRevision}
+              onChange={(e) => setIncludeRevision(e.target.checked)}
+              className="w-4 h-4 mt-0.5"
+            />
+            <span>
+              Include an AI-revised version as a reference
+              <span className="block text-xs text-gray-500">
+                Keeps the student's ideas, fixes the marked issues, and leaves [placeholders] where evidence is needed.
+                Clearly labelled as AI-generated. Takes up to a minute.
+              </span>
+            </span>
+          </label>
+        )}
 
         {reportData.teacherScores && (
           <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-4">
@@ -94,7 +136,7 @@ export default function ReportDialog({ onClose, defaults, reportData }) {
             disabled={generating}
             className="px-4 py-2 bg-gradient-to-r from-sky-500 to-cyan-500 text-white rounded-xl font-semibold hover:shadow-lg transition disabled:opacity-50"
           >
-            {generating ? 'Generating…' : 'Download PDF'}
+            {step === 'revising' ? 'Writing revised version…' : step === 'pdf' ? 'Generating…' : 'Download PDF'}
           </button>
         </div>
       </div>

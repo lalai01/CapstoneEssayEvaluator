@@ -91,7 +91,8 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=F
 MAX_BLANK_CHUNKS = 40
 
 
-def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False, json_schema=None):
+def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False, json_schema=None,
+                temperature=0.3, max_tokens=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
     payload = {
         "model": model,
@@ -102,8 +103,8 @@ def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False
         "stream": True,
         "keep_alive": OLLAMA_KEEP_ALIVE,
         "options": {
-            "temperature": 0.3,
-            "num_predict": MAX_OUTPUT_TOKENS,
+            "temperature": temperature,
+            "num_predict": max_tokens or MAX_OUTPUT_TOKENS,
             "num_ctx": OLLAMA_CONTEXT,
         },
     }

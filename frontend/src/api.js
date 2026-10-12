@@ -127,6 +127,17 @@ export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', ru
   return response.data;
 };
 
+// AI-revised reference version of an essay (teachers only). Slow on the
+// local model, so it gets a long timeout.
+export const reviseEssay = async (text, grammarIssues = [], recommendations = [], aiModel = 'auto') => {
+  const response = await apiClient.post(
+    '/revise-essay',
+    { text, grammar_issues: grammarIssues, recommendations, ai_model: aiModel },
+    { timeout: 300000 }
+  );
+  return response.data;
+};
+
 // ---------- Rubric & Suggestions ----------
 export const getRubric = async () => {
   const response = await apiClient.get('/rubric');

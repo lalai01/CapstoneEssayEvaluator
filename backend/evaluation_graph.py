@@ -7,6 +7,8 @@ from evaluator import (
     analyze_essay_content,
     calculate_analytic_scores,
     holistic_from_analytic,
+    ai_holistic_score,
+    holistic_feedback_text,
     generate_rule_based_analytic_feedback,
     generate_rule_based_holistic_feedback,
     enhance_feedback_with_ai,
@@ -45,18 +47,26 @@ def validate_node(state: EvaluationState) -> dict:
 def score_node(state: EvaluationState) -> dict:
     analysis = analyze_essay_content(state["essay_text"])
     if state.get("evaluation_type") == "holistic":
-        analytic = calculate_analytic_scores(
-            state["essay_text"],
-            analysis,
-            rubric=state.get("rubric"),
-            preference=state.get("ai_model") or "auto",
-        )
-        score = holistic_from_analytic(analytic, state.get("rubric"))
-        scores = {
-            "holistic_score": score,
-            "level_description": HOLISTIC_RUBRIC[score],
-            "evaluated_by": analytic.get("evaluated_by"),
-        }
+        # One quick overall judgement; only if every model fails do we fall
+        # back to deriving the score from the slower analytic scoring.
+        scores = ai_holistic_score(state["essay_text"], state.get("ai_model") or "auto")
+        if scores is None:
+            analytic = calculate_analytic_scores(
+                state["essay_text"],
+                analysis,
+                rubric=state.get("rubric"),
+                preference=state.get("ai_model") or "auto",
+            )
+            score = holistic_from_analytic(analytic, state.get("rubric"))
+            by = analytic.get("evaluated_by") or {}
+            scores = {
+                "holistic_score": score,
+                "level_description": HOLISTIC_RUBRIC[score],
+                "grammar_issues": analytic.get("grammar_issues") or [],
+                "evaluated_by": {**by, "method": "derived", "reason": (
+                    (by.get("reason") or "") + " The quick holistic check didn't respond, so the "
+                    "score was derived from the analytic criteria instead.").strip()},
+            }
     else:
         scores = calculate_analytic_scores(
             state["essay_text"],
@@ -80,6 +90,9 @@ def rag_node(state: EvaluationState) -> dict:
 
 def feedback_node(state: EvaluationState) -> dict:
     analysis = state.get("_analysis") or {}
+    if state.get("evaluation_type") == "holistic" and state["scores"].get("holistic_feedback"):
+        # The holistic model already wrote the feedback: no second AI call.
+        return {"feedback": holistic_feedback_text(state["scores"], state.get("rag_context") or "")}
     if state.get("evaluation_type") == "holistic":
         rule_feedback = generate_rule_based_holistic_feedback(
             state["essay_text"],

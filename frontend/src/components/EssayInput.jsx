@@ -136,6 +136,11 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
               </label>
             </div>
           </div>
+          <p className="text-xs text-gray-600 mt-1">
+            {evalTypeLocal === 'holistic'
+              ? 'Holistic: one overall score (1–5) for coherence, organization, style and content together. Fastest: a single short AI check.'
+              : 'Analytic: a separate score for each rubric criterion (e.g. thesis, organization, evidence, grammar) with detailed feedback. Takes longer.'}
+          </p>
           {useRag && (
             <p className="text-xs text-purple-600 mt-1">
               Enhances feedback by including insights from previously saved evaluations.
