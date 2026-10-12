@@ -86,7 +86,12 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=F
 
 
 # ---------- Ollama (Gemma / Llama) ----------
-def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False):
+# In JSON mode a small model that loses the format often emits only
+# whitespace until the token limit. Stop after this many blank chunks.
+MAX_BLANK_CHUNKS = 40
+
+
+def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False, json_schema=None):
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
     payload = {
         "model": model,
@@ -102,20 +107,40 @@ def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False
             "num_ctx": OLLAMA_CONTEXT,
         },
     }
-    if json_mode:
-        # Constrains output to valid JSON: no prose to strip, no retries.
-        payload["format"] = "json"
+    # A JSON schema (Ollama 0.5+) forces the exact structure; plain "json"
+    # only guarantees valid JSON. Older Ollama rejects a schema, so fall back.
+    formats = []
+    if json_schema:
+        formats.append(json_schema)
+    if json_mode or json_schema:
+        formats.append("json")
+    if not formats:
+        formats.append(None)
 
     started = time.time()
+    response = None
+    for i, fmt in enumerate(formats):
+        attempt = dict(payload)
+        if fmt is not None:
+            attempt["format"] = fmt
+        response = requests.post(
+            f"{ollama_url}/api/chat",
+            json=attempt,
+            stream=True,
+            timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT),
+        )
+        if response.status_code == 200 or i == len(formats) - 1:
+            break
+        print(f"[ollama] format rejected ({_error_reason(response)}); retrying with plain JSON mode")
+        response.close()
+
     parts = []
     output_tokens = None
-    with requests.post(
-        f"{ollama_url}/api/chat",
-        json=payload,
-        stream=True,
-        timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT),
-    ) as response:
-        response.raise_for_status()
+    stop_reason = None
+    blank_run = 0
+    with response:
+        if response.status_code != 200:
+            raise RuntimeError(f"Ollama error {response.status_code}: {_error_reason(response)}")
         for line in response.iter_lines():
             _check_deadline(started, f"Ollama ({model})")
             if not line:
@@ -123,16 +148,26 @@ def call_ollama(system_prompt, user_prompt, model="llama3.2:3b", json_mode=False
             chunk = json.loads(line)
             if chunk.get("error"):
                 raise RuntimeError(chunk["error"])
-            parts.append((chunk.get("message") or {}).get("content", ""))
+            content = (chunk.get("message") or {}).get("content", "")
+            parts.append(content)
             if chunk.get("done"):
                 output_tokens = chunk.get("eval_count")
+                stop_reason = chunk.get("done_reason")  # "length" = hit the token cap
+                break
+            blank_run = blank_run + 1 if content and not content.strip() else 0
+            if blank_run >= MAX_BLANK_CHUNKS and "".join(parts).strip():
+                stop_reason = "blank_output"
+                print(f"[ollama] {model} produced only whitespace; stopping early")
                 break
 
+    stats = _stats(started, output_tokens)
+    if stop_reason in ("length", "blank_output"):
+        stats["stop_reason"] = stop_reason
     return {
-        "text": "".join(parts),
+        "text": "".join(parts).strip(),
         "model": model,
         "provider": "ollama",
-        "stats": _stats(started, output_tokens),
+        "stats": stats,
     }
 
 
@@ -220,15 +255,15 @@ def call_llamacpp(system_prompt, user_prompt, model=None, json_mode=False):
 
 
 # ---------- Router ----------
-def test_prompt(ai_provider, system_prompt, user_prompt, model=None, json_mode=False):
+def test_prompt(ai_provider, system_prompt, user_prompt, model=None, json_mode=False, json_schema=None):
     provider = ai_provider.lower()
 
     if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat", json_mode)
     elif provider == "gemma":
-        return call_ollama(system_prompt, user_prompt, model or "gemma2:2b", json_mode)
+        return call_ollama(system_prompt, user_prompt, model or "gemma2:2b", json_mode, json_schema)
     elif provider == "ollama":
-        return call_ollama(system_prompt, user_prompt, model or "llama3.2:3b", json_mode)
+        return call_ollama(system_prompt, user_prompt, model or "llama3.2:3b", json_mode, json_schema)
     elif provider == "llamacpp":
         return call_llamacpp(system_prompt, user_prompt, model, json_mode)
     else:

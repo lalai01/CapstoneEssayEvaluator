@@ -31,6 +31,7 @@ import {
   BIAS_THRESHOLD,
 } from '../lib/aiComparison';
 import { generateComparisonReport } from '../lib/comparisonReport';
+import { salvageJson } from '../lib/jsonRepair';
 
 // -----------------------------------------------------------------------------
 // Shared helpers
@@ -169,6 +170,34 @@ At most 3 grammar_issues (only real errors; [] if none) and 3 recommendations.`;
   return { system, user };
 }
 
+// JSON schema matching the compact prompt. Ollama 0.5+ enforces it, so a
+// small model cannot drift out of the format (the backend falls back to
+// plain JSON mode on older Ollama versions).
+function buildJsonSchema(criteria) {
+  const keys = criteria.map((c) => c.key);
+  const text = { type: 'string' };
+  const item = (fields) => ({
+    type: 'object',
+    properties: Object.fromEntries(fields.map((f) => [f, text])),
+    required: fields,
+  });
+  return {
+    type: 'object',
+    properties: {
+      ...Object.fromEntries(criteria.map((c) => [c.key, { type: 'integer', minimum: 1, maximum: c.max_score }])),
+      feedback: text,
+      criterion_feedback: {
+        type: 'object',
+        properties: Object.fromEntries(keys.map((k) => [k, text])),
+        required: keys,
+      },
+      grammar_issues: { type: 'array', maxItems: 3, items: item(['original', 'correction', 'explanation']) },
+      recommendations: { type: 'array', maxItems: 3, items: item(['title', 'issue', 'suggestion']) },
+    },
+    required: [...keys, 'feedback', 'criterion_feedback', 'grammar_issues', 'recommendations'],
+  };
+}
+
 function isDefaultRubric(criteria) {
   return (
     criteria.length === DEFAULT_CRITERIA.length &&
@@ -215,8 +244,17 @@ function parseResultPayload(res) {
         if (depth === 0) { end = i; break; }
       }
     }
-    if (end === -1) throw e;
-    return JSON.parse(text.slice(start, end + 1));
+    if (end !== -1) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        // fall through to salvage
+      }
+    }
+    // Cut off or malformed: keep the complete parts (e.g. the scores).
+    const salvaged = salvageJson(text);
+    if (!salvaged) throw e;
+    return salvaged.partial ? { ...salvaged.value, _partial: true } : salvaged.value;
   }
 }
 
@@ -238,6 +276,7 @@ function EvaluationDisplay({ result, criteria }) {
 
     const avg = averageFraction(parsed, shown);
     const criterionFeedback = parsed.criterion_feedback || {};
+    const partial = !!parsed._partial;
 
     const filteredIssues = Array.isArray(parsed.grammar_issues)
       ? parsed.grammar_issues.filter(
@@ -261,6 +300,11 @@ function EvaluationDisplay({ result, criteria }) {
 
     return (
       <div className="space-y-4">
+        {partial && (
+          <p className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded-lg p-2" role="status">
+            ⚠ This model's answer was cut off. Showing the parts that could be read.
+          </p>
+        )}
         {/* Overall score */}
         <div className="text-center p-3 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg">
           <div className="text-sm text-gray-700">Overall Average</div>
@@ -1180,6 +1224,7 @@ Now output the JSON for the essay above. Nothing else.`
         prompts.user.replace('{essay}', essay),
         slot.model || null,
         true,
+        compact ? buildJsonSchema(rubricCriteria) : null,
       );
       const result = response.result;
       const failed = result?.model === 'error';
@@ -1214,17 +1259,15 @@ Now output the JSON for the essay above. Nothing else.`
     }
     setRunId((n) => n + 1);
     setSystemRef(null);
-    // Cloud models run in parallel. CPU models on the VPS run one at a time:
-    // running them together makes each slower and risks timeouts.
+    // Cloud models (DeepSeek) run first, then the VPS models one at a time,
+    // so only one model is ever running and each gets the server to itself.
     const remote = slots.filter((s) => !LOCAL_PROVIDERS.has(s.provider));
     const local = slots.filter((s) => LOCAL_PROVIDERS.has(s.provider));
     setRuns(Object.fromEntries(slots.map((s) => [s.id, { status: 'queued', provider: s.provider, model: s.model }])));
-    await Promise.allSettled([
-      ...remote.map((slot) => runSlot(slot, essayText)),
-      (async () => {
-        for (const slot of local) await runSlot(slot, essayText);
-      })(),
-    ]);
+    await Promise.allSettled(remote.map((slot) => runSlot(slot, essayText)));
+    for (const slot of local) {
+      await runSlot(slot, essayText);
+    }
     toast.success('All model runs finished');
   };
 
@@ -1640,7 +1683,7 @@ Now output the JSON for the essay above. Nothing else.`
                     <p className="text-gray-500 text-center mt-16">Not run yet.</p>
                   ) : run.status === 'queued' ? (
                     <p className="text-gray-500 text-center mt-16 text-sm px-4">
-                      ⏳ Queued. Models on the VPS run one at a time so each finishes faster.
+                      ⏳ Queued. Models run one at a time so each finishes faster.
                     </p>
                   ) : run.status === 'loading' ? (
                     <LoadingIndicator message={`Running ${rater.name}…`} />

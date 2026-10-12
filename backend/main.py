@@ -149,6 +149,7 @@ class PromptTestRequest(BaseModel):
     user_prompt: str
     model: Optional[str] = None
     json_mode: bool = False   # ask the model for strict JSON output
+    json_schema: Optional[Dict[str, Any]] = None   # exact structure (Ollama 0.5+)
 
 class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
@@ -1227,6 +1228,7 @@ def test_ai_prompt(req: PromptTestRequest):
             user_prompt=req.user_prompt,
             model=req.model,
             json_mode=req.json_mode,
+            json_schema=req.json_schema,
         )
         return PromptTestResponse(result=result)
     except Exception as e:
