@@ -1,229 +1,252 @@
-import React, { useRef } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { Float } from '@react-three/drei';
+import { ContactShadows, Environment, Lightformer, RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
 
-// Robot model with document scanning beam
+// A friendly service robot reading an essay on a tablet: glossy shell, glass
+// visor, jointed arms, hover base. It breathes, blinks, glances down at the
+// essay and turns its head toward the mouse pointer.
+
+const SHELL = { color: '#f4f6fb', roughness: 0.22, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.08 };
+const JOINT = { color: '#2a3140', roughness: 0.35, metalness: 0.7 };
+const VISOR = { color: '#0a0f1c', roughness: 0.04, metalness: 0.3, clearcoat: 1, clearcoatRoughness: 0.02 };
+const GLOW = '#38bdf8';
+
+// A capsule stretched between two points (upper arm, forearm...).
+function Limb({ from, to, radius }) {
+  const { position, quaternion, length } = useMemo(() => {
+    const a = new THREE.Vector3(...from);
+    const b = new THREE.Vector3(...to);
+    const dir = b.clone().sub(a);
+    return {
+      position: a.clone().add(b).multiplyScalar(0.5),
+      quaternion: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize()),
+      length: dir.length(),
+    };
+  }, [from, to]);
+  return (
+    <mesh position={position} quaternion={quaternion} castShadow>
+      <capsuleGeometry args={[radius, Math.max(0.01, length - radius * 2), 8, 16]} />
+      <meshPhysicalMaterial {...SHELL} />
+    </mesh>
+  );
+}
+
+function Joint({ position, radius = 0.1 }) {
+  return (
+    <mesh position={position} castShadow>
+      <sphereGeometry args={[radius, 24, 24]} />
+      <meshStandardMaterial {...JOINT} />
+    </mesh>
+  );
+}
+
+// Arm geometry: shoulder -> elbow -> hand on the tablet's edge.
+const ARMS = [-1, 1].map((side) => ({
+  shoulder: [0.6 * side, -0.02, 0],
+  elbow: [0.66 * side, -0.5, 0.18],
+  hand: [0.4 * side, -0.6, 0.62],
+}));
+
 function Robot() {
-  const groupRef = useRef();
-  const headRef = useRef();
-  const leftArmRef = useRef();
-  const rightArmRef = useRef();
-  const paperRef = useRef();
-  const scanLineRef = useRef();
-  const antennaMatRef = useRef();
-  const leftEyeMatRef = useRef();
-  const rightEyeMatRef = useRef();
+  const body = useRef();
+  const head = useRef();
+  const eyes = useRef();
+  const chest = useRef();
+  const beam = useRef();
+  const ring = useRef();
+  const look = useRef({ x: 0, y: 0 });
 
-
-  useFrame(({ clock }) => {
+  useFrame(({ clock, pointer }) => {
     const t = clock.getElapsedTime();
 
-    // Gentle idle animation
-    if (groupRef.current) {
-      // Bob around the centering offset (see the group's initial position).
-      groupRef.current.position.y = -0.75 + Math.sin(t * 1.5) * 0.03;
-    }
-    if (headRef.current) {
-      headRef.current.rotation.z = Math.sin(t * 2) * 0.1;
-      headRef.current.rotation.x = Math.sin(t * 1.8) * 0.05;
-    }
-    if (leftArmRef.current) {
-      leftArmRef.current.rotation.z = Math.sin(t * 2.5) * 0.2 - 0.3;
-    }
-    if (rightArmRef.current) {
-      rightArmRef.current.rotation.z = Math.sin(t * 2.5 + 2) * 0.15 + 0.2;
+    // Breathing / hovering.
+    if (body.current) {
+      body.current.position.y = Math.sin(t * 1.4) * 0.04;
+      body.current.rotation.y = Math.sin(t * 0.5) * 0.06;
     }
 
-    // Paper floating
-    if (paperRef.current) {
-      paperRef.current.rotation.y += 0.01;
-      paperRef.current.position.y = Math.sin(t * 1.2) * 0.05;
+    // Head: follow the pointer, and glance down at the essay every few seconds.
+    const glance = Math.sin(t * 0.7) > 0.55 ? 0.35 : 0;
+    const targetX = THREE.MathUtils.clamp(-pointer.y * 0.35, -0.3, 0.3) + glance;
+    const targetY = THREE.MathUtils.clamp(pointer.x * 0.6, -0.55, 0.55);
+    look.current.x = THREE.MathUtils.lerp(look.current.x, targetX, 0.06);
+    look.current.y = THREE.MathUtils.lerp(look.current.y, targetY, 0.06);
+    if (head.current) {
+      head.current.rotation.x = look.current.x;
+      head.current.rotation.y = look.current.y;
+      head.current.rotation.z = Math.sin(t * 0.9) * 0.03;
     }
 
-    // SCANNING BEAM: moves up and down the paper continuously
-    const speed = 1.2;
-    const newScanPos = Math.sin(t * speed) * 0.55; // range -0.55 to 0.55
-    if (scanLineRef.current) {
-      scanLineRef.current.position.y = newScanPos;
-      // Pulse intensity based on speed
-      const intensity = 0.6 + Math.sin(t * 8) * 0.4;
-      if (scanLineRef.current.material) {
-        scanLineRef.current.material.emissiveIntensity = intensity;
-      }
+    // Blink: a quick squash of the eyes every ~3.8 s.
+    if (eyes.current) {
+      const phase = t % 3.8;
+      eyes.current.scale.y = phase < 0.12 ? Math.max(0.08, Math.abs(phase - 0.06) / 0.06) : 1;
     }
 
-    // Pulsing antenna and eyes during scan (makes it feel alive)
-    const pulse = 0.4 + Math.sin(t * 6) * 0.3;
-    if (antennaMatRef.current) {
-      antennaMatRef.current.emissiveIntensity = pulse;
-    }
-    if (leftEyeMatRef.current && rightEyeMatRef.current) {
-      const eyeIntensity = 0.7 + Math.sin(t * 5) * 0.4;
-      leftEyeMatRef.current.emissiveIntensity = eyeIntensity;
-      rightEyeMatRef.current.emissiveIntensity = eyeIntensity;
-    }
+    // Chest light breathes; the scan beam sweeps the page.
+    if (chest.current) chest.current.emissiveIntensity = 1.4 + Math.sin(t * 2.2) * 0.6;
+    if (beam.current) beam.current.position.y = Math.sin(t * 1.3) * 0.2;
+    if (ring.current) ring.current.material.opacity = 0.45 + Math.sin(t * 1.4) * 0.15;
   });
 
   return (
-    <group ref={groupRef} position={[0, -0.75, 0]}>
-      {/* Body */}
-      <mesh position={[0, 0.2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[1.2, 1.4, 0.8]} />
-        <meshStandardMaterial color="#4a90e2" roughness={0.4} metalness={0.3} />
-      </mesh>
+    <group position={[0, 0.08, 0]}>
+      <group ref={body}>
+        {/* Hover base */}
+        <mesh position={[0, -1.1, 0]} castShadow>
+          <cylinderGeometry args={[0.36, 0.24, 0.38, 48]} />
+          <meshPhysicalMaterial {...SHELL} />
+        </mesh>
+        <mesh position={[0, -1.31, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.22, 0.025, 16, 64]} />
+          <meshStandardMaterial color={GLOW} emissive={GLOW} emissiveIntensity={2} toneMapped={false} />
+        </mesh>
 
-      {/* Head */}
-      <group ref={headRef} position={[0, 1.1, 0]}>
-        <mesh castShadow receiveShadow>
-          <boxGeometry args={[0.9, 0.8, 0.7]} />
-          <meshStandardMaterial color="#6b9cf0" roughness={0.3} metalness={0.2} />
+        {/* Torso */}
+        <RoundedBox args={[1.05, 1.0, 0.68]} radius={0.24} smoothness={6} position={[0, -0.42, 0]} castShadow>
+          <meshPhysicalMaterial {...SHELL} />
+        </RoundedBox>
+        <mesh position={[0, -0.84, 0]}>
+          <cylinderGeometry args={[0.4, 0.38, 0.12, 48]} />
+          <meshStandardMaterial {...JOINT} />
         </mesh>
-        {/* Eyes (with pulsing emissive) */}
-        <mesh position={[-0.25, 0.15, 0.36]} castShadow>
-          <sphereGeometry args={[0.12, 16, 16]} />
-          <meshStandardMaterial
-            ref={leftEyeMatRef}
-            color="#ffffff"
-            emissive="#aaccff"
-            emissiveIntensity={0.8}
-          />
+        {/* Chest light */}
+        <mesh position={[0, -0.22, 0.345]}>
+          <circleGeometry args={[0.075, 32]} />
+          <meshStandardMaterial ref={chest} color={GLOW} emissive={GLOW} emissiveIntensity={1.6} toneMapped={false} />
         </mesh>
-        <mesh position={[0.25, 0.15, 0.36]} castShadow>
-          <sphereGeometry args={[0.12, 16, 16]} />
-          <meshStandardMaterial
-            ref={rightEyeMatRef}
-            color="#ffffff"
-            emissive="#aaccff"
-            emissiveIntensity={0.8}
-          />
+        <mesh position={[0, -0.22, 0.34]}>
+          <torusGeometry args={[0.1, 0.014, 12, 48]} />
+          <meshStandardMaterial {...JOINT} />
         </mesh>
-        {/* Pupils */}
-        <mesh position={[-0.25, 0.1, 0.45]} castShadow>
-          <sphereGeometry args={[0.05, 8, 8]} />
-          <meshStandardMaterial color="#1a1a2e" />
-        </mesh>
-        <mesh position={[0.25, 0.1, 0.45]} castShadow>
-          <sphereGeometry args={[0.05, 8, 8]} />
-          <meshStandardMaterial color="#1a1a2e" />
-        </mesh>
-        {/* Antenna with pulsing material */}
-        <mesh position={[0, 0.55, 0]} castShadow>
-          <cylinderGeometry args={[0.05, 0.05, 0.4]} />
-          <meshStandardMaterial color="#ffaa00" emissive="#ff8800" emissiveIntensity={0.5} />
-        </mesh>
-        <mesh position={[0, 0.8, 0]} castShadow>
-          <sphereGeometry args={[0.1, 8, 8]} />
-          <meshStandardMaterial
-            ref={antennaMatRef}
-            color="#ff5500"
-            emissive="#ff3300"
-            emissiveIntensity={0.8}
-          />
-        </mesh>
-      </group>
 
-      {/* Left Arm */}
-      <group ref={leftArmRef} position={[-0.8, 0.5, 0]}>
-        <mesh castShadow receiveShadow>
-          <boxGeometry args={[0.3, 0.9, 0.3]} />
-          <meshStandardMaterial color="#3a7bd5" roughness={0.5} />
+        {/* Neck */}
+        <mesh position={[0, 0.16, 0]}>
+          <cylinderGeometry args={[0.12, 0.15, 0.2, 32]} />
+          <meshStandardMaterial {...JOINT} />
         </mesh>
-        <mesh position={[-0.15, -0.5, 0]} castShadow>
-          <sphereGeometry args={[0.18, 8, 8]} />
-          <meshStandardMaterial color="#4a90e2" />
-        </mesh>
-      </group>
 
-      {/* Right Arm */}
-      <group ref={rightArmRef} position={[0.8, 0.5, 0]}>
-        <mesh castShadow receiveShadow>
-          <boxGeometry args={[0.3, 0.9, 0.3]} />
-          <meshStandardMaterial color="#3a7bd5" roughness={0.5} />
-        </mesh>
-        <mesh position={[0.15, -0.5, 0]} castShadow>
-          <sphereGeometry args={[0.18, 8, 8]} />
-          <meshStandardMaterial color="#4a90e2" />
-        </mesh>
-      </group>
-
-      {/* Main Document with Scanning Beam */}
-      <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
-        <group ref={paperRef} position={[0.8, 0.3, 0.8]} rotation={[0.2, 0.5, 0.1]}>
-          {/* Paper */}
-          <mesh castShadow receiveShadow>
-            <boxGeometry args={[0.8, 1.0, 0.02]} />
-            <meshStandardMaterial color="#ffffff" roughness={0.7} emissive="#e2e8f0" emissiveIntensity={0.2} />
+        {/* Head */}
+        <group ref={head} position={[0, 0.58, 0]}>
+          <RoundedBox args={[0.96, 0.72, 0.74]} radius={0.3} smoothness={8} castShadow>
+            <meshPhysicalMaterial {...SHELL} />
+          </RoundedBox>
+          {/* Glass visor */}
+          <RoundedBox args={[0.78, 0.44, 0.1]} radius={0.16} smoothness={8} position={[0, 0.0, 0.33]}>
+            <meshPhysicalMaterial {...VISOR} />
+          </RoundedBox>
+          {/* Eyes and smile, glowing behind the glass */}
+          <group ref={eyes} position={[0, 0.05, 0.39]}>
+            {[-0.17, 0.17].map((x) => (
+              <RoundedBox key={x} args={[0.15, 0.11, 0.02]} radius={0.05} smoothness={4} position={[x, 0, 0]}>
+                <meshStandardMaterial color={GLOW} emissive={GLOW} emissiveIntensity={2.4} toneMapped={false} />
+              </RoundedBox>
+            ))}
+          </group>
+          <mesh position={[0, -0.09, 0.39]} rotation={[0, 0, Math.PI]}>
+            <torusGeometry args={[0.07, 0.012, 8, 32, Math.PI]} />
+            <meshStandardMaterial color={GLOW} emissive={GLOW} emissiveIntensity={1.8} toneMapped={false} />
           </mesh>
-          {/* Text lines on paper */}
-          <mesh position={[0, 0.2, 0.02]} rotation={[0, 0, 0]}>
-            <boxGeometry args={[0.6, 0.03, 0.01]} />
-            <meshStandardMaterial color="#a0aec0" />
+          {/* Ears */}
+          {[-1, 1].map((side) => (
+            <group key={side} position={[0.49 * side, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+              <mesh>
+                <cylinderGeometry args={[0.12, 0.12, 0.07, 32]} />
+                <meshStandardMaterial {...JOINT} />
+              </mesh>
+              <mesh position={[0, 0.04 * side, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                <torusGeometry args={[0.075, 0.012, 12, 32]} />
+                <meshStandardMaterial color={GLOW} emissive={GLOW} emissiveIntensity={1.5} toneMapped={false} />
+              </mesh>
+            </group>
+          ))}
+          {/* Antenna */}
+          <mesh position={[0.22, 0.43, 0]}>
+            <cylinderGeometry args={[0.012, 0.012, 0.16, 12]} />
+            <meshStandardMaterial {...JOINT} />
           </mesh>
-          <mesh position={[0, 0.05, 0.02]} rotation={[0, 0, 0]}>
-            <boxGeometry args={[0.5, 0.03, 0.01]} />
-            <meshStandardMaterial color="#a0aec0" />
-          </mesh>
-          <mesh position={[0, -0.1, 0.02]} rotation={[0, 0, 0]}>
-            <boxGeometry args={[0.55, 0.03, 0.01]} />
-            <meshStandardMaterial color="#a0aec0" />
-          </mesh>
-          <mesh position={[0, -0.25, 0.02]} rotation={[0, 0, 0]}>
-            <boxGeometry args={[0.4, 0.03, 0.01]} />
-            <meshStandardMaterial color="#a0aec0" />
-          </mesh>
-          {/* Red check mark */}
-          <mesh position={[0.2, -0.35, 0.03]} rotation={[0, 0, 0.3]}>
-            <boxGeometry args={[0.1, 0.03, 0.01]} />
-            <meshStandardMaterial color="#ef4444" />
-          </mesh>
-          <mesh position={[0.15, -0.4, 0.03]} rotation={[0, 0, -0.4]}>
-            <boxGeometry args={[0.1, 0.03, 0.01]} />
-            <meshStandardMaterial color="#ef4444" />
-          </mesh>
-
-          {/* SCANNING BEAM – a glowing line that moves vertically over the document */}
-          <mesh ref={scanLineRef} position={[0, -0.5, 0.03]} scale={[0.75, 0.03, 0.01]}>
-            <boxGeometry args={[1, 1, 1]} />
-            <meshStandardMaterial color="#00ffff" emissive="#00ffff" emissiveIntensity={0.8} transparent opacity={0.9} />
-          </mesh>
-
-          {/* Glowing border around paper to emphasize scanning */}
-          <mesh position={[0, 0, 0.04]} scale={[0.85, 1.05, 1]}>
-            <boxGeometry args={[1, 1, 0.002]} />
-            <meshStandardMaterial color="#00aaff" emissive="#0088ff" emissiveIntensity={0.3} transparent opacity={0.4} wireframe />
+          <mesh position={[0.22, 0.53, 0]}>
+            <sphereGeometry args={[0.035, 16, 16]} />
+            <meshStandardMaterial color="#f97316" emissive="#f97316" emissiveIntensity={2} toneMapped={false} />
           </mesh>
         </group>
-      </Float>
 
-      {/* Second smaller paper */}
-      <Float speed={1.5} rotationIntensity={0.3} floatIntensity={0.4}>
-        <mesh position={[-0.6, 0.5, 0.6]} rotation={[0.1, -0.3, 0.2]}>
-          <boxGeometry args={[0.5, 0.7, 0.02]} />
-          <meshStandardMaterial color="#fef9c3" roughness={0.8} />
-        </mesh>
-      </Float>
+        {/* Arms */}
+        {ARMS.map(({ shoulder, elbow, hand }) => (
+          <group key={shoulder[0]}>
+            <Joint position={shoulder} radius={0.15} />
+            <Limb from={shoulder} to={elbow} radius={0.09} />
+            <Joint position={elbow} radius={0.09} />
+            <Limb from={elbow} to={hand} radius={0.08} />
+            <Joint position={hand} radius={0.085} />
+          </group>
+        ))}
+
+        {/* Tablet with the essay being scanned */}
+        <group position={[0, -0.58, 0.7]} rotation={[-0.35, 0, 0]}>
+          <RoundedBox args={[0.82, 0.6, 0.04]} radius={0.04} smoothness={4} castShadow>
+            <meshStandardMaterial {...JOINT} />
+          </RoundedBox>
+          <mesh position={[0, 0, 0.022]}>
+            <planeGeometry args={[0.72, 0.5]} />
+            <meshStandardMaterial color="#f8fafc" roughness={0.6} />
+          </mesh>
+          {[0.17, 0.09, 0.01, -0.07, -0.15].map((y, i) => (
+            <mesh key={y} position={[i === 4 ? -0.1 : 0, y, 0.024]}>
+              <planeGeometry args={[i === 4 ? 0.4 : 0.6, 0.025]} />
+              <meshStandardMaterial color="#94a3b8" />
+            </mesh>
+          ))}
+          <mesh position={[0.22, -0.16, 0.025]}>
+            <planeGeometry args={[0.1, 0.06]} />
+            <meshStandardMaterial color="#22c55e" emissive="#22c55e" emissiveIntensity={0.6} />
+          </mesh>
+          <mesh ref={beam} position={[0, 0, 0.03]}>
+            <planeGeometry args={[0.74, 0.02]} />
+            <meshStandardMaterial color={GLOW} emissive={GLOW} emissiveIntensity={3} transparent opacity={0.85} toneMapped={false} />
+          </mesh>
+        </group>
+      </group>
+
+      {/* Hover glow on the floor */}
+      <mesh ref={ring} position={[0, -1.47, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.18, 0.42, 48]} />
+        <meshBasicMaterial color={GLOW} transparent opacity={0.5} toneMapped={false} />
+      </mesh>
+      <ContactShadows position={[0, -1.48, 0]} opacity={0.45} scale={3.5} blur={2.6} far={2.2} />
     </group>
   );
 }
 
-// The robot spans roughly x −1.2…1.3 and y −1.25…1.25 (after the group's
-// −0.75 offset), plus a little float/bob animation. The camera sits far
-// enough back that the whole model and its papers stay inside the frame
-// at any canvas size.
+// Studio lighting baked into an environment map (no downloads), so the
+// glossy shell and visor get soft, realistic reflections.
+function Studio() {
+  return (
+    <Environment resolution={256}>
+      <Lightformer form="rect" intensity={3} position={[0, 4, 3]} scale={[6, 2, 1]} />
+      <Lightformer form="rect" intensity={1.5} position={[-4, 1, 2]} rotation-y={Math.PI / 2} scale={[4, 3, 1]} />
+      <Lightformer form="rect" intensity={1.2} color="#bae6fd" position={[4, 1, -2]} rotation-y={-Math.PI / 2} scale={[4, 3, 1]} />
+      <Lightformer form="circle" intensity={2} position={[0, 0, -5]} scale={3} />
+    </Environment>
+  );
+}
+
+// The robot spans about x -1.0…1.0 and y -1.5…1.2; the camera frames it at
+// any canvas size.
 export default function RobotAssistant() {
   return (
     <div className="w-full h-full min-w-[8rem] min-h-[8rem] relative">
       <Canvas
-        camera={{ position: [0, 0.2, 5.2], fov: 45 }}
-        onCreated={({ camera }) => camera.lookAt(0, 0, 0)}
+        camera={{ position: [0, 0.05, 4.3], fov: 42 }}
+        dpr={[1, 1.75]}
         style={{ background: 'transparent', width: '100%', height: '100%' }}
-        gl={{ alpha: true, antialias: true }}
+        gl={{ alpha: true, antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
       >
-        <ambientLight intensity={0.6} />
-        <directionalLight position={[2, 3, 2]} intensity={1} castShadow />
-        <directionalLight position={[-1, 1, 3]} intensity={0.5} />
-        <pointLight position={[0, 2, 2]} intensity={0.8} color="#aaccff" />
+        <ambientLight intensity={0.25} />
+        <directionalLight position={[3, 4, 4]} intensity={1.6} />
+        <directionalLight position={[-3, 2, -2]} intensity={0.6} color="#bae6fd" />
+        <Studio />
         <Robot />
       </Canvas>
     </div>
