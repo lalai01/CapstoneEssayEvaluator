@@ -1,7 +1,7 @@
 import os
 import re
 import tempfile
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -1116,7 +1116,10 @@ def _log_handwriting_sample(contents, suffix, content_type, reader_text, engine)
 
 
 @app.post("/ocr")
-async def ocr_from_file(file: UploadFile = File(...)):
+async def ocr_from_file(file: UploadFile = File(...), reader: str = Form("auto")):
+    # reader="local": read with Tesseract/TrOCR on this server only; the image
+    # is never sent to Gemini (Google). "auto": Gemini for handwriting.
+    local_only = reader == "local"
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.docx']:
         raise HTTPException(400, "Unsupported file type")
@@ -1126,7 +1129,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
     # ---------- PDF: hand off to background job ----------
     if suffix == '.pdf':
         from ocr_jobs import start_pdf_ocr_job
-        job_id = start_pdf_ocr_job(contents)
+        job_id = start_pdf_ocr_job(contents, local_only=local_only)
         return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
 
     # ---------- DOCX: read directly, no OCR ----------
@@ -1165,7 +1168,7 @@ async def ocr_from_file(file: UploadFile = File(...)):
     try:
         # 1-2. Check it's a page of writing, then read it with whichever
         # reader (printed or handwriting) produces more real English.
-        result = ocr_utils.read_essay_image(contents)
+        result = ocr_utils.read_essay_image(contents, local_only=local_only)
         if not result["is_text"]:
             _not_essay(result["reason"])
         text, confidence, engine = result["text"], result["confidence"], result["engine"]
@@ -1236,6 +1239,33 @@ def list_pending_ocr(
     except Exception as e:
         print(f"Failed to fetch pending OCR samples: {e}")
         raise HTTPException(500, str(e))
+
+@app.get("/ocr/accuracy")
+def ocr_accuracy(user: dict = Depends(get_current_user)):
+    """Each reader's measured accuracy on the OCR Labeler's verified pages."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    from ocr_accuracy import summarise
+    rows, start = [], 0
+    while True:  # PostgREST returns at most 1000 rows per request
+        batch = (
+            _db().table("ocr_training_data")
+            .select("engine, raw_ocr_text, corrected_text")
+            .eq("accepted", True)
+            .not_.is_("corrected_text", "null")
+            .order("id")
+            .range(start, start + 999)
+            .execute()
+        ).data or []
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+        start += 1000
+    pending = (
+        _db().table("ocr_training_data").select("id", count="exact")
+        .eq("accepted", False).neq("engine", "tesseract").limit(1).execute()
+    )
+    return {**summarise(rows), "pending_pages": pending.count or 0}
 
 @app.post("/ocr/correct")
 def submit_ocr_correction(correction: OCRCorrection,
