@@ -56,7 +56,7 @@ export default function ReaderAccuracy({ stats }) {
           </table>
           <p className="mt-3 text-xs text-gray-500">
             Measured on the reader&apos;s own text before any AI correction, against the transcription an admin
-            verified. Lower error is better. Uploads made with the 🔒 Local reader measure TrOCR; the default measures Gemini.
+            verified. Lower error is better. TrOCR only reads pages when Gemini is unavailable (out of quota or offline).
           </p>
         </div>
       )}

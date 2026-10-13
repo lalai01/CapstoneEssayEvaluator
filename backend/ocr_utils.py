@@ -122,7 +122,7 @@ PRINTED_MIN_WORDS = 20
 HANDWRITING_PREFERENCE = 0.05
 
 
-def read_essay_image(image_bytes, check_page=True, local_only=False):
+def read_essay_image(image_bytes, check_page=True):
     """
     Read an English essay from an image (handwritten or printed).
 
@@ -131,7 +131,6 @@ def read_essay_image(image_bytes, check_page=True, local_only=False):
        page is printed and the handwriting model is skipped.
     3. Otherwise read it with Gemini vision when GEMINI_API_KEY is set: it
        reads whole handwritten pages far better than the local model.
-       local_only=True skips this, so the image never leaves the server.
     4. Without Gemini (no key, offline, out of quota), run the handwriting
        model (TrOCR) and keep whichever result has more real English words.
     5. Reject results that don't read as English.
@@ -168,7 +167,7 @@ def read_essay_image(image_bytes, check_page=True, local_only=False):
         print(f"[OCR] tesseract failed: {e}")
 
     import gemini_ocr
-    if gemini_ocr.enabled() and not local_only:
+    if gemini_ocr.enabled():
         try:
             is_text, text, lines, model = gemini_ocr.read_page(image_bytes)
             print(f"[OCR] gemini ({model}): {len(text.split())} words, is_text={is_text}")
@@ -212,10 +211,10 @@ def read_essay_image(image_bytes, check_page=True, local_only=False):
             "quality": best["q"]["ratio"], "is_text": True, "reason": ""}
 
 
-def extract_text_from_image_bytes(image_bytes, local_only=False):
+def extract_text_from_image_bytes(image_bytes):
     """(text, confidence, engine) for one page; empty text if it isn't an essay page."""
     try:
-        r = read_essay_image(image_bytes, local_only=local_only)
+        r = read_essay_image(image_bytes)
         return r["text"], r["confidence"], r["engine"]
     except Exception as e:
         print(f"extract_text_from_image_bytes failed: {e}")
