@@ -75,9 +75,12 @@ export const removeTeacher = async (email) => {
 };
 
 // ---------- OCR ----------
-export const uploadFile = async (file) => {
+// reader: 'auto' (Gemini reads handwriting) | 'local' (Tesseract/TrOCR on our
+// server only; the image isn't sent to Google).
+export const uploadFile = async (file, reader = 'auto') => {
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('reader', reader);
   const response = await apiClient.post('/ocr', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 300000,   // 5 minutes — handwriting OCR is slow on CPU
@@ -302,6 +305,11 @@ export const getMyResponses = async (surveyId) => {
 // ---------- OCR Labeling ----------
 export const listPendingOcr = async (limit = 50) => {
   const response = await apiClient.get(`/ocr/pending?limit=${limit}`);
+  return response.data;
+};
+
+export const getOcrAccuracy = async () => {
+  const response = await apiClient.get('/ocr/accuracy');
   return response.data;
 };
 

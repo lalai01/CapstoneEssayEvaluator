@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { discardOcrSample, listPendingOcr, submitOcrCorrection } from '../api';
+import { discardOcrSample, getOcrAccuracy, listPendingOcr, submitOcrCorrection } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
 import ConfirmDialog from './ConfirmDialog';
 import LoadingIndicator from './LoadingIndicator';
+import ReaderAccuracy from './ReaderAccuracy';
 
 export default function OcrLabeler() {
   const { isAdmin } = useAuth();
@@ -15,11 +16,19 @@ export default function OcrLabeler() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [stats, setStats] = useState(null);
   const textareaRef = useRef(null);
 
   useEffect(() => {
-    if (isAdmin) loadQueue();
+    if (isAdmin) {
+      loadQueue();
+      loadStats();
+    }
   }, [isAdmin]);
+
+  const loadStats = () => {
+    getOcrAccuracy().then(setStats).catch(() => setStats(null));
+  };
 
   const loadQueue = async () => {
     setLoading(true);
@@ -63,6 +72,7 @@ export default function OcrLabeler() {
 
   // Remove a sample from the local queue and stay on the next one.
   const dropFromQueue = (id) => {
+    loadStats();
     const newQueue = queue.filter((q) => q.id !== id);
     setQueue(newQueue);
     if (index >= newQueue.length) {
@@ -122,6 +132,8 @@ export default function OcrLabeler() {
   
   if (queue.length === 0) {
     return (
+      <div className="space-y-6">
+      <ReaderAccuracy stats={stats} />
       <div className="glass-card rounded-2xl shadow-xl p-12 text-center bg-white/90 backdrop-blur-md">
         <div className="text-6xl mb-4">✅</div>
         <h2 className="text-2xl font-bold text-gray-800 mb-2">
@@ -138,6 +150,7 @@ export default function OcrLabeler() {
           Reload Queue
         </button>
       </div>
+      </div>
     );
   }
 
@@ -145,6 +158,8 @@ export default function OcrLabeler() {
   const lineCount = correction.split(/\r?\n/).filter((l) => l.trim()).length;
 
   return (
+    <div className="space-y-6">
+    <ReaderAccuracy stats={stats} />
     <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/90 backdrop-blur-md">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold text-indigo-700">
@@ -248,6 +263,7 @@ export default function OcrLabeler() {
       >
         <p>It will be removed from the queue and won't be used for training. This can't be undone.</p>
       </ConfirmDialog>
+    </div>
     </div>
   );
 }
