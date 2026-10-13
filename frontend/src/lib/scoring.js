@@ -146,6 +146,8 @@ export function entryApprovedBy(entry) {
 export function errorMessage(err) {
   const detail = err?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
+  // Structured errors, e.g. { code: 'guest_limit', message }
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') return detail.message;
   if (Array.isArray(detail)) {
     // FastAPI 422 validation errors
     return detail.map((d) => `${(d.loc || []).slice(1).join('.')}: ${d.msg}`).join('; ');

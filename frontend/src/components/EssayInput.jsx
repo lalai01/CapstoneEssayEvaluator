@@ -125,8 +125,8 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
             <p className="text-amber-800 text-sm flex items-center gap-2">
               <span>🔒</span>
               <span>
-                <strong>Log in with Google or Yahoo</strong> to save evaluations to your Knowledge Base 
-                and enable teacher override features.
+                You can evaluate essays as a guest. <strong>Sign in with Google or Yahoo</strong> to save
+                evaluations, use your teacher&apos;s rubric and keep evaluating without the hourly guest limit.
               </span>
             </p>
           </div>

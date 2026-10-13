@@ -605,10 +605,19 @@ export default function Results({
             </button>
           </div>
         ) : (
-          <div className="mt-5 p-4 bg-amber-50 border border-amber-200 rounded-xl text-center">
-            <p className="text-amber-800 text-sm">
-              🔒 <strong>Log in with Google or Yahoo</strong> to save this evaluation or provide teacher feedback.
-            </p>
+          <div className="mt-5 space-y-3">
+            <button
+              onClick={() => setShowReport(true)}
+              className="w-full bg-gradient-to-r from-sky-500 to-cyan-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+            >
+              📄 Generate Evaluation Report
+            </button>
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-center">
+              <p className="text-amber-800 text-sm">
+                🔒 <strong>Sign in with Google or Yahoo</strong> to save this evaluation. As a guest it isn&apos;t
+                kept, so download the report if you need a copy.
+              </p>
+            </div>
           </div>
         )}
       </div>

@@ -1,6 +1,8 @@
 import os
 import re
 import tempfile
+import threading
+import time
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -1116,7 +1118,10 @@ def _log_handwriting_sample(contents, suffix, content_type, reader_text, engine)
 
 
 @app.post("/ocr")
-async def ocr_from_file(file: UploadFile = File(...)):
+async def ocr_from_file(request: Request, file: UploadFile = File(...),
+                        user: Optional[dict] = Depends(get_optional_user)):
+    if user is None:
+        _check_guest_quota(request, "ocr")
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.docx']:
         raise HTTPException(400, "Unsupported file type")
@@ -1320,8 +1325,50 @@ def get_ocr_status(job_id: str):
             content={"status": "error", "error": str(e)}
         )
 
-def _run_evaluate(req: EvaluationRequest, user: dict, use_rag: bool):
-    criteria, rubric_info = resolve_rubric(user["id"], req.rubric_id)
+# ---------- Guest access ----------
+# Visitors who aren't signed in can evaluate essays and read files (they just
+# can't save anything). Both call paid / quota-limited AI services, so guests
+# get a per-hour allowance per IP; signed-in users aren't limited. Counts are
+# kept in memory (one backend process) and reset when it restarts.
+GUEST_LIMITS = {
+    "evaluate": int(os.environ.get("GUEST_EVALS_PER_HOUR", "5")),
+    "ocr": int(os.environ.get("GUEST_UPLOADS_PER_HOUR", "10")),
+}
+_guest_hits: Dict[str, List[float]] = {}
+_guest_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    # Behind a reverse proxy the real client is the last X-Forwarded-For entry
+    # (the one the proxy added); earlier entries can be set by the client.
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_guest_quota(request: Request, kind: str):
+    limit = GUEST_LIMITS[kind]
+    action = "evaluate essays" if kind == "evaluate" else "upload files"
+    if limit <= 0:
+        raise HTTPException(401, {"code": "sign_in_required",
+                                  "message": f"Please sign in to {action}."})
+    key, now = f"{kind}:{_client_ip(request)}", time.time()
+    with _guest_lock:
+        recent = [t for t in _guest_hits.get(key, []) if now - t < 3600]
+        if len(recent) >= limit:
+            wait = int((3600 - (now - recent[0])) // 60) + 1
+            raise HTTPException(429, {"code": "guest_limit", "message": (
+                f"Guests can {action} {limit} times an hour. Sign in (it's free) to keep "
+                f"going, or try again in about {wait} min.")})
+        recent.append(now)
+        _guest_hits[key] = recent
+
+
+def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
+    # Guests get the school-wide rubric (they have no rubrics of their own).
+    criteria, rubric_info = resolve_rubric(user["id"] if user else None,
+                                           req.rubric_id if user else None)
     result = run_evaluation(req.text, req.evaluation_type, use_rag=use_rag, rubric=criteria,
                             ai_model=req.ai_model)
     if result.get("error"):
@@ -1337,7 +1384,10 @@ def _run_evaluate(req: EvaluationRequest, user: dict, use_rag: bool):
 
 
 @app.post("/evaluate", response_model=EvaluationResponse)
-def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user)):
+def evaluate_essay(req: EvaluationRequest, request: Request,
+                   user: Optional[dict] = Depends(get_optional_user)):
+    if user is None:
+        _check_guest_quota(request, "evaluate")
     try:
         return _run_evaluate(req, user, use_rag=False)
     except Exception as e:
@@ -1346,7 +1396,10 @@ def evaluate_essay(req: EvaluationRequest, user: dict = Depends(get_current_user
 
 
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
-def evaluate_essay_with_rag(req: EvaluationRequest, user: dict = Depends(get_current_user)):
+def evaluate_essay_with_rag(req: EvaluationRequest, request: Request,
+                            user: Optional[dict] = Depends(get_optional_user)):
+    if user is None:
+        _check_guest_quota(request, "evaluate")
     try:
         return _run_evaluate(req, user, use_rag=True)
     except Exception as e:
