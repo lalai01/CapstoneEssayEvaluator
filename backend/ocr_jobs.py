@@ -17,7 +17,7 @@ PDF_OCR_WORKERS = int(os.environ.get("PDF_OCR_WORKERS", min(4, os.cpu_count() or
 jobs = {}
 
 
-def start_pdf_ocr_job(pdf_bytes, local_only=False):
+def start_pdf_ocr_job(pdf_bytes):
     job_id = str(uuid.uuid4())
     jobs[job_id] = {
         "status": "processing",
@@ -46,7 +46,7 @@ def start_pdf_ocr_job(pdf_bytes, local_only=False):
 
                 def ocr_page(i):
                     nonlocal done
-                    text, conf, engine = extract_text_from_image_bytes(pages[i][1], local_only)
+                    text, conf, engine = extract_text_from_image_bytes(pages[i][1])
                     with lock:
                         done += 1
                         jobs[job_id]["current_engine"] = f"OCR {done}/{total} pages"

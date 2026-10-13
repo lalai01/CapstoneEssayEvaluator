@@ -1,7 +1,7 @@
 import os
 import re
 import tempfile
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -1116,10 +1116,7 @@ def _log_handwriting_sample(contents, suffix, content_type, reader_text, engine)
 
 
 @app.post("/ocr")
-async def ocr_from_file(file: UploadFile = File(...), reader: str = Form("auto")):
-    # reader="local": read with Tesseract/TrOCR on this server only; the image
-    # is never sent to Gemini (Google). "auto": Gemini for handwriting.
-    local_only = reader == "local"
+async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.docx']:
         raise HTTPException(400, "Unsupported file type")
@@ -1129,7 +1126,7 @@ async def ocr_from_file(file: UploadFile = File(...), reader: str = Form("auto")
     # ---------- PDF: hand off to background job ----------
     if suffix == '.pdf':
         from ocr_jobs import start_pdf_ocr_job
-        job_id = start_pdf_ocr_job(contents, local_only=local_only)
+        job_id = start_pdf_ocr_job(contents)
         return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
 
     # ---------- DOCX: read directly, no OCR ----------
@@ -1168,7 +1165,7 @@ async def ocr_from_file(file: UploadFile = File(...), reader: str = Form("auto")
     try:
         # 1-2. Check it's a page of writing, then read it with whichever
         # reader (printed or handwriting) produces more real English.
-        result = ocr_utils.read_essay_image(contents, local_only=local_only)
+        result = ocr_utils.read_essay_image(contents)
         if not result["is_text"]:
             _not_essay(result["reason"])
         text, confidence, engine = result["text"], result["confidence"], result["engine"]

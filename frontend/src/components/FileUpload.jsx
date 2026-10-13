@@ -27,7 +27,6 @@ export default function FileUpload({ onExtracted }) {
   const [progress, setProgress] = useState('');
   const [notEssay, setNotEssay] = useState(null); // { message, reason }
   const [dragging, setDragging] = useState(false);
-  const [reader, setReader] = useState('auto'); // 'auto' | 'local'
 
   // A file dropped anywhere else on the page would make the browser open or
   // download it instead of attaching it; ignore those drops.
@@ -59,14 +58,12 @@ export default function FileUpload({ onExtracted }) {
   const processFile = async (file) => {
     setFileName(file.name);
     setUploading(true);
-    setProgress(reader === 'local'
-      ? 'Reading on our server… handwriting can take 1–3 minutes'
-      : 'Uploading file...');
+    setProgress('Uploading file...');
 
     try {
       let result;
       try {
-        result = await uploadFile(file, reader);
+        result = await uploadFile(file);
       } catch (err) {
         throw notEssayFrom(err) || err;
       }
@@ -141,38 +138,6 @@ export default function FileUpload({ onExtracted }) {
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
       onDrop={handleDrop}
     >
-      <fieldset className="mb-4" disabled={uploading}>
-        <legend className="text-xs font-semibold text-gray-700 mb-2">Handwriting reader</legend>
-        <div className="inline-flex rounded-xl border border-blue-200 bg-white p-1 text-sm">
-          {[
-            { id: 'auto', label: '✨ Gemini', hint: 'Best accuracy, a few seconds (cloud)' },
-            { id: 'local', label: '🔒 Local', hint: 'Private: stays on our server, slower, less accurate' },
-          ].map((opt) => (
-            <label
-              key={opt.id}
-              title={opt.hint}
-              className={`cursor-pointer rounded-lg px-3 py-1.5 font-medium transition ${
-                reader === opt.id ? 'bg-blue-600 text-white shadow' : 'text-gray-700 hover:bg-blue-50'
-              }`}
-            >
-              <input
-                type="radio"
-                name="ocr-reader"
-                value={opt.id}
-                checked={reader === opt.id}
-                onChange={() => setReader(opt.id)}
-                className="sr-only"
-              />
-              {opt.label}
-            </label>
-          ))}
-        </div>
-        <p className="text-xs text-gray-600 mt-1">
-          {reader === 'local'
-            ? 'Read by Tesseract and TrOCR on our own server; the image isn’t sent to Google. Slower and less accurate on messy handwriting.'
-            : 'Handwriting is read by Google Gemini (most accurate). Printed pages are always read on our server.'}
-        </p>
-      </fieldset>
       <input
         type="file"
         accept=".png,.jpg,.jpeg,.bmp,.tiff,.pdf,.docx"
