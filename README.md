@@ -174,6 +174,8 @@ npm run dev                       # http://localhost:5173
 | `LLAMACPP_URL` | no | Default `http://llamacpp:8080/v1` |
 | `LLAMACPP_MODEL` | no | Default `Phi-3.5-mini-instruct-Q4_K_M.gguf` |
 | `ADMIN_EMAILS` | no | Optional extra admin emails, comma-separated. Prefer the `admin_users` table so emails stay out of config files. |
+| `GUEST_EVALS_PER_HOUR` | no | Evaluations a signed-out visitor may run per hour (per IP). Default `5`; `0` requires sign-in |
+| `GUEST_UPLOADS_PER_HOUR` | no | File uploads (OCR) a signed-out visitor may run per hour. Default `10`; `0` requires sign-in |
 | `PDF_OCR_WORKERS` | no | Scanned PDF pages OCR'd at once. Default `min(4, CPU cores)` |
 | `GEMINI_API_KEY` | no | Google AI Studio key (https://aistudio.google.com/apikey). When set, Gemini vision reads handwritten pages; otherwise the local TrOCR model does |
 | `GEMINI_OCR_MODELS` | no | Gemini models to try in order when one is unavailable or out of quota. Default `gemini-3.8-flash,gemini-3.5-flash-lite` |
@@ -401,7 +403,7 @@ All distances use the normalized 0–100 scale, so criteria with different range
 
 ## API reference
 
-All routes except `/health`, `/ocr*`, `/test-prompt`, `/rubric*`, `/suggestions` and the public `GET /ratings*` require `Authorization: Bearer <Supabase access token>`. Routes marked admin return 403 for other users.
+All routes except `/health`, `/ocr*`, `/test-prompt`, `/rubric*`, `/suggestions` and the public `GET /ratings*` require `Authorization: Bearer <Supabase access token>`. Routes marked admin return 403 for other users. `POST /evaluate`, `/evaluate-rag` and `/ocr` also work for guests (no token): they use the school rubric, can't save anything, and are limited per IP per hour (`GUEST_EVALS_PER_HOUR`, `GUEST_UPLOADS_PER_HOUR`; 429 `{"code": "guest_limit"}` when exceeded). Signed-in users aren't limited.
 
 | Method | Path | Description |
 |---|---|---|
