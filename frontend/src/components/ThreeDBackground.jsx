@@ -1,4 +1,4 @@
-import React, { useRef, useMemo } from 'react';
+import React, { useEffect, useRef, useMemo, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Stars } from '@react-three/drei';
 import * as THREE from 'three';
@@ -111,13 +111,34 @@ function AnimatedKnot() {
   );
 }
 
+// Phones and "reduce motion" users get the static gradient only: a full-screen
+// WebGL scene behind blurred cards makes scrolling flicker on mobile.
+const STATIC_QUERY = '(max-width: 768px), (hover: none), (prefers-reduced-motion: reduce)';
+
+function useAnimatedBackground() {
+  const [on, setOn] = useState(() => typeof window !== 'undefined' && !window.matchMedia(STATIC_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(STATIC_QUERY);
+    const update = () => setOn(!mq.matches);
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+  return on;
+}
+
 export default function ThreeDBackground() {
+  const animated = useAnimatedBackground();
   return (
-    <div className="fixed inset-0 -z-20 pointer-events-none bg-gradient-to-br from-gray-900 via-slate-900 to-blue-950">
+    // 100lvh (the tallest viewport) so the background doesn't resize when a
+    // mobile browser shows or hides its address bar during scrolling.
+    <div className="fixed left-0 top-0 w-full h-[100lvh] -z-20 pointer-events-none bg-gradient-to-br from-gray-900 via-slate-900 to-blue-950">
+      {animated && (
       <Canvas
         camera={{ position: [0, 0, 8], fov: 60 }}
         style={{ background: 'transparent' }}
         gl={{ alpha: true, antialias: true }}
+        dpr={[1, 1.5]}
+        resize={{ scroll: false, debounce: { scroll: 0, resize: 250 } }}
       >
         <ambientLight intensity={0.3} />
         <pointLight position={[5, 8, 5]} intensity={0.5} />
@@ -129,6 +150,7 @@ export default function ThreeDBackground() {
         <ParticleField />
         <Stars radius={120} depth={60} count={2500} factor={5} saturation={0.2} fade speed={0.3} />
       </Canvas>
+      )}
     </div>
   );
 }

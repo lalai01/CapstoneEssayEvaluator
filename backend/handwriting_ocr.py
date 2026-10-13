@@ -161,12 +161,12 @@ def segment_lines(gray):
     return tagged
 
 
-def _drop_faint_ink(gray, mask, letter_h):
+def _ink_darkness(gray, mask, letter_h):
     """
-    Printed ruled lines are much paler than the writing on them (on a phone
-    photo of a yellow pad: ~23 vs ~55 grey levels darker than the paper).
-    Keep only ink at least half as dark as the page's own handwriting, so the
-    threshold follows faint pencil and dark pen alike.
+    How much darker than the surrounding paper each pixel is, and the median
+    of that over the page's handwriting strokes (None if too little writing).
+    Printed ruled lines are much paler than writing on them: on a phone
+    photo of a yellow pad, ~23 vs ~55 grey levels darker than the paper.
     """
     k = max(15, int(letter_h * 1.6)) | 1
     paper = cv2.medianBlur(gray, min(k, 255)).astype(np.int16)
@@ -174,11 +174,8 @@ def _drop_faint_ink(gray, mask, letter_h):
     tall = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(3, int(letter_h * 0.5))))
     strokes = cv2.morphologyEx(mask, cv2.MORPH_OPEN, tall) > 0   # rules are never tall
     if strokes.sum() < 200:
-        return mask
-    cutoff = 0.5 * float(np.median(darkness[strokes]))
-    out = mask.copy()
-    out[darkness < cutoff] = 0
-    return out
+        return darkness, None
+    return darkness, float(np.median(darkness[strokes]))
 
 
 def _broken_rules(mask, letter_h, strips=8, min_cover=0.3):
@@ -217,14 +214,23 @@ def _line_ink(gray):
     """
     mask, _, stats = _ink_mask(gray)
     letter_h = _letter_height(stats, gray.shape[0])
-    mask = _drop_faint_ink(gray, mask, letter_h)
+    darkness, writing = _ink_darkness(gray, mask, letter_h)
+    if writing:
+        # Keep only ink at least half as dark as the page's own writing, so
+        # the cut-off follows faint pencil and dark pen alike.
+        mask[darkness < 0.5 * writing] = 0
     # Any straight horizontal run longer than ~2.5 letters is a ruled line,
     # not handwriting, even where it passes through letters.
     run = max(15, int(letter_h * 2.5))
     rules = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                              cv2.getStructuringElement(cv2.MORPH_RECT, (run, 1)))
     mask = cv2.subtract(mask, cv2.dilate(rules, np.ones((3, 1), np.uint8)))
-    mask = cv2.subtract(mask, _broken_rules(mask, letter_h))
+    broken = _broken_rules(mask, letter_h)
+    if writing:
+        # Only pale dashes are ruled lines. Capitals' bars also line up across
+        # a line (THE, TECHNOLOGY) but are as dark as the rest of the writing.
+        broken[darkness >= 0.8 * writing] = 0
+    mask = cv2.subtract(mask, broken)
 
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     h = stats[:, cv2.CC_STAT_HEIGHT]
