@@ -305,6 +305,11 @@ export const listPendingOcr = async (limit = 50) => {
   return response.data;
 };
 
+export const discardOcrSample = async (sampleId) => {
+  const response = await apiClient.delete(`/ocr/sample/${sampleId}`);
+  return response.data;
+};
+
 export const submitOcrCorrection = async (sampleId, correctedText) => {
   const response = await apiClient.post('/ocr/correct', {
     sample_id: sampleId,

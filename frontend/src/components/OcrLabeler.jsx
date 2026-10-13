@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { listPendingOcr, submitOcrCorrection } from '../api';
+import { discardOcrSample, listPendingOcr, submitOcrCorrection } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { errorMessage } from '../lib/scoring';
+import ConfirmDialog from './ConfirmDialog';
 import LoadingIndicator from './LoadingIndicator';
 
 export default function OcrLabeler() {
@@ -12,6 +14,7 @@ export default function OcrLabeler() {
   const [correction, setCorrection] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const textareaRef = useRef(null);
 
   useEffect(() => {
@@ -26,7 +29,7 @@ export default function OcrLabeler() {
       setIndex(0);
       setCorrection(data[0]?.raw_ocr_text || '');
     } catch (err) {
-      toast.error('Failed to load queue: ' + err.message);
+      toast.error('Failed to load queue: ' + errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -50,15 +53,34 @@ export default function OcrLabeler() {
     try {
       await submitOcrCorrection(current.id, correction);
       toast.success(`Saved sample #${current.id}`);
-
-      // Remove from local queue and advance
-      const newQueue = queue.filter((q) => q.id !== current.id);
-      setQueue(newQueue);
-      if (index >= newQueue.length) {
-        setIndex(Math.max(0, newQueue.length - 1));
-      }
+      dropFromQueue(current.id);
     } catch (err) {
-      toast.error('Save failed: ' + err.message);
+      toast.error('Save failed: ' + errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Remove a sample from the local queue and stay on the next one.
+  const dropFromQueue = (id) => {
+    const newQueue = queue.filter((q) => q.id !== id);
+    setQueue(newQueue);
+    if (index >= newQueue.length) {
+      setIndex(Math.max(0, newQueue.length - 1));
+    }
+  };
+
+  const handleDiscard = async () => {
+    const current = queue[index];
+    setConfirmDiscard(false);
+    if (!current) return;
+    setSaving(true);
+    try {
+      await discardOcrSample(current.id);
+      toast.success(`Discarded sample #${current.id}`);
+      dropFromQueue(current.id);
+    } catch (err) {
+      toast.error('Discard failed: ' + errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -120,6 +142,7 @@ export default function OcrLabeler() {
   }
 
   const current = queue[index];
+  const lineCount = correction.split(/\r?\n/).filter((l) => l.trim()).length;
 
   return (
     <div className="glass-card rounded-2xl shadow-xl p-6 bg-white/90 backdrop-blur-md">
@@ -154,7 +177,8 @@ export default function OcrLabeler() {
             ✍️ Correct Transcription
           </h3>
           <div className="text-xs text-gray-500 mb-2">
-            Engine: <span className="font-mono">{current.engine}</span>
+            Prefilled with what <span className="font-mono">{current.engine}</span> read, before any AI
+            correction. Fix it so it matches the page exactly.
           </div>
           <textarea
             ref={textareaRef}
@@ -164,6 +188,10 @@ export default function OcrLabeler() {
             className="w-full border border-gray-300 rounded-xl p-3 font-mono text-sm text-gray-800 flex-1"
             placeholder="Type the correct transcription here..."
           />
+          <p className="text-xs text-gray-600 mt-2">
+            <strong>{lineCount}</strong> text {lineCount === 1 ? 'line' : 'lines'} — this should equal the number of
+            written lines in the photo, or the sample can't be used for training.
+          </p>
         </div>
       </div>
 
@@ -185,6 +213,14 @@ export default function OcrLabeler() {
           </button>
         </div>
 
+        <div className="flex gap-2">
+        <button
+          onClick={() => setConfirmDiscard(true)}
+          disabled={saving}
+          className="px-4 py-3 rounded-xl bg-white border border-red-200 text-red-600 font-semibold hover:bg-red-50 disabled:opacity-50"
+        >
+          🗑 Discard
+        </button>
         <button
           onClick={handleSave}
           disabled={saving}
@@ -192,12 +228,26 @@ export default function OcrLabeler() {
         >
           {saving ? 'Saving...' : '💾 Save & Next'}
         </button>
+        </div>
       </div>
 
       <p className="text-xs text-gray-500 mt-3">
-        Tip: type exactly what's written — spelling, punctuation, line breaks.
-        Do not correct the writer's grammar.
+        Tip: type exactly what's written — spelling, punctuation, and one text line per written line.
+        Do not correct the writer's grammar. Leave out crossed-out words.
+        Discard photos that aren't handwritten essays or are too blurry to read.
       </p>
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        tone="error"
+        title={`Discard sample #${current.id}?`}
+        confirmLabel="Discard"
+        cancelLabel="Keep"
+        onConfirm={handleDiscard}
+        onCancel={() => setConfirmDiscard(false)}
+      >
+        <p>It will be removed from the queue and won't be used for training. This can't be undone.</p>
+      </ConfirmDialog>
     </div>
   );
 }

@@ -40,6 +40,11 @@ Rules:
 - Write [illegible] for a word you cannot read. Do not guess whole phrases.
 - Ignore ruled lines, margins, page numbers and stray marks.
 
+Also return "lines": every written line of the page, top to bottom, exactly as
+it appears on the paper (one entry per written line, a hyphen at a line end
+kept as written, crossed-out words left out). This is used to build a
+handwriting dataset, so line breaks must match the page.
+
 Set "is_text" to false only if the image contains no readable written English."""
 
 SCHEMA = {
@@ -47,8 +52,9 @@ SCHEMA = {
     "properties": {
         "is_text": {"type": "BOOLEAN"},
         "text": {"type": "STRING"},
+        "lines": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
-    "required": ["is_text", "text"],
+    "required": ["is_text", "text", "lines"],
 }
 
 
@@ -77,7 +83,8 @@ def _prepare(image_bytes):
 
 def read_page(image_bytes):
     """
-    Returns (is_text, text, model). Raises RuntimeError when no model could
+    Returns (is_text, text, lines, model): the essay as paragraphs, and the
+    page's written lines one per entry. Raises RuntimeError when no model could
     read the page (no key, network error, quota), so the caller can fall
     back to the local readers.
     """
@@ -119,6 +126,7 @@ def read_page(image_bytes):
         except (KeyError, IndexError, ValueError) as e:
             errors.append(f"{model}: unreadable response ({e})")
             continue
-        return bool(data.get("is_text")), (data.get("text") or "").strip(), model
+        lines = [str(l).strip() for l in (data.get("lines") or []) if str(l).strip()]
+        return bool(data.get("is_text")), (data.get("text") or "").strip(), lines, model
 
     raise RuntimeError("; ".join(errors) or "no Gemini model configured")

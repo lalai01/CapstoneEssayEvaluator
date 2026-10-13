@@ -32,11 +32,15 @@ Output in ./trocr-finetuned/:
   sample_predictions.png      validation lines with the truth and the prediction
   training_history.csv        the numbers behind the chart
 
-Colab setup (match the Docker image's transformers so the model loads there):
-  !pip install transformers==4.44.0 accelerate editdistance pandas scikit-learn matplotlib
-  # upload and unzip training-data/, handwriting_dataset/ and full_dataset/
-  # next to this script, then:
+Kaggle setup (GPU on, Internet on). transformers 4.46 is the closest 4.x
+release with wheels for Kaggle's Python 3.13; 5.x can't load this model's
+tokenizer. Upload this script with training-data/, handwriting_dataset/ and
+full_dataset/ as a dataset, then:
+  !pip install -q "transformers==4.46.3" "accelerate==1.1.1" editdistance
+  !cp -r /kaggle/input/datasets/<user>/<dataset>/* /kaggle/working/
+  %cd /kaggle/working
   !python train_trocr.py
+  !zip -qr trocr-finetuned.zip trocr-finetuned
 """
 import glob
 import os
@@ -77,6 +81,9 @@ MAX_LENGTH = 64
 NUM_BEAMS = 4
 EPOCHS = 20
 EARLY_STOP_PATIENCE = 4   # epochs without a lower CER before stopping
+# 5e-5 peaked after one epoch and then degraded (validation CER 2.3% -> 9%);
+# the model is already good, so take smaller steps.
+LEARNING_RATE = 2e-5
 SEED = 42
 
 
@@ -422,7 +429,7 @@ def main():
         per_device_eval_batch_size=8,
         gradient_accumulation_steps=2,          # 16 lines per update
         num_train_epochs=EPOCHS,
-        learning_rate=5e-5,
+        learning_rate=LEARNING_RATE,
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,
         weight_decay=0.01,
@@ -463,6 +470,13 @@ def main():
 
     model.save_pretrained(OUTPUT_DIR)
     processor.save_pretrained(OUTPUT_DIR)
+    # Newer tokenizers write tokenizer.json in a format the server's
+    # transformers 4.44 / tokenizers 0.19 can't read ("data did not match any
+    # variant of untagged enum ModelWrapper"). vocab.json + merges.txt hold
+    # the same, unchanged vocabulary and load everywhere, so drop it.
+    tok_json = os.path.join(OUTPUT_DIR, "tokenizer.json")
+    if os.path.exists(tok_json):
+        os.remove(tok_json)
     # The checkpoints hold optimizer state too (several GB); the final model is all the app needs.
     for ckpt in glob.glob(os.path.join(OUTPUT_DIR, "checkpoint-*")):
         shutil.rmtree(ckpt, ignore_errors=True)

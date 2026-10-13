@@ -1088,6 +1088,33 @@ def delete_saved_essay(id: int, user=Depends(get_current_user)):
 #endregion
 
 #region OCR
+def _log_handwriting_sample(contents, suffix, content_type, reader_text, engine):
+    """Store the page image and the reader's text for the OCR Labeler queue."""
+    image_url = None
+    try:
+        import uuid as _uuid
+        bucket = supabase.storage.from_("ocr-samples")
+        filename = f"{_uuid.uuid4()}{suffix}"
+        bucket.upload(filename, contents,
+                      {"content-type": content_type or "application/octet-stream"})
+        image_url = bucket.get_public_url(filename)
+        print(f"[OCR] image uploaded: {image_url}")
+    except Exception as e:
+        print(f"Failed to upload OCR image: {e}")
+
+    try:
+        row = supabase.table("ocr_training_data").insert({
+            "raw_ocr_text": reader_text,
+            "image_url": image_url,
+            "engine": engine,
+            "accepted": False,
+        }).execute()
+        if row.data:
+            print(f"[OCR] logged sample id={row.data[0]['id']}")
+    except Exception as e:
+        print(f"Failed to log OCR sample: {e}")
+
+
 @app.post("/ocr")
 async def ocr_from_file(file: UploadFile = File(...)):
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -1144,6 +1171,10 @@ async def ocr_from_file(file: UploadFile = File(...)):
         text, confidence, engine = result["text"], result["confidence"], result["engine"]
         print(f"[OCR] selected engine={engine}, len={len(text)}, conf={confidence:.1f}, "
               f"English={result['quality']:.0%}")
+        # What the reader itself saw, one written line per line, before any AI
+        # correction: this is what the OCR Labeler starts from, and the line
+        # breaks must match the page for export_training_data.py.
+        reader_text = "\n".join(result.get("lines") or []) or text
 
         # 3. AI correction — different prompts for printed vs handwriting.
         # Gemini already copies the page exactly; "correcting" it again could
@@ -1163,33 +1194,10 @@ async def ocr_from_file(file: UploadFile = File(...)):
             except Exception as e:
                 print(f"Correction skipped: {e}")
 
-        # 4. Upload image to Supabase Storage + log training sample
-        image_url = None
-        try:
-            import uuid as _uuid
-            bucket = supabase.storage.from_("ocr-samples")
-            filename = f"{_uuid.uuid4()}{suffix}"
-            bucket.upload(
-                filename,
-                contents,
-                {"content-type": file.content_type or "application/octet-stream"},
-            )
-            image_url = bucket.get_public_url(filename)
-            print(f"[OCR] image uploaded: {image_url}")
-        except Exception as e:
-            print(f"Failed to upload OCR image: {e}")
-
-        try:
-            row = supabase.table("ocr_training_data").insert({
-                "raw_ocr_text": text,
-                "image_url": image_url,
-                "engine": engine,
-                "accepted": False,
-            }).execute()
-            if row.data:
-                print(f"[OCR] logged sample id={row.data[0]['id']}")
-        except Exception as e:
-            print(f"Failed to log OCR sample: {e}")
+        # 4. Upload image to Supabase Storage + log a handwriting sample for the
+        # OCR Labeler. Printed pages (Tesseract) aren't useful there.
+        if engine != "tesseract":
+            _log_handwriting_sample(contents, suffix, file.content_type, reader_text, engine)
 
         return OCRResponse(
             text=text,
@@ -1215,11 +1223,12 @@ def list_pending_ocr(
         raise HTTPException(403, "Admin only")
     try:
         result = (
-            supabase.table("ocr_training_data")
+            _db().table("ocr_training_data")
             .select("id, image_url, raw_ocr_text, engine, created_at")
             .eq("accepted", False)
             .not_.is_("image_url", "null")
-            .order("id", desc=False)
+            .neq("engine", "tesseract")
+            .order("id", desc=True)        # newest (best-read) samples first
             .limit(limit)
             .execute()
         )
@@ -1231,11 +1240,26 @@ def list_pending_ocr(
 @app.post("/ocr/correct")
 def submit_ocr_correction(correction: OCRCorrection,
                           user=Depends(get_current_user)):
-    supabase.table("ocr_training_data") \
-        .update({"corrected_text": correction.corrected_text, "accepted": True}) \
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    text = (correction.corrected_text or "").strip()
+    if not text:
+        raise HTTPException(422, "The transcription is empty")
+    res = _db().table("ocr_training_data") \
+        .update({"corrected_text": text, "accepted": True}) \
         .eq("id", correction.sample_id) \
         .execute()
+    if not res.data:
+        raise HTTPException(404, "Sample not found")
     return {"status": "saved"}
+
+@app.delete("/ocr/sample/{sample_id}")
+def discard_ocr_sample(sample_id: int, user=Depends(get_current_user)):
+    """Remove a sample that can't be labeled (not an essay, unreadable photo)."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    _db().table("ocr_training_data").delete().eq("id", sample_id).execute()
+    return {"status": "discarded"}
 
 @app.get("/ocr/status/{job_id}")
 def get_ocr_status(job_id: str):
