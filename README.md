@@ -109,6 +109,7 @@ backend/
   ocr_utils.py            engine selection, DOCX/PDF extraction
   essay_image_check.py    rejects images that aren't pages of writing
   text_quality.py         checks OCR output is English paragraphs
+  gemini_ocr.py           reads handwritten pages with Gemini vision
   handwriting_ocr.py      TrOCR line segmentation and transcription
   ocr_jobs.py             background PDF OCR jobs
   export_training_data.py exports labeled OCR samples for fine-tuning
@@ -174,6 +175,8 @@ npm run dev                       # http://localhost:5173
 | `LLAMACPP_MODEL` | no | Default `Phi-3.5-mini-instruct-Q4_K_M.gguf` |
 | `ADMIN_EMAILS` | no | Optional extra admin emails, comma-separated. Prefer the `admin_users` table so emails stay out of config files. |
 | `PDF_OCR_WORKERS` | no | Scanned PDF pages OCR'd at once. Default `min(4, CPU cores)` |
+| `GEMINI_API_KEY` | no | Google AI Studio key (https://aistudio.google.com/apikey). When set, Gemini vision reads handwritten pages; otherwise the local TrOCR model does |
+| `GEMINI_OCR_MODELS` | no | Gemini models to try in order when one is unavailable or out of quota. Default `gemini-3.8-flash,gemini-3.5-flash-lite` |
 | `HANDWRITING_BEAMS` | no | Beam width for handwriting OCR. Default `3`; `1` is faster but reads less accurately |
 | `TROCR_PATH` | no | Folder with the TrOCR model. Default `/opt/trocr` |
 | `TROCR_QUANTIZE` | no | `1` runs TrOCR with int8 quantization: about 2× faster handwriting OCR, slightly less accurate. Off by default. |
@@ -382,7 +385,7 @@ All distances use the normalized 0–100 scale, so criteria with different range
 ## OCR and handwriting
 
 - **Is it an essay?** Before any OCR, `essay_image_check.py` checks that the image looks like a page of writing: enough letter-sized marks, most of them sitting in rows next to other letters, a light mostly-uncoloured background. Photos of faces, cars, food and so on fail this and `/ocr` returns `422 {"code": "not_essay"}`. The frontend shows this as an "attach a proper essay" dialog instead of continuing. The same applies when the text that comes out isn't English paragraphs (`text_quality.py`: at least 8 words, at least half of them real English words), including scanned PDFs and DOCX files.
-- **Images:** Tesseract reads the page first. If it returns a confident, fully English printed page, that's used and the handwriting model is skipped. Otherwise TrOCR reads it too, and whichever result has the larger share of real English words wins (handwriting gets a small preference). TrOCR first straightens the page (deskew), finds each line from the gaps between rows of letters, and cuts out each line with only its own strokes so letter tails from neighbouring lines don't confuse the model. The text is then corrected by DeepSeek (with Ollama as fallback) under strict limits: the length ratio must stay within 0.85–1.15 and similarity must be at least 0.85, so the AI can only fix misread characters, not rewrite the essay.
+- **Images:** Tesseract reads the page first. If it returns a confident, fully English printed page, that's used and nothing else runs. Otherwise, when `GEMINI_API_KEY` is set, **Gemini vision** reads the whole page in a few seconds. It is told to copy the text exactly, keeping the student's spelling, grammar and punctuation mistakes (they're graded), so its text skips the AI correction step. Words it can't read come back as `[illegible]` and lower the confidence. Note that with a key set, handwritten essay photos are sent to Google. Without a key, or when Gemini is unavailable or out of quota, TrOCR reads it too, and whichever result has the larger share of real English words wins (handwriting gets a small preference). TrOCR first straightens the page (deskew), finds each line from the gaps between rows of letters, and cuts out each line with only its own strokes so letter tails from neighbouring lines don't confuse the model. The text is then corrected by DeepSeek (with Ollama as fallback) under strict limits: the length ratio must stay within 0.85–1.15 and similarity must be at least 0.85, so the AI can only fix misread characters, not rewrite the essay.
 - **English only:** Tesseract runs with the English model only (`-l eng`), and TrOCR is an English handwriting model.
 - **PDF:** processed as a background job, with the frontend checking `/ocr/status/{job_id}` every 1.5 s. Each page is handled on its own:
   - pages with a text layer are read directly (instant);
