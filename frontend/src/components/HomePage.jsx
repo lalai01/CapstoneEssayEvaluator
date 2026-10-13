@@ -1,6 +1,36 @@
 import React, { useEffect } from 'react';
 import RobotAssistant from './RobotAssistant';
 
+const HIGHLIGHTS = [
+  { icon: '✍️', text: 'Reads handwriting in seconds' },
+  { icon: '📐', text: 'Holistic & analytic rubrics' },
+  { icon: '👩‍🏫', text: 'Teacher in the loop' },
+];
+
+const STEPS = [
+  {
+    n: 1, color: 'bg-blue-100 text-blue-700', title: 'Upload or type',
+    text: 'Paste your essay, or upload a photo, scan, PDF or Word file. Handwriting is read with Google Gemini, printed pages with Tesseract, and images that aren’t essays are turned away.',
+  },
+  {
+    n: 2, color: 'bg-emerald-100 text-emerald-700', title: 'AI evaluation',
+    text: 'Scored against your teacher’s rubric with DeepSeek or Llama 3.2 (or let Auto pick), with a grammar check by LanguageTool, written feedback and the parts that need work highlighted.',
+  },
+  {
+    n: 3, color: 'bg-violet-100 text-violet-700', title: 'Review & improve',
+    text: 'Download a PDF report. Teachers can override scores with remarks, and every review is kept so later evaluations learn from it.',
+  },
+];
+
+const FEATURES = [
+  { icon: '📄', title: 'Handwriting & PDF reading', text: 'Photos, scans, PDFs and Word files. Unreadable words are flagged so you can fix them before scoring.' },
+  { icon: '📐', title: 'Teacher-defined rubrics', text: 'Each teacher sets their own criteria and weights; the school can set a default rubric.' },
+  { icon: '🖍️', title: 'Highlighted essay & reports', text: 'See exactly which sentences need work, on screen and in the PDF report.' },
+  { icon: '✏️', title: 'Teacher override', text: 'Correct a score, add remarks, and approve results; corrections go into the learning hub.' },
+  { icon: '🧠', title: 'Learns from past reviews', text: 'Similar, teacher-approved evaluations are retrieved (RAG) to keep feedback consistent.' },
+  { icon: '🤖', title: 'Multi-AI playground', text: 'Compare DeepSeek, Llama 3.2 and Gemma on the same essay, with agreement statistics.' },
+];
+
 export default function HomePage({ setActiveTab }) {
   useEffect(() => {
     const sections = document.querySelectorAll('.scroll-section');
@@ -14,226 +44,137 @@ export default function HomePage({ setActiveTab }) {
           }
         });
       },
-      { threshold: 0.2 }
+      { threshold: 0.15 }
     );
     sections.forEach((section) => observer.observe(section));
     return () => observer.disconnect();
   }, []);
 
   return (
-    <div className="space-y-12 animate-fade-in relative overflow-hidden">
-      {/* Animated background shapes */}
-      <div className="absolute inset-0 -z-10 overflow-hidden">
-        <div className="floating-shape shape-1"></div>
-        <div className="floating-shape shape-2"></div>
-        <div className="floating-shape shape-3"></div>
-        <div className="floating-shape shape-4"></div>
-      </div>
+    <div className="space-y-10 animate-fade-in relative">
+      {/* ============ HERO ============ */}
+      <section className="glass-card rounded-3xl shadow-2xl relative z-10 bg-white/95 overflow-hidden">
+        <div className="absolute -top-24 -right-24 h-80 w-80 rounded-full bg-sky-200/50 blur-3xl pointer-events-none" aria-hidden="true" />
+        <div className="absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-indigo-200/40 blur-3xl pointer-events-none" aria-hidden="true" />
 
-      {/* ============ HERO SECTION ============ */}
-      <div className="glass-card rounded-3xl shadow-2xl p-8 md:p-12 relative z-10 bg-white/90 backdrop-blur-md border-gradient">
-        <div className="flex flex-col lg:flex-row items-center gap-8">
+        <div className="relative flex flex-col lg:flex-row items-center gap-6 p-8 md:p-12">
           <div className="flex-1 text-center lg:text-left">
-            <div className="hero-text-container p-6 rounded-2xl border border-gray-200/60 bg-white/70 shadow-inner">
-              <h1 className="text-4xl md:text-6xl font-bold gradient-text mb-4">
-                AI Essay Evaluator
-              </h1>
-              <p className="subtitle-text text-xl text-gray-800 max-w-3xl font-medium">
-                Get instant, professional feedback on your essays.
-              </p>
-              <p className="paragraph-text text-gray-700 mt-3 leading-relaxed">
-                Upload handwritten notes, PDFs, or type directly – our AI helps you improve writing skills with dynamic analysis and teacher‑in‑the‑loop learning.
-              </p>
-            </div>
-            <div className="mt-8 flex justify-center lg:justify-start gap-4">
+            <span className="inline-flex items-center gap-2 rounded-full bg-blue-50 border border-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">
+              <span className="h-2 w-2 rounded-full bg-sky-500 animate-pulse" aria-hidden="true" />
+              Handwritten, PDF, Word or typed
+            </span>
+            <h1 className="mt-4 text-4xl md:text-6xl font-extrabold tracking-tight gradient-text">
+              AI Essay Evaluator
+            </h1>
+            <p className="mt-4 text-lg md:text-xl text-gray-700 max-w-xl mx-auto lg:mx-0">
+              Fair, detailed feedback on English essays in minutes, scored against your teacher’s own rubric.
+            </p>
+
+            <ul className="mt-6 flex flex-wrap justify-center lg:justify-start gap-2">
+              {HIGHLIGHTS.map((h) => (
+                <li key={h.text} className="flex items-center gap-2 rounded-xl bg-white border border-gray-200 px-3 py-2 text-sm text-gray-700 shadow-sm">
+                  <span aria-hidden="true">{h.icon}</span>{h.text}
+                </li>
+              ))}
+            </ul>
+
+            <div className="mt-8 flex flex-wrap justify-center lg:justify-start gap-3">
               <button
                 onClick={() => setActiveTab('evaluate')}
-                className="bg-blue-600 text-white px-6 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transition"
+                className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl hover:brightness-110 transition"
               >
-                Start Evaluating →
+                Start evaluating →
               </button>
-              <a href="#how-it-works" className="bg-gray-200 text-gray-800 px-6 py-3 rounded-xl font-semibold hover:bg-gray-300 transition">
-                Learn More
+              <a href="#how-it-works" className="bg-white border border-gray-300 text-gray-800 px-6 py-3 rounded-xl font-semibold hover:bg-gray-50 transition">
+                How it works
               </a>
             </div>
           </div>
 
-          <div className="flex-1 flex justify-center mt-8 lg:mt-12">
-            <div className="w-80 h-80 md:w-96 md:h-96">
-              <RobotAssistant />
+          <div className="flex-1 flex justify-center">
+            <div className="relative w-72 h-80 sm:w-80 sm:h-96 md:w-[26rem] md:h-[28rem]">
+              <div className="absolute inset-8 rounded-full bg-gradient-to-br from-sky-100 to-indigo-100 blur-2xl" aria-hidden="true" />
+              <div className="relative w-full h-full">
+                <RobotAssistant />
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* ============ HOW IT WORKS ============ */}
-      <div id="how-it-works" className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/90 backdrop-blur-md">
-        <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">How It Works</h2>
-        <div className="grid md:grid-cols-3 gap-8">
-          <div className="text-center p-4">
-            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">1️⃣</div>
-            <h3 className="text-xl font-semibold mb-2 text-gray-800">Upload or Type</h3>
-            <p className="text-gray-700">Paste your essay, upload an image, or a PDF. Our OCR automatically extracts text.</p>
-          </div>
-          <div className="text-center p-4">
-            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">2️⃣</div>
-            <h3 className="text-xl font-semibold mb-2 text-gray-800">AI Evaluation</h3>
-            <p className="text-gray-700">Get scores for grammar, coherence, and content, plus detailed, actionable feedback.</p>
-          </div>
-          <div className="text-center p-4">
-            <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">3️⃣</div>
-            <h3 className="text-xl font-semibold mb-2 text-gray-800">Learn & Improve</h3>
-            <p className="text-gray-700">Teachers can override results – the system learns from corrections to give better feedback over time.</p>
-          </div>
-        </div>
-      </div>
+      <section id="how-it-works" className="scroll-section glass-card rounded-3xl shadow-xl p-8 md:p-10 relative z-10 bg-white/95">
+        <h2 className="block text-3xl font-bold text-center text-gray-800">How it works</h2>
+        <p className="text-center text-gray-600 mt-2">From page to feedback in three steps.</p>
+        <ol className="mt-8 grid md:grid-cols-3 gap-6">
+          {STEPS.map((s) => (
+            <li key={s.n} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+              <span className={`inline-flex h-10 w-10 items-center justify-center rounded-full font-bold ${s.color}`}>{s.n}</span>
+              <h3 className="mt-4 text-lg font-semibold text-gray-800">{s.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-gray-600">{s.text}</p>
+            </li>
+          ))}
+        </ol>
+      </section>
 
-      {/* ============ KEY FEATURES ============ */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/90 backdrop-blur-md">
-        <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">Key Features</h2>
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
-            <div className="text-3xl mb-3">📄</div>
-            <h3 className="font-semibold text-gray-800">OCR & PDF Support</h3>
-            <p className="text-sm text-gray-700 mt-1">Extract text from images and PDFs using Google Vision or Tesseract.</p>
-          </div>
-          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
-            <div className="text-3xl mb-3">🧠</div>
-            <h3 className="font-semibold text-gray-800">RAG (Retrieval Augmented)</h3>
-            <p className="text-sm text-gray-700 mt-1">Uses past evaluations to enrich feedback – gets smarter over time.</p>
-          </div>
-          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
-            <div className="text-3xl mb-3">✏️</div>
-            <h3 className="font-semibold text-gray-800">Teacher Override</h3>
-            <p className="text-sm text-gray-700 mt-1">Reject AI results and add corrections; stored in a learning knowledge base.</p>
-          </div>
-          <div className="bg-white border border-gray-200 p-5 rounded-xl hover:shadow-lg transition">
-            <div className="text-3xl mb-3">🤖</div>
-            <h3 className="font-semibold text-gray-800">Multi‑AI Playground</h3>
-            <p className="text-sm text-gray-700 mt-1">Test GPT, DeepSeek, Gemma with custom prompts – compare results.</p>
-          </div>
-        </div>
-      </div>
-
-      {/* ============ 🌟 WHY THIS APP MATTERS ============ */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 bg-white/90 backdrop-blur-md">
-        <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">🌟 Why This App Matters</h2>
-        <div className="grid md:grid-cols-2 gap-8">
-          <div>
-            <h3 className="text-xl font-semibold mb-2 text-gray-800">For Students</h3>
-            <ul className="list-disc list-inside space-y-2 text-gray-700">
-              <li>Get instant, unbiased feedback on your writing – any time, any place.</li>
-              <li>Understand your strengths and weaknesses with detailed scores (grammar, coherence, content).</li>
-              <li>Learn from actionable suggestions and sample improvements tailored to your essay.</li>
-              <li>Practice for standardized tests (IELTS, TOEFL, GRE) with realistic evaluation.</li>
-            </ul>
-          </div>
-          <div>
-            <h3 className="text-xl font-semibold mb-2 text-gray-800">For Teachers & Educators</h3>
-            <ul className="list-disc list-inside space-y-2 text-gray-700">
-              <li>Save hours of grading – let AI handle the first pass, then override when needed.</li>
-              <li>Store student essays and your corrections in a central knowledge base.</li>
-              <li>The system learns from your overrides, improving feedback over time (RAG).</li>
-              <li>Test different AI models (GPT, DeepSeek, Gemma) to find the best evaluator for your class.</li>
-            </ul>
-          </div>
-        </div>
-        <div className="mt-8 p-5 bg-blue-50 rounded-xl">
-          <p className="text-center text-gray-700 italic">
-            "Education is not the filling of a pail, but the lighting of a fire." – Our AI helps ignite that fire by providing fast, consistent, and personalised writing feedback.
-          </p>
-        </div>
-      </div>
-
-      {/* ============ 🧠 NLP METHODOLOGY & KNOWLEDGE BASE ============ */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 relative z-10 border-l-8 border-purple-500 bg-white/90 backdrop-blur-md">
-        <h2 className="text-3xl font-bold text-center mb-8 text-gray-800">🧠 NLP Methodology & Knowledge Base</h2>
-        <div className="grid md:grid-cols-2 gap-8">
-          <div>
-            <h3 className="text-xl font-semibold mb-3 flex items-center gap-2 text-gray-800">
-              <span className="text-2xl">📐</span> NLP Techniques Used
-            </h3>
-            <ul className="space-y-3 text-gray-700">
-              <li className="bg-gray-100 p-3 rounded-lg">
-                <span className="font-bold text-blue-600">Grammar:</span> Sentence length, punctuation patterns, vocabulary richness – deterministic heuristics, no LLM hallucinations.
-              </li>
-              <li className="bg-gray-100 p-3 rounded-lg">
-                <span className="font-bold text-green-600">Coherence:</span> Transition word counting, paragraph detection, presence of intro/conclusion keywords.
-              </li>
-              <li className="bg-gray-100 p-3 rounded-lg">
-                <span className="font-bold text-purple-600">Content:</span> Evidence word spotting ("example", "research"), word count thresholds, vocabulary diversity.
-              </li>
-            </ul>
-          </div>
-          <div>
-            <h3 className="text-xl font-semibold mb-3 flex items-center gap-2 text-gray-800">
-              <span className="text-2xl">📚</span> Knowledge Base (Dataset)
-            </h3>
-            <p className="text-gray-700 mb-3">
-              Every saved evaluation is stored in <strong>Supabase (table: knowledge_base)</strong>. This creates a growing <strong>proprietary dataset</strong> of real essays with teacher‑approved scores and feedback.
-            </p>
-            <div className="bg-yellow-50 p-3 rounded-lg mb-3">
-              <p className="text-sm font-medium text-yellow-800">⚠️ If the knowledge base is empty:</p>
-              <p className="text-sm text-yellow-700">The system still works – RAG simply does nothing. Scores remain rule‑based and reliable.</p>
+      {/* ============ FEATURES ============ */}
+      <section className="scroll-section glass-card rounded-3xl shadow-xl p-8 md:p-10 relative z-10 bg-white/95">
+        <h2 className="block text-3xl font-bold text-center text-gray-800">What you get</h2>
+        <div className="mt-8 grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+          {FEATURES.map((f) => (
+            <div key={f.title} className="rounded-2xl border border-gray-200 bg-white p-5 hover:shadow-lg hover:border-blue-200 transition">
+              <div className="text-3xl" aria-hidden="true">{f.icon}</div>
+              <h3 className="mt-3 font-semibold text-gray-800">{f.title}</h3>
+              <p className="mt-1 text-sm text-gray-600">{f.text}</p>
             </div>
-            <p className="text-gray-700">
-              <span className="font-bold">Hallucination prevention:</span> Scores are deterministic; RAG only retrieves <em>real past evaluations</em> – the AI never invents feedback. Teacher overrides further refine the dataset.
-            </p>
-          </div>
+          ))}
         </div>
-        <div className="mt-8 p-5 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border border-indigo-200">
-          <h3 className="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
-            <span className="text-2xl">💡</span> Recommendation: Fine‑Tune on Your Dataset
-          </h3>
-          <p className="text-gray-700 mb-2">
-            Your growing knowledge base is ideal for <strong>fine‑tuning a small LLM</strong> (e.g., Llama 3.2 3B, Mistral 7B) to:
-          </p>
-          <ul className="list-disc list-inside text-gray-700 space-y-1 ml-2">
-            <li>Predict grammar, coherence, content scores directly from essays.</li>
-            <li>Replace rule‑based heuristics with a model that adapts to your writing style.</li>
-            <li>Continuously improve as you collect more teacher overrides.</li>
+      </section>
+
+      {/* ============ FOR STUDENTS / TEACHERS ============ */}
+      <section className="scroll-section grid md:grid-cols-2 gap-6 relative z-10">
+        <div className="glass-card rounded-3xl shadow-xl p-8 bg-white/95">
+          <h2 className="text-2xl font-bold text-gray-800">🎓 For students</h2>
+          <ul className="mt-4 space-y-3 text-gray-700">
+            <li>• Feedback any time, before you hand your essay in.</li>
+            <li>• Scores per criterion, so you know exactly what to work on.</li>
+            <li>• The weak sentences highlighted, with suggestions to improve them.</li>
           </ul>
-          <p className="text-sm text-gray-500 mt-3 italic">
-            Without a dataset, fine‑tuning is impossible – but our system already provides a solid rule‑based evaluation. With your dataset, the model becomes even more accurate and personalised.
-          </p>
-          <div className="mt-3 p-2 bg-white rounded border border-gray-200">
-            <p className="text-xs font-mono text-gray-500">Example dataset export query:</p>
-            <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
-SELECT essay, grammar, coherence, content, teacher_feedback FROM knowledge_base WHERE accepted = true;
-            </pre>
-          </div>
         </div>
-      </div>
+        <div className="glass-card rounded-3xl shadow-xl p-8 bg-white/95">
+          <h2 className="text-2xl font-bold text-gray-800">👩‍🏫 For teachers</h2>
+          <ul className="mt-4 space-y-3 text-gray-700">
+            <li>• A consistent first pass on every essay, with your own rubric.</li>
+            <li>• Override scores and leave remarks; the system learns from them.</li>
+            <li>• PDF reports and an AI-revised reference essay to share with students.</li>
+          </ul>
+        </div>
+      </section>
 
-      {/* ============ YOUR DATA IS SAFE ============ */}
-      <div className="scroll-section glass-card rounded-3xl shadow-xl p-8 border-l-8 border-green-500 relative z-10 bg-white/90 backdrop-blur-md">
+      {/* ============ PRIVACY ============ */}
+      <section className="scroll-section glass-card rounded-3xl shadow-xl p-8 border-l-8 border-emerald-500 relative z-10 bg-white/95">
         <div className="flex items-start gap-4">
-          <div className="text-4xl">🔒</div>
+          <div className="text-4xl" aria-hidden="true">🔒</div>
           <div>
-            <h2 className="text-2xl font-bold text-gray-800">Your Data is Safe</h2>
-            <p className="text-gray-700 mt-2">
-              We take privacy seriously. All essays are stored securely in Supabase (encrypted at rest). 
-              Teacher overrides and knowledge base are used only to improve the AI – never shared with third parties. 
-              You can delete your data at any time. OCR processing uses Google Cloud Vision (with billing enabled) but images are not retained after processing.
-            </p>
-            <div className="mt-4 flex gap-4 text-sm">
-              <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full">✅ GDPR Compliant</span>
-              <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full">✅ Data Encrypted</span>
-              <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full">✅ No Third‑Party Sharing</span>
-            </div>
+            <h2 className="text-2xl font-bold text-gray-800">Where your essay goes</h2>
+            <ul className="mt-3 space-y-2 text-gray-700">
+              <li>• Your essays and results are stored in the app’s database (Supabase).</li>
+              <li>• Scoring with <strong>DeepSeek</strong> sends the essay text to DeepSeek’s service. Choose <strong>Llama 3.2 (local)</strong> to keep it on our own server.</li>
+              <li>• Photos of handwritten essays are read by <strong>Google Gemini</strong>.</li>
+            </ul>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* ============ CALL TO ACTION ============ */}
-      <div className="scroll-section text-center py-8 relative z-10">
+      <section className="scroll-section text-center py-6 relative z-10">
         <button
           onClick={() => setActiveTab('evaluate')}
-          className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-xl font-bold text-lg shadow-xl hover:shadow-2xl transition"
+          className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-xl font-bold text-lg shadow-xl hover:shadow-2xl hover:brightness-110 transition"
         >
-          ✨ Try It Now – Evaluate Your Essay
+          ✨ Evaluate an essay now
         </button>
-      </div>
+      </section>
     </div>
   );
 }

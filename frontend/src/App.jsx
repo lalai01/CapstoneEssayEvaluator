@@ -16,6 +16,7 @@ import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
 import NavBar from './components/NavBar';
 import { useAuth } from './context/AuthContext';
+import useLeaveWarning from './lib/useLeaveWarning';
 
 // Who may open each page. Admins and teachers are separate roles: admins run
 // the system, teachers do the grading. One person can hold both roles, and
@@ -52,6 +53,8 @@ const ROLE_BADGES = {
 
 function App() {
   const [scores, setScores] = useState(null);
+  // Evaluation results aren't kept across a refresh; ask before leaving.
+  useLeaveWarning(!!scores);
   const [feedback, setFeedback] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('home');

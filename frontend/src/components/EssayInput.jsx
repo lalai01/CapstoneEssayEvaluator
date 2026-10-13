@@ -5,6 +5,7 @@ import FileUpload from './FileUpload';
 import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
+import useLeaveWarning from '../lib/useLeaveWarning';
 
 export default function EssayInput({ setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
   const { user } = useAuth();
@@ -17,6 +18,19 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
   const [extractedText, setExtractedText] = useState('');
   const [ocrInfo, setOcrInfo] = useState(null);
   const [useRag, setUseRag] = useState(true);
+
+  // Text read from an uploaded file replaces the typing box: it's what gets
+  // evaluated, and the box stays locked until the extracted text is removed.
+  const hasExtracted = extractedText.trim().length > 0;
+  const essayToEvaluate = () => (hasExtracted ? extractedText.trim() : text.trim());
+
+  // Typed or extracted work is lost on refresh / Back; ask first.
+  useLeaveWarning(!!(text.trim() || hasExtracted || loading));
+
+  const removeExtracted = () => {
+    setExtractedText('');
+    setOcrInfo(null);
+  };
 
   useEffect(() => {
     if (!user) {
@@ -59,7 +73,7 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
   const [shortDialog, setShortDialog] = useState(null); // { words }
 
   const handleEvaluate = async () => {
-    const essay = text.trim() || extractedText.trim();
+    const essay = essayToEvaluate();
     if (!essay) {
       toast.error('Please enter essay text or extract text from a file.');
       return;
@@ -227,31 +241,50 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
         )}
 
         <div className="mb-5">
-          <label className="block text-sm font-semibold text-gray-700 mb-2">Type or paste your essay</label>
+          <label htmlFor="essay-text" className="block text-sm font-semibold text-gray-700 mb-2">Type or paste your essay</label>
+          {hasExtracted && (
+            <p className="mb-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              🔒 Locked: the text extracted from your file (below) will be evaluated. Remove it to type instead.
+            </p>
+          )}
           <textarea
+            id="essay-text"
             rows={10}
-            className="w-full border border-gray-200 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition bg-gray-50"
+            disabled={hasExtracted}
+            className="w-full border border-gray-200 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Enter your essay here... (e.g., 'Education is the most powerful weapon...')"
+            placeholder={hasExtracted
+              ? 'Using the text extracted from your file.'
+              : "Enter your essay here... (e.g., 'Education is the most powerful weapon...')"}
           />
         </div>
 
         <FileUpload onExtracted={handleExtracted} />
 
-        {extractedText && (
+        {hasExtracted && (
           <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 p-4">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="font-semibold text-blue-800">📄 Extracted Text (OCR)</h3>
+            <div className="flex justify-between items-center mb-2 gap-3">
+              <h3 className="font-semibold text-blue-800">📄 Extracted Text (will be evaluated)</h3>
               <button
-                onClick={() => setText(extractedText)}
-                className="text-sm bg-blue-600 text-white px-3 py-1 rounded-lg hover:bg-blue-700 transition"
+                type="button"
+                onClick={removeExtracted}
+                className="text-sm bg-white text-red-600 border border-red-200 px-3 py-1 rounded-lg hover:bg-red-50 transition shrink-0"
               >
-                Use for Evaluation
+                ✕ Remove
               </button>
             </div>
-            <p className="text-xs text-gray-600 mb-2">Confidence: {ocrInfo?.confidence?.toFixed(1)}% | Method: {ocrInfo?.method}</p>
-            <div className="max-h-60 overflow-y-auto text-sm bg-white p-3 rounded border border-blue-100 whitespace-pre-wrap">{extractedText}</div>
+            <p className="text-xs text-gray-600 mb-2">
+              Confidence: {ocrInfo?.confidence?.toFixed(1)}% | Method: {ocrInfo?.method}
+              {' · '}Check it and fix any misread words before evaluating.
+            </p>
+            <textarea
+              aria-label="Extracted essay text"
+              rows={10}
+              className="w-full text-sm bg-white p-3 rounded border border-blue-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              value={extractedText}
+              onChange={(e) => setExtractedText(e.target.value)}
+            />
           </div>
         )}
 
@@ -271,7 +304,7 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
         title={shortDialog && shortDialog.words < MIN_WORDS ? 'Essay too short to evaluate' : 'This essay is quite short'}
         confirmLabel={shortDialog && shortDialog.words >= MIN_WORDS ? 'Evaluate anyway' : undefined}
         cancelLabel={shortDialog && shortDialog.words < MIN_WORDS ? 'OK, keep writing' : 'Keep writing'}
-        onConfirm={() => runEvaluation(text.trim() || extractedText.trim())}
+        onConfirm={() => runEvaluation(essayToEvaluate())}
         onCancel={() => setShortDialog(null)}
       >
         {shortDialog && shortDialog.words < MIN_WORDS ? (
