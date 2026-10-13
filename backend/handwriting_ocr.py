@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import threading
 import cv2
 import numpy as np
@@ -160,18 +161,95 @@ def segment_lines(gray):
     return tagged
 
 
+def _drop_faint_ink(gray, mask, letter_h):
+    """
+    Printed ruled lines are much paler than the writing on them (on a phone
+    photo of a yellow pad: ~23 vs ~55 grey levels darker than the paper).
+    Keep only ink at least half as dark as the page's own handwriting, so the
+    threshold follows faint pencil and dark pen alike.
+    """
+    k = max(15, int(letter_h * 1.6)) | 1
+    paper = cv2.medianBlur(gray, min(k, 255)).astype(np.int16)
+    darkness = paper - gray.astype(np.int16)
+    tall = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(3, int(letter_h * 0.5))))
+    strokes = cv2.morphologyEx(mask, cv2.MORPH_OPEN, tall) > 0   # rules are never tall
+    if strokes.sum() < 200:
+        return mask
+    cutoff = 0.5 * float(np.median(darkness[strokes]))
+    out = mask.copy()
+    out[darkness < cutoff] = 0
+    return out
+
+
+def _broken_rules(mask, letter_h, strips=8, min_cover=0.3):
+    """
+    Pixels of ruled lines that a photo breaks into short dashes. A dash is a
+    thin, flat run of ink; where such runs cover a good part of a row across
+    a strip of the page, that row is a ruled line. Only the flat pixels on
+    those rows are returned, so letters crossing the line keep their strokes.
+    Strips let slightly tilted or curved lines be found piece by piece.
+    """
+    run = cv2.getStructuringElement(cv2.MORPH_RECT, (max(5, int(letter_h * 0.4)), 1))
+    tall = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(3, int(letter_h * 0.25))))
+    flat = cv2.subtract(cv2.morphologyEx(mask, cv2.MORPH_OPEN, run),
+                        cv2.morphologyEx(mask, cv2.MORPH_OPEN, tall))
+    remove = np.zeros_like(mask)
+    width = mask.shape[1]
+    step = max(1, width // strips)
+    for x in range(0, width, step):
+        part = flat[:, x:x + step]
+        # A slightly tilted line spreads over a few rows: measure each row
+        # together with its neighbours.
+        band = cv2.dilate(part, np.ones((5, 1), np.uint8))
+        rows = (band.mean(axis=1) / 255.0) > min_cover
+        rows = cv2.dilate(rows.astype(np.uint8)[:, None], np.ones((5, 1), np.uint8))[:, 0] > 0
+        remove[rows, x:x + step] = part[rows]
+    return cv2.dilate(remove, np.ones((3, 1), np.uint8))
+
+
+def _line_ink(gray):
+    """
+    Ink components for cutting out lines. Like _ink_mask, but also removes
+    what a phone photo of ruled paper leaves behind: broken pieces of the
+    ruled lines (TrOCR reads them as "_" and junk letters) and the paper's
+    edges or margin lines (they stretch a line crop to several lines tall).
+    Returns (labels, stats, keep) where keep[i] says component i is writing.
+    """
+    mask, _, stats = _ink_mask(gray)
+    letter_h = _letter_height(stats, gray.shape[0])
+    mask = _drop_faint_ink(gray, mask, letter_h)
+    # Any straight horizontal run longer than ~2.5 letters is a ruled line,
+    # not handwriting, even where it passes through letters.
+    run = max(15, int(letter_h * 2.5))
+    rules = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
+                             cv2.getStructuringElement(cv2.MORPH_RECT, (run, 1)))
+    mask = cv2.subtract(mask, cv2.dilate(rules, np.ones((3, 1), np.uint8)))
+    mask = cv2.subtract(mask, _broken_rules(mask, letter_h))
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    h = stats[:, cv2.CC_STAT_HEIGHT]
+    w = stats[:, cv2.CC_STAT_WIDTH]
+    keep = (
+        (stats[:, cv2.CC_STAT_AREA] >= 12)
+        & (h <= 3.5 * letter_h)                      # paper edges, margin lines
+        & ~((h < 0.3 * letter_h) & (w > 1.2 * letter_h))  # leftover rule dashes
+    )
+    keep[0] = False
+    return labels, stats, keep
+
+
 def _line_crops(gray, bands):
     """
     One clean image per line: keep only the strokes whose centre lies in the
     line (so tails of letters from the lines above and below don't confuse
     the model), trimmed to the line's own width, on a white background.
     """
-    mask, labels, stats = _ink_mask(gray)
+    labels, stats, writing = _line_ink(gray)
     centers = stats[:, cv2.CC_STAT_TOP] + stats[:, cv2.CC_STAT_HEIGHT] / 2.0
     crops = []
     for top, bottom, is_break in bands:
         ids = [i for i in range(1, len(stats))
-               if top <= centers[i] < bottom + 1 and stats[i, cv2.CC_STAT_AREA] >= 12]
+               if writing[i] and top <= centers[i] < bottom + 1]
         if not ids:
             continue
         x0 = int(min(stats[i, cv2.CC_STAT_LEFT] for i in ids))
@@ -258,6 +336,21 @@ def page_line_crops(gray):
     return _line_crops(gray, bands) if bands else []
 
 
+# TrOCR's known failure on a nearly empty line image is to invent a run of
+# years ("1891 1892 1893"); leftover ruled-line dashes come out as "____" or
+# "......", and specks at the margin as a lone quote mark.
+_YEAR_RUN = re.compile(r"(?:\b\d{4}\b[\s\"'.,]*){2,}")
+_MARK_ONLY = re.compile(r"(?<!\S)_+(?!\S)|\.{4,}")
+_EDGE_QUOTE = re.compile(r"^[\"'“”]\s+|\s+[\"'“”]$")
+
+
+def _clean_line(text):
+    text = _YEAR_RUN.sub(" ", text)
+    text = _MARK_ONLY.sub(" ", text)
+    text = _EDGE_QUOTE.sub("", text.strip())
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def ocr_handwriting_image(image_bytes):
     """
     Full-page handwriting OCR:
@@ -283,8 +376,9 @@ def ocr_handwriting_image(image_bytes):
         batch = crops[i:i + BATCH_SIZE]
         batch_texts, batch_confs = _transcribe_batch([c[0] for c in batch])
         for (_, is_break), t, c in zip(batch, batch_texts, batch_confs):
-            if t.strip():
-                texts.append(t.strip())
+            t = _clean_line(t)
+            if t:
+                texts.append(t)
                 confidences.append(c)
                 flags.append(is_break)
 
