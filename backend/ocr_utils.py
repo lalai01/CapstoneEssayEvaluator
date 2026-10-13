@@ -129,10 +129,11 @@ def read_essay_image(image_bytes, check_page=True):
     1. Reject images that aren't a page of writing (a face, a car...).
     2. Tesseract first: if it reads clean English with high confidence, the
        page is printed and the handwriting model is skipped.
-    3. Otherwise run the handwriting model (TrOCR) and keep whichever result
-       has more real English words. (Earlier this choice was made from an
-       image "messiness" score, which sent neat handwriting to Tesseract.)
-    4. Reject results that don't read as English.
+    3. Otherwise read it with Gemini vision when GEMINI_API_KEY is set: it
+       reads whole handwritten pages far better than the local model.
+    4. Without Gemini (no key, offline, out of quota), run the handwriting
+       model (TrOCR) and keep whichever result has more real English words.
+    5. Reject results that don't read as English.
 
     Returns {"text", "confidence", "engine", "quality", "is_text", "reason"}.
     """
@@ -163,6 +164,24 @@ def read_essay_image(image_bytes, check_page=True):
                     "quality": q["ratio"], "is_text": True, "reason": ""}
     except Exception as e:
         print(f"[OCR] tesseract failed: {e}")
+
+    import gemini_ocr
+    if gemini_ocr.enabled():
+        try:
+            is_text, text, model = gemini_ocr.read_page(image_bytes)
+            print(f"[OCR] gemini ({model}): {len(text.split())} words, is_text={is_text}")
+            # A page that passed the page check but that Gemini calls "no
+            # text" still gets the local readers: a wrong "no" would reject
+            # a real essay.
+            if is_text and looks_like_english_text(text):
+                # Gemini gives no confidence score; lower it for each word it
+                # marked as unreadable so the UI flags pages worth checking.
+                conf = max(50.0, 95.0 - 5.0 * text.lower().count("[illegible]"))
+                return {"text": text, "confidence": conf, "engine": "gemini-vision",
+                        "quality": english_quality(text)["ratio"], "is_text": True, "reason": ""}
+            print("[OCR] gemini text doesn't read as English; trying the local readers")
+        except Exception as e:
+            print(f"[OCR] gemini unavailable, using the local readers: {e}")
 
     try:
         from handwriting_ocr import ocr_handwriting_image

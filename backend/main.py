@@ -1146,7 +1146,9 @@ async def ocr_from_file(file: UploadFile = File(...)):
               f"English={result['quality']:.0%}")
 
         # 3. AI correction — different prompts for printed vs handwriting.
-        if text and len(text.strip()) > 20:
+        # Gemini already copies the page exactly; "correcting" it again could
+        # change what the student wrote, so its text is used as is.
+        if text and len(text.strip()) > 20 and not engine.startswith("gemini"):
             try:
                 from evaluator import (
                     ai_correct_ocr_text,
