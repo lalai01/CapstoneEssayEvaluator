@@ -33,13 +33,16 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # LanguageTool 5.7 at every container start, but languagetool.org no longer
 # hosts it (404), which silently left grammar checking on heuristics.
 # Install a version that is still published, once, where the library looks
-# for it (LTP_PATH); with a LanguageTool* folder there it skips its download.
+# for it (LTP_PATH). The library only skips its download when a folder named
+# exactly LanguageTool-5.7 exists, so 6.4 is installed under that name; it
+# just starts the server jar inside whichever folder it finds.
 ENV LTP_PATH=/opt/languagetool
 RUN mkdir -p /opt/languagetool && \
     wget -q https://languagetool.org/download/LanguageTool-6.4.zip -O /tmp/lt.zip && \
     unzip -q /tmp/lt.zip -d /opt/languagetool && \
     rm /tmp/lt.zip && \
-    ls -d /opt/languagetool/LanguageTool*
+    mv /opt/languagetool/LanguageTool-6.4 /opt/languagetool/LanguageTool-5.7 && \
+    ls /opt/languagetool/LanguageTool-5.7/languagetool-server.jar
 
 # Download TrOCR weights and save a complete copy (including pooler
 # weights) to /opt/trocr. Loading from this local directory avoids the
