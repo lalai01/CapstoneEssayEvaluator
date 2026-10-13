@@ -29,6 +29,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
+# LanguageTool (grammar checker). language-tool-python 2.7.1 would download
+# LanguageTool 5.7 at every container start, but languagetool.org no longer
+# hosts it (404), which silently left grammar checking on heuristics.
+# Install a version that is still published, once, where the library looks
+# for it (LTP_PATH); with a LanguageTool* folder there it skips its download.
+ENV LTP_PATH=/opt/languagetool
+RUN mkdir -p /opt/languagetool && \
+    wget -q https://languagetool.org/download/LanguageTool-6.4.zip -O /tmp/lt.zip && \
+    unzip -q /tmp/lt.zip -d /opt/languagetool && \
+    rm /tmp/lt.zip && \
+    ls -d /opt/languagetool/LanguageTool*
+
 # Download TrOCR weights and save a complete copy (including pooler
 # weights) to /opt/trocr. Loading from this local directory avoids the
 # "Some weights were newly initialized" warning and the resulting drop
