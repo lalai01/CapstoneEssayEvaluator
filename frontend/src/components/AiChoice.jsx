@@ -81,7 +81,7 @@ export default function AiChoice({ runs, chosen, onChoose }) {
                   )}
                   {ruleBased ? (
                     <p className="text-xs text-amber-700 mt-1">
-                      ⚠️ {ai.name} didn&apos;t respond, so rule-based scoring was used.
+                      ⚠️ {run.scores?.evaluated_by?.reason || `${ai.name} didn’t respond, so rule-based scoring was used.`}
                     </p>
                   ) : (
                     <div className="text-xs text-gray-500 mt-1">Finished in {seconds(run.ms)}</div>

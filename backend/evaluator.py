@@ -1,5 +1,6 @@
 # backend/evaluator.py
 import re
+import threading
 import json
 import os
 import difflib
@@ -525,8 +526,8 @@ Example D - Disorganized essay with no thesis and no evidence:
         f'    "{key}": "{per_criterion}"' for key in criteria
     )
     length_rules = (
-        "- At most 3 grammar_issues.\n"
-        "- Provide 2-3 recommendations. Each must reference a specific part of the essay.\n"
+        "- At most 2 grammar_issues.\n"
+        "- Provide 2 recommendations. Each must reference a specific part of the essay.\n"
         "- Every criterion_feedback value must be a plain string of 1 sentence."
     ) if brief else (
         "- Provide 3–5 recommendations. Each must reference a specific part of the essay.\n"
@@ -604,7 +605,8 @@ RULES:
             # gives up at its deadline instead of hanging.
             from ai_models import call_ollama
             content = call_ollama(
-                system_msg, user_msg, model=model, json_mode=True, temperature=0.0, max_tokens=900
+                system_msg, user_msg, model=model, json_mode=True, temperature=0.0, max_tokens=700,
+                json_schema=_scoring_schema(criteria, brief),
             )["text"].strip()
 
         if content.startswith("```"):
@@ -647,12 +649,10 @@ RULES:
         result = {}
         for key, c in criteria.items():
             if key not in parsed:
-                print(f"Missing key in AI response: {key}")
-                return None
+                return _failure(f"its reply had no score for '{c['label']}'")
             score = int(parsed[key])
             if score < 1 or score > c["max_score"]:
-                print(f"Out-of-range score for {key}: {score} (max {c['max_score']})")
-                return None
+                return _failure(f"it gave '{c['label']}' {score}, outside 1-{c['max_score']}")
             result[key] = score
 
         cf = parsed.get("criterion_feedback")
@@ -668,12 +668,15 @@ RULES:
         result["evaluated_by"] = evaluated_by(model)
         return result
 
-    except json.JSONDecodeError as e:
-        print(f"AI scoring JSON parse error: {e}")
-        return None
+    except json.JSONDecodeError:
+        return _failure("its reply wasn't valid JSON")
+    except TimeoutError:
+        return _failure("it took too long; the server's CPU is busy")
     except Exception as e:
-        print(f"AI scoring failed: {e}")
-        return None
+        text = str(e)
+        if "not found" in text.lower() and "model" in text.lower():
+            return _failure(f"the model isn't installed on the server; run: ollama pull {model}")
+        return _failure(text[:160] or type(e).__name__)
 
 
 def _heuristic_scores(essay_text, analysis):
@@ -810,6 +813,49 @@ def _heuristic_scores_for_rubric(essay_text, analysis, criteria):
     return result
 
 
+# Why the last scoring attempt in this request's thread failed (FastAPI runs
+# each sync request in its own worker thread), so the result card can say
+# "timed out" or "not installed" instead of just "didn't respond".
+_last_failure = threading.local()
+
+
+def _failure(reason):
+    _last_failure.reason = reason
+    print(f"AI scoring failed: {reason}")
+    return None
+
+
+def _scoring_schema(criteria, brief):
+    """JSON schema for Ollama's structured output: forces the exact keys and
+    score ranges, which small local models often get wrong otherwise."""
+    text = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
+            **{key: {"type": "integer", "minimum": 1, "maximum": c["max_score"]}
+               for key, c in criteria.items()},
+            "criterion_feedback": {
+                "type": "object",
+                "properties": {key: text for key in criteria},
+                "required": list(criteria),
+            },
+            "grammar_issues": {
+                "type": "array", "maxItems": 2 if brief else 5,
+                "items": {"type": "object", "properties": {
+                    "original": text, "correction": text, "explanation": text},
+                    "required": ["original", "correction", "explanation"]},
+            },
+            "recommendations": {
+                "type": "array", "maxItems": 2 if brief else 5,
+                "items": {"type": "object", "properties": {
+                    "title": text, "issue": text, "suggestion": text, "quote": text},
+                    "required": ["title", "issue", "suggestion", "quote"]},
+            },
+        },
+        "required": [*criteria, "criterion_feedback", "grammar_issues", "recommendations"],
+    }
+
+
 def _scoring_attempts(choice, strict):
     """
     Models to try, in order. Normally a failed model falls back to the other
@@ -832,6 +878,7 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="aut
     criteria = normalize_rubric(rubric)
     choice = choose_scoring_model(essay_text, criteria, preference)
     attempts = _scoring_attempts(choice, strict)
+    _last_failure.reason = None
 
     for i, attempt in enumerate(attempts):
         ai = ai_score_all_criteria(
@@ -854,6 +901,9 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="aut
         why = f"{MODEL_LABELS.get(wanted, wanted)} isn't configured on the server"
     elif strict:
         why = f"{MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond"
+        detail = getattr(_last_failure, "reason", None)
+        if detail:
+            why += f" ({detail})"
     else:
         why = "No AI model responded"
     result["evaluated_by"] = {
