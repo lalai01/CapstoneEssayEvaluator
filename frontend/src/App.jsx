@@ -14,6 +14,7 @@ import RubricManager from './components/RubricManager';
 import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
+import AiChoice from './components/AiChoice';
 import NavBar from './components/NavBar';
 import { useAuth } from './context/AuthContext';
 import useLeaveWarning from './lib/useLeaveWarning';
@@ -29,11 +30,11 @@ const PAGES = [
   { id: 'home', label: 'Home', icon: 'home', access: 'public', group: 'main' },
   { id: 'evaluate', label: 'Evaluate', icon: 'evaluate', access: 'public', group: 'main' },
   { id: 'playground', label: 'Playground', icon: 'playground', access: 'public', group: 'main' },
-  { id: 'knowledge', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'main' },
+  { id: 'knowledge', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'workspace', description: 'Evaluations you saved' },
   { id: 'surveys', label: 'Surveys', icon: 'surveys', access: 'user', group: 'main' },
   { id: 'rateus', label: 'Rate Us', icon: 'rateus', access: 'public', group: 'main' },
-  { id: 'learning', label: 'Learning Hub', icon: 'learning', access: 'teacher', group: 'teacher', description: 'Your overrides, remarks and score changes' },
-  { id: 'rubrics', label: 'My Rubrics', icon: 'rubrics', access: 'teacher', group: 'teacher', description: 'Create rubrics and choose your default' },
+  { id: 'learning', label: 'Learning Hub', icon: 'learning', access: 'user', group: 'workspace', description: 'Your overrides, remarks and score changes' },
+  { id: 'rubrics', label: 'My Rubrics', icon: 'rubrics', access: 'user', group: 'workspace', description: 'Create rubrics and choose your default' },
   { id: 'admins', label: 'Admin Dashboard', icon: 'dashboard', access: 'admin', group: 'admin', description: 'Teachers, admins and the activity log' },
   { id: 'school-rubric', label: 'School Rubric', icon: 'school', access: 'admin', group: 'admin', description: 'Default rubric for every teacher' },
   { id: 'admin', label: 'Manage Surveys', icon: 'list', access: 'admin', group: 'admin', description: 'Create surveys and read responses' },
@@ -41,6 +42,7 @@ const PAGES = [
 ];
 
 const MENU_GROUPS = [
+  { id: 'workspace', label: 'My Work', caption: 'Your evaluations, overrides and rubrics', icon: 'knowledge' },
   { id: 'teacher', label: 'Teacher', caption: 'Teacher tools', icon: 'teacher' },
   { id: 'admin', label: 'Admin', caption: 'Administration', icon: 'shield' },
 ];
@@ -55,6 +57,18 @@ function App() {
   const [scores, setScores] = useState(null);
   // Evaluation results aren't kept across a refresh; ask before leaving.
   useLeaveWarning(!!scores);
+
+  // The three AIs evaluate every essay; the user picks whose result to use.
+  const [aiRuns, setAiRuns] = useState(null);   // { [aiId]: { status, scores, feedback, ms, error } }
+  const [chosenAi, setChosenAi] = useState(null);
+  const chooseAi = (id, run) => {
+    const picked = run || aiRuns?.[id];
+    setChosenAi(id);
+    if (picked?.scores) {
+      setScores(picked.scores);
+      setFeedback(picked.feedback);
+    }
+  };
   const [feedback, setFeedback] = useState('');
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('home');
@@ -110,6 +124,8 @@ function App() {
           {currentTab === 'evaluate' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
               <EssayInput
+                setAiRuns={setAiRuns}
+                onChooseAi={chooseAi}
                 setScores={setScores}
                 setFeedback={setFeedback}
                 setLoading={setLoading}
@@ -118,7 +134,10 @@ function App() {
                 setEssayTitle={setEssayTitle}
                 loading={loading}
               />
+              <div className="space-y-6 min-w-0">
+              <AiChoice runs={aiRuns} chosen={chosenAi} onChoose={chooseAi} />
               <Results
+                key={chosenAi || 'none'}
                 scores={scores}
                 feedback={feedback}
                 loading={loading}
@@ -132,6 +151,7 @@ function App() {
                 suggestedChanges={suggestedChanges}
                 setSuggestedChanges={setSuggestedChanges}
               />
+              </div>
             </div>
           )}
           {currentTab === 'knowledge' && <KnowledgeBase />}

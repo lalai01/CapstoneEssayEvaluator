@@ -6,12 +6,12 @@ import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
 import useLeaveWarning from '../lib/useLeaveWarning';
+import { EVALUATION_AIS } from '../lib/evaluationAis';
 
-export default function EssayInput({ setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
+export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
   const { user } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   const [rubricId, setRubricId] = useState('');   // '' = the teacher's default
-  const [aiModel, setAiModel] = useState('auto');  // 'auto' | 'deepseek' | 'local'
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [evalTypeLocal, setEvalTypeLocal] = useState('analytic');
@@ -97,17 +97,49 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
     setEvalType(evalTypeLocal);
     setEssayTitle(title.trim());  // Pass title to parent
     const chosenRubric = rubricId ? Number(rubricId) : null;
-    try {
-      const result = useRag
-        ? await evaluateEssayWithRag(essay, evalTypeLocal, chosenRubric, aiModel)
-        : await evaluateEssay(essay, evalTypeLocal, chosenRubric, aiModel);
-      setScores(result.scores);
-      setFeedback(result.feedback);
-      toast.success(`Evaluation complete${useRag ? ' (with RAG)' : ''}`);
-    } catch (err) {
-      toast.error('Evaluation failed: ' + errorMessage(err));
-    } finally {
-      setLoading(false);
+    const evaluate = useRag ? evaluateEssayWithRag : evaluateEssay;
+
+    // All three AIs evaluate the essay at once. Each card fills in as its AI
+    // finishes; the first real AI result is shown straight away (the user can
+    // switch), so nobody waits for the slowest model.
+    setScores(null);
+    setFeedback(null);
+    onChooseAi(null);
+    setAiRuns(Object.fromEntries(EVALUATION_AIS.map((ai) => [ai.id, { status: 'running' }])));
+    let shown = false;
+    let fallback = null;   // a rule-based result, shown only if no AI answers
+
+    const outcomes = await Promise.all(EVALUATION_AIS.map(async (ai) => {
+      const started = performance.now();
+      try {
+        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true);
+        const run = { status: 'done', scores: result.scores, feedback: result.feedback, ms: performance.now() - started };
+        setAiRuns((prev) => ({ ...prev, [ai.id]: run }));
+        const ruleBased = result.scores?.evaluated_by?.provider === 'heuristic';
+        if (!shown && !ruleBased) {
+          shown = true;
+          onChooseAi(ai.id, run);
+          setLoading(false);
+        } else if (ruleBased && !fallback) {
+          fallback = { id: ai.id, run };
+        }
+        return true;
+      } catch (err) {
+        setAiRuns((prev) => ({ ...prev, [ai.id]: { status: 'failed', error: errorMessage(err), ms: performance.now() - started } }));
+        return false;
+      }
+    }));
+
+    if (!shown && fallback) {
+      shown = true;
+      onChooseAi(fallback.id, fallback.run);
+    }
+    setLoading(false);
+    const answered = outcomes.filter(Boolean).length;
+    if (!shown) {
+      toast.error('Evaluation failed: none of the three AIs responded. Please try again.');
+    } else {
+      toast.success(`${answered} of 3 AIs finished${useRag ? ' (with RAG)' : ''}. Pick the result you prefer.`);
     }
   };
 
@@ -179,35 +211,14 @@ export default function EssayInput({ setScores, setFeedback, setLoading, setCurr
           )}
         </div>
 
-        <div className="mb-5">
-          <span id="ai-model-label" className="block text-sm font-semibold text-gray-700 mb-2">AI model</span>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" role="radiogroup" aria-labelledby="ai-model-label">
-            {[
-              { id: 'auto', title: '✨ Auto (recommended)', hint: 'Picks the best model for this essay' },
-              { id: 'deepseek', title: '🌐 DeepSeek', hint: 'Cloud; reads long essays in full' },
-              { id: 'local', title: '🦙 Llama 3.2 (local)', hint: 'Private; essay stays on the server' },
-            ].map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                role="radio"
-                aria-checked={aiModel === opt.id}
-                onClick={() => setAiModel(opt.id)}
-                className={`text-left rounded-xl border p-2.5 transition ${
-                  aiModel === opt.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-300' : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
-                }`}
-              >
-                <div className="text-sm font-semibold text-gray-800">{opt.title}</div>
-                <div className="text-xs text-gray-500">{opt.hint}</div>
-              </button>
-            ))}
-          </div>
-          {aiModel === 'auto' && (
-            <p className="text-xs text-gray-500 mt-1">
-              Long essays (over about 650 words) and complex rubrics go to DeepSeek; others are scored locally. The result explains the choice.
-            </p>
-          )}
+        <div className="mb-5 rounded-xl border border-blue-100 bg-blue-50/60 p-3">
+          <p className="text-sm font-semibold text-gray-800">🤖 Three AIs evaluate every essay</p>
+          <p className="text-xs text-gray-600 mt-1">
+            {EVALUATION_AIS.map((ai) => `${ai.icon} ${ai.name} (${ai.where.toLowerCase()})`).join(' · ')}.
+            Their results appear side by side as each one finishes; choose the one you prefer.
+          </p>
         </div>
+
 
         {user && evalTypeLocal === 'analytic' && (
           <div className="mb-5">

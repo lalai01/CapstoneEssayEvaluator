@@ -32,14 +32,16 @@ def load_past_data_from_db():
         print(f"RAG kb query failed: {e}")
 
     try:
-        lf_result = _db.table("learning_feedback") \
-            .select("original_essay, teacher_feedback") \
-            .execute()
+        lf_result = _db.table("learning_feedback").select("*").execute()
 
         for item in lf_result.data:
+            # Only a teacher's override teaches the AI. Students and admins can
+            # override too, but theirs are kept for themselves (no approved_by;
+            # older databases keep it inside original_scores).
+            approved = item.get("approved_by") or (item.get("original_scores") or {}).get("approved_by")
             fb = item.get("teacher_feedback")
             essay = item.get("original_essay")
-            if fb and essay:
+            if fb and essay and approved:
                 essays.append(essay)
                 feedbacks.append(f"[Teacher Override] {fb}")
     except Exception as e:
