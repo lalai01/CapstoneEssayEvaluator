@@ -112,8 +112,12 @@ def feedback_node(state: EvaluationState) -> dict:
             state.get("rag_context") or "",
             rubric=state.get("rubric"),
         )
-    # The AI that scored the essay also writes its feedback.
+    # The AI that scored the essay also writes its feedback. In the three-AI
+    # comparison the local models skip this second call (30-90 s each on the
+    # server's CPU): their per-criterion comments are already their own words.
     by = state["scores"].get("evaluated_by") or {}
+    if state.get("strict_model") and by.get("provider") != "deepseek":
+        return {"feedback": rule_feedback}
     enhanced = enhance_feedback_with_ai(
         state["essay_text"], state["scores"], analysis, rule_feedback,
         rubric=state.get("rubric"), model=by.get("model"), provider=by.get("provider"),

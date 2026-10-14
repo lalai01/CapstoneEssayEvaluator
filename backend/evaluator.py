@@ -460,8 +460,6 @@ def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, pr
     criteria = normalize_rubric(rubric)
     essay_limit = CLOUD_ESSAY_CHARS if provider == "deepseek" else LOCAL_ESSAY_CHARS
 
-    ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-
     rubric_block = ""
     for key, c in criteria.items():
         rubric_block += f"\n[{key}] {c['label']} — score 1 to {c['max_score']}\n"
@@ -519,8 +517,20 @@ Example D - Disorganized essay with no thesis and no evidence:
     score_lines = "\n".join(
         f'  "{key}": <int 1-{c["max_score"]}>,' for key, c in criteria.items()
     )
+    # Local models run on the server's CPU, where every generated word costs
+    # time: ask them for a shorter answer (the scores are the same).
+    brief = provider != "deepseek"
+    per_criterion = "<1 sentence explaining this score>" if brief else "<2-3 sentences explaining this score>"
     feedback_lines = ",\n".join(
-        f'    "{key}": "<2-3 sentences explaining this score>"' for key in criteria
+        f'    "{key}": "{per_criterion}"' for key in criteria
+    )
+    length_rules = (
+        "- At most 3 grammar_issues.\n"
+        "- Provide 2-3 recommendations. Each must reference a specific part of the essay.\n"
+        "- Every criterion_feedback value must be a plain string of 1 sentence."
+    ) if brief else (
+        "- Provide 3–5 recommendations. Each must reference a specific part of the essay.\n"
+        "- Every criterion_feedback value must be a plain string of 2-3 sentences."
     )
 
     user_msg = f"""Carefully evaluate the essay below against the rubric.
@@ -578,9 +588,8 @@ Return ONLY this JSON object (no explanation, no markdown):
 RULES:
 - If there are no grammar errors, use "grammar_issues": [].
 - Never include a grammar_issues entry where original equals correction.
-- Provide 3–5 recommendations. Each must reference a specific part of the essay.
 - Each recommendation's "quote" must be copied exactly from the essay (it is highlighted for the student).
-- Every criterion_feedback value must be a plain string of 2-3 sentences.
+{length_rules}
 """
 
     try:
@@ -590,24 +599,13 @@ RULES:
                 system_msg, user_msg, model=model, json_mode=True, temperature=0.0
             )["text"].strip()
         else:
-            response = requests.post(
-                f"{ollama_url}/api/chat",
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "stream": False,
-                    "options": {"temperature": 0.0},
-                },
-                timeout=120,
-            )
-            if response.status_code != 200:
-                print(f"Ollama returned status {response.status_code}")
-                return None
-
-            content = response.json().get("message", {}).get("content", "").strip()
+            # The shared Ollama client keeps the model loaded between essays
+            # (no reload each time), forces JSON, caps the answer length and
+            # gives up at its deadline instead of hanging.
+            from ai_models import call_ollama
+            content = call_ollama(
+                system_msg, user_msg, model=model, json_mode=True, temperature=0.0, max_tokens=900
+            )["text"].strip()
 
         if content.startswith("```"):
             content = content.strip("`").replace("json", "", 1).strip()

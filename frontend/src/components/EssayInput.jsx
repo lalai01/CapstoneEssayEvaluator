@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { evaluateEssay, evaluateEssayWithRag, listRubrics } from '../api';
 import FileUpload from './FileUpload';
@@ -13,6 +13,8 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
   const [rubrics, setRubrics] = useState([]);
   const [rubricId, setRubricId] = useState('');   // '' = the teacher's default
   const [title, setTitle] = useState('');
+  const [titleError, setTitleError] = useState(false);
+  const titleRef = useRef(null);
   const [text, setText] = useState('');
   const [evalTypeLocal, setEvalTypeLocal] = useState('analytic');
   const [extractedText, setExtractedText] = useState('');
@@ -79,10 +81,13 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
       return;
     }
     if (!title.trim()) {
+      setTitleError(true);
+      titleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      titleRef.current?.focus({ preventScroll: true });
       toast.error('Please enter a title for your essay.');
       return;
     }
-    const words = essay.split(/s+/).filter(Boolean).length;
+    const words = essay.split(/\s+/).filter(Boolean).length;
     if (words < SHORT_ESSAY_WORDS) {
       setShortDialog({ words });
       return;
@@ -109,10 +114,13 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
     let shown = false;
     let fallback = null;   // a rule-based result, shown only if no AI answers
 
-    const outcomes = await Promise.all(EVALUATION_AIS.map(async (ai) => {
+    const runOne = async (ai) => {
       const started = performance.now();
       try {
         const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true);
+        if (typeof result.feedback === 'string' && result.feedback.startsWith('⚠️ Invalid Input')) {
+          throw new Error(result.feedback.replace('⚠️ Invalid Input:', '').trim());
+        }
         const run = { status: 'done', scores: result.scores, feedback: result.feedback, ms: performance.now() - started };
         setAiRuns((prev) => ({ ...prev, [ai.id]: run }));
         const ruleBased = result.scores?.evaluated_by?.provider === 'heuristic';
@@ -128,7 +136,17 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
         setAiRuns((prev) => ({ ...prev, [ai.id]: { status: 'failed', error: errorMessage(err), ms: performance.now() - started } }));
         return false;
       }
-    }));
+    };
+    // Llama and Gemma both run on the server's CPU: one at a time is faster
+    // than both at once (no swapping models in and out of memory).
+    const [cloud, local] = [EVALUATION_AIS.filter((a) => a.id === 'deepseek'), EVALUATION_AIS.filter((a) => a.id !== 'deepseek')];
+    const runLocalInTurn = async () => {
+      const results = [];
+      for (const ai of local) results.push(await runOne(ai));
+      return results;
+    };
+    const [cloudResults, localResults] = await Promise.all([Promise.all(cloud.map(runOne)), runLocalInTurn()]);
+    const outcomes = [...cloudResults, ...localResults];
 
     if (!shown && fallback) {
       shown = true;
@@ -166,17 +184,33 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
 
         {/* Title Input (Required) */}
         <div className="mb-5">
-          <label className="block text-sm font-semibold text-gray-700 mb-2">
+          <label htmlFor="essay-title" className="block text-sm font-semibold text-gray-700 mb-2">
             Essay Title <span className="text-red-500">*</span>
           </label>
           <input
+            id="essay-title"
+            ref={titleRef}
             type="text"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              if (e.target.value.trim()) setTitleError(false);
+            }}
             placeholder="e.g., The Role of Technology in Education"
-            className="w-full border border-gray-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition bg-gray-50"
+            aria-invalid={titleError}
+            aria-describedby={titleError ? 'essay-title-error' : undefined}
+            className={`w-full rounded-xl p-3 transition focus:ring-2 focus:border-transparent ${
+              titleError
+                ? 'border-2 border-red-500 bg-red-50 focus:ring-red-400'
+                : 'border border-gray-200 bg-gray-50 focus:ring-blue-500'
+            }`}
             required
           />
+          {titleError && (
+            <p id="essay-title-error" className="mt-1 text-sm font-medium text-red-600" role="alert">
+              ⚠️ Please give your essay a title before evaluating.
+            </p>
+          )}
         </div>
 
         <div className="mb-5">

@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { uploadFile, pollOcrStatus } from '../api';
 import ConfirmDialog from './ConfirmDialog';
 import { errorMessage } from '../lib/scoring';
+import shrinkImage from '../lib/shrinkImage';
 
 // The server answers 422 { code: 'not_essay', message, reason } when the file
 // isn't an essay (a face, a car, a blank page...).
@@ -63,7 +64,7 @@ export default function FileUpload({ onExtracted }) {
     try {
       let result;
       try {
-        result = await uploadFile(file);
+        result = await uploadFile(await shrinkImage(file));
       } catch (err) {
         throw notEssayFrom(err) || err;
       }

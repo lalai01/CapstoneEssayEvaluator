@@ -1201,9 +1201,14 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
                 print(f"Correction skipped: {e}")
 
         # 4. Upload image to Supabase Storage + log a handwriting sample for the
-        # OCR Labeler. Printed pages (Tesseract) aren't useful there.
+        # OCR Labeler. Printed pages (Tesseract) aren't useful there. Done in
+        # the background so the student gets their text without waiting for it.
         if engine != "tesseract":
-            _log_handwriting_sample(contents, suffix, file.content_type, reader_text, engine)
+            threading.Thread(
+                target=_log_handwriting_sample,
+                args=(contents, suffix, file.content_type, reader_text, engine),
+                daemon=True,
+            ).start()
 
         return OCRResponse(
             text=text,

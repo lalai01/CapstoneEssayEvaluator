@@ -67,7 +67,7 @@ export default function AiChoice({ runs, chosen, onChoose }) {
                 </div>
               )}
               {run.status === 'failed' && (
-                <p className="mt-3 text-sm text-red-600">Didn&apos;t respond{run.error ? `: ${run.error}` : ''}</p>
+                <p className="mt-3 text-sm text-red-600">⚠️ {run.error || `${ai.name} didn’t respond.`}</p>
               )}
               {usable && (
                 <div className="mt-3">
@@ -79,9 +79,13 @@ export default function AiChoice({ runs, chosen, onChoose }) {
                   ) : (
                     <span className="text-sm text-gray-500">No overall score</span>
                   )}
-                  <div className="text-xs text-gray-500 mt-1">
-                    {ruleBased ? 'AI unavailable: rule-based scores' : `Finished in ${seconds(run.ms)}`}
-                  </div>
+                  {ruleBased ? (
+                    <p className="text-xs text-amber-700 mt-1">
+                      ⚠️ {ai.name} didn&apos;t respond, so rule-based scoring was used.
+                    </p>
+                  ) : (
+                    <div className="text-xs text-gray-500 mt-1">Finished in {seconds(run.ms)}</div>
+                  )}
                 </div>
               )}
             </button>
