@@ -127,12 +127,13 @@ def read_essay_image(image_bytes, check_page=True):
     Read an English essay from an image (handwritten or printed).
 
     1. Reject images that aren't a page of writing (a face, a car...).
-    2. Tesseract first: if it reads clean English with high confidence, the
-       page is printed and the handwriting model is skipped.
-    3. Otherwise read it with Gemini vision when GEMINI_API_KEY is set: it
-       reads whole handwritten pages far better than the local model.
-    4. Without Gemini (no key, offline, out of quota), run the handwriting
-       model (TrOCR) and keep whichever result has more real English words.
+    2. Gemini vision first when GEMINI_API_KEY is set: it reads handwritten
+       and printed pages in a few seconds. (Tesseract used to run first on
+       every image, which cost several seconds before Gemini was even asked.)
+    3. Without Gemini (no key, offline, out of quota): Tesseract, and if it
+       reads clean, confident English the page is printed and that's used.
+    4. Otherwise run the handwriting model (TrOCR) and keep whichever result
+       has more real English words.
     5. Reject results that don't read as English.
 
     Returns {"text", "confidence", "engine", "quality", "is_text", "reason"},
@@ -150,21 +151,6 @@ def read_essay_image(image_bytes, check_page=True):
         print(f"[OCR] page check: {is_page} {metrics}")
         if not is_page:
             return not_text(reason)
-
-    candidates = []
-    try:
-        pil = Image.open(BytesIO(image_bytes))
-        text, conf = tesseract_text_and_confidence(pil)
-        q = english_quality(text)
-        candidates.append({"text": text, "confidence": conf, "engine": "tesseract", "q": q})
-        print(f"[OCR] tesseract: {q['words']} words, {q['ratio']:.0%} English, conf {conf:.0f}")
-        if (q["ratio"] >= PRINTED_MIN_RATIO and conf >= PRINTED_MIN_CONFIDENCE
-                and q["words"] >= PRINTED_MIN_WORDS):
-            print("[OCR] printed page: skipping the handwriting model")
-            return {"text": text, "confidence": conf, "engine": "tesseract",
-                    "quality": q["ratio"], "is_text": True, "reason": ""}
-    except Exception as e:
-        print(f"[OCR] tesseract failed: {e}")
 
     import gemini_ocr
     if gemini_ocr.enabled():
@@ -184,6 +170,21 @@ def read_essay_image(image_bytes, check_page=True):
             print("[OCR] gemini text doesn't read as English; trying the local readers")
         except Exception as e:
             print(f"[OCR] gemini unavailable, using the local readers: {e}")
+
+    candidates = []
+    try:
+        pil = Image.open(BytesIO(image_bytes))
+        text, conf = tesseract_text_and_confidence(pil)
+        q = english_quality(text)
+        candidates.append({"text": text, "confidence": conf, "engine": "tesseract", "q": q})
+        print(f"[OCR] tesseract: {q['words']} words, {q['ratio']:.0%} English, conf {conf:.0f}")
+        if (q["ratio"] >= PRINTED_MIN_RATIO and conf >= PRINTED_MIN_CONFIDENCE
+                and q["words"] >= PRINTED_MIN_WORDS):
+            print("[OCR] printed page: skipping the handwriting model")
+            return {"text": text, "confidence": conf, "engine": "tesseract",
+                    "quality": q["ratio"], "is_text": True, "reason": ""}
+    except Exception as e:
+        print(f"[OCR] tesseract failed: {e}")
 
     try:
         from handwriting_ocr import ocr_handwriting_image
