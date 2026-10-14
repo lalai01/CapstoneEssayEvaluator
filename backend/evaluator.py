@@ -264,12 +264,20 @@ def is_valid_essay(text):
     words = text.split()
     if len(words) < 20:
         return False, "Essay too short. Please enter at least 20 words."
-    try:
-        lang = detect(text)
-        if lang != 'en':
-            return False, f"Essay must be in English (detected: {lang})."
-    except Exception:
-        return False, "Could not detect language. Please enter English text."
+    # English = most words are English dictionary words. langdetect alone
+    # misread English essays (e.g. as Croatian "hr"): it guesses from letter
+    # patterns, and its shared state isn't safe when the three AIs evaluate
+    # in parallel. It's now only used to name the language of a clear reject.
+    # Measured: English essays (even with spelling mistakes or in capitals)
+    # score 0.93-1.00; Spanish, French, Croatian and Tagalog 0.28-0.52.
+    from text_quality import english_quality
+    if english_quality(text)["ratio"] < 0.7:
+        try:
+            lang = detect(text)
+        except Exception:
+            lang = None
+        detected = f" (detected: {lang})" if lang and lang != "en" else ""
+        return False, f"Essay must be in English{detected}."
     vowel_pattern = re.compile(r'[aeiou]', re.IGNORECASE)
     real_word_count = sum(1 for w in words if len(w) > 2 and vowel_pattern.search(w))
     if real_word_count < 5:
