@@ -391,12 +391,16 @@ def evaluated_by(model=None):
 
 
 LOCAL_SCORING_MODEL = "llama3.2:3b"
+GEMMA_SCORING_MODEL = "gemma2:2b"
 CLOUD_SCORING_MODEL = "deepseek-chat"
 # How much essay text each model is given. The local model's context is
 # small, so it reads roughly the first 650 words; DeepSeek reads far more.
 LOCAL_ESSAY_CHARS = 4000
 CLOUD_ESSAY_CHARS = 16000
-SCORING_PREFERENCES = ("auto", "deepseek", "local")
+SCORING_PREFERENCES = ("auto", "deepseek", "local", "llama", "gemma")
+# The model each explicit preference means ("local" is the older name for Llama).
+PREFERRED_MODEL = {"deepseek": CLOUD_SCORING_MODEL, "local": LOCAL_SCORING_MODEL,
+                   "llama": LOCAL_SCORING_MODEL, "gemma": GEMMA_SCORING_MODEL}
 
 
 def _cloud_available():
@@ -418,8 +422,11 @@ def choose_scoring_model(essay_text, criteria, preference="auto"):
     local = {"provider": "ollama", "model": LOCAL_SCORING_MODEL, "preference": preference}
     cloud = {"provider": "deepseek", "model": CLOUD_SCORING_MODEL, "preference": preference}
 
-    if preference == "local":
-        return {**local, "reason": "You chose the local model, so the essay stayed on the server."}
+    if preference in ("local", "llama"):
+        return {**local, "reason": "You chose Llama 3.2, which runs on our server, so the essay stayed there."}
+    if preference == "gemma":
+        return {"provider": "ollama", "model": GEMMA_SCORING_MODEL, "preference": preference,
+                "reason": "You chose Gemma 2, which runs on our server, so the essay stayed there."}
     if preference == "deepseek":
         if _cloud_available():
             return {**cloud, "reason": "You chose DeepSeek."}
@@ -805,17 +812,28 @@ def _heuristic_scores_for_rubric(essay_text, analysis, criteria):
     return result
 
 
-def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="auto"):
-    criteria = normalize_rubric(rubric)
-    choice = choose_scoring_model(essay_text, criteria, preference)
-
-    # If the chosen model fails, try the other one, except that an explicit
-    # "local" choice never sends the essay to the cloud.
+def _scoring_attempts(choice, strict):
+    """
+    Models to try, in order. Normally a failed model falls back to the other
+    one (an explicit local choice never goes to the cloud). strict=True is the
+    side-by-side comparison: only the requested AI, so each result is that
+    AI's own; if it isn't available the result says so.
+    """
+    if strict:
+        wanted = PREFERRED_MODEL.get(choice["preference"])
+        return [choice] if wanted is None or choice["model"] == wanted else []
     attempts = [choice]
     if choice["provider"] == "deepseek":
         attempts.append({"provider": "ollama", "model": LOCAL_SCORING_MODEL})
     elif choice["preference"] == "auto" and _cloud_available():
         attempts.append({"provider": "deepseek", "model": CLOUD_SCORING_MODEL})
+    return attempts
+
+
+def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="auto", strict=False):
+    criteria = normalize_rubric(rubric)
+    choice = choose_scoring_model(essay_text, criteria, preference)
+    attempts = _scoring_attempts(choice, strict)
 
     for i, attempt in enumerate(attempts):
         ai = ai_score_all_criteria(
@@ -833,10 +851,17 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="aut
 
     print("⚠️ AI scoring failed, using heuristics")
     result = _heuristic_scores_for_rubric(essay_text, analysis, criteria)
+    if strict and not attempts:
+        wanted = PREFERRED_MODEL[choice["preference"]]
+        why = f"{MODEL_LABELS.get(wanted, wanted)} isn't configured on the server"
+    elif strict:
+        why = f"{MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond"
+    else:
+        why = "No AI model responded"
     result["evaluated_by"] = {
         **result["evaluated_by"],
         "selection": choice["preference"],
-        "reason": "No AI model responded, so the built-in rule-based scoring was used.",
+        "reason": f"{why}, so the built-in rule-based scoring was used.",
     }
     return result
 
@@ -872,7 +897,7 @@ HOLISTIC_PLAIN = {
 }
 
 
-def ai_holistic_score(essay_text, preference="auto"):
+def ai_holistic_score(essay_text, preference="auto", strict=False):
     """
     Genuine holistic scoring: ONE short model call that reads the essay as a
     whole and returns a single 1-5 score for overall coherence, organization,
@@ -882,11 +907,7 @@ def ai_holistic_score(essay_text, preference="auto"):
     Returns a scores dict, or None if every model failed.
     """
     choice = choose_scoring_model(essay_text, normalize_rubric(None), preference)
-    attempts = [choice]
-    if choice["provider"] == "deepseek":
-        attempts.append({"provider": "ollama", "model": LOCAL_SCORING_MODEL})
-    elif choice["preference"] == "auto" and _cloud_available():
-        attempts.append({"provider": "deepseek", "model": CLOUD_SCORING_MODEL})
+    attempts = _scoring_attempts(choice, strict)
 
     levels = "\n".join(f"{k}: {v}" for k, v in sorted(HOLISTIC_PLAIN.items(), reverse=True))
     system_msg = (
@@ -1436,9 +1457,14 @@ def ai_correct_handwriting_text(raw_text, provider="deepseek"):
     return raw_text
 
 
-def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None, rubric=None):
+def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=None, rubric=None,
+                             model=None, provider=None):
+    """Rewrite the rule-based feedback warmly. Written by the AI that scored
+    the essay (model/provider), so each AI in a comparison gives its own
+    feedback; Llama when none is given."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-    model = "llama3.2:3b"
+    if not model or provider not in ("deepseek", "ollama"):
+        model, provider = LOCAL_SCORING_MODEL, "ollama"
 
     if facts is None:
         facts = _essay_facts(essay_text)
@@ -1493,27 +1519,31 @@ Technical Analysis:
 Write only the final feedback paragraph:"""
 
     try:
-        response = requests.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.4},
-            },
-            timeout=60,
-        )
-        if response.status_code == 200:
-            data = response.json()
-            enhanced = data.get("message", {}).get("content", "").strip()
-            if enhanced:
-                if "[RAG_INSIGHTS_START]" in rule_feedback:
-                    rag_part = rule_feedback.split("[RAG_INSIGHTS_START]")[1].split("[RAG_INSIGHTS_END]")[0]
-                    return f"[RAG_INSIGHTS_START]\n{rag_part}\n[RAG_INSIGHTS_END]\n\n{enhanced}"
-                return enhanced
+        enhanced = ""
+        if provider == "deepseek":
+            from ai_models import call_deepseek
+            enhanced = call_deepseek(system_msg, user_msg, model=model, temperature=0.4)["text"].strip()
+        else:
+            response = requests.post(
+                f"{ollama_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0.4},
+                },
+                timeout=60,
+            )
+            if response.status_code == 200:
+                enhanced = response.json().get("message", {}).get("content", "").strip()
+        if enhanced:
+            if "[RAG_INSIGHTS_START]" in rule_feedback:
+                rag_part = rule_feedback.split("[RAG_INSIGHTS_START]")[1].split("[RAG_INSIGHTS_END]")[0]
+                return f"[RAG_INSIGHTS_START]\n{rag_part}\n[RAG_INSIGHTS_END]\n\n{enhanced}"
+            return enhanced
     except Exception as e:
         print(f"AI enhancement failed, using rule-based feedback: {e}")
 

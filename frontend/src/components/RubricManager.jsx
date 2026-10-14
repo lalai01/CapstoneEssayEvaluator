@@ -100,7 +100,7 @@ function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy, readOnly = f
 
 export default function RubricManager({ scope = 'teacher' }) {
   const school = scope === 'school';
-  const { user, isAdmin, isTeacher } = useAuth();
+  const { user, isAdmin } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   const [listLoading, setListLoading] = useState(true);
   const [editing, setEditing] = useState(null);       // null | 'new' | rubric id
@@ -257,16 +257,12 @@ export default function RubricManager({ scope = 'teacher' }) {
     }
   };
 
-  if (user && (school ? !isAdmin : !isTeacher)) {
+  if (user && school && !isAdmin) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
-        <div className="text-6xl mb-4">{school ? '🛡️' : '👩‍🏫'}</div>
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">{school ? 'Admins only' : 'Teachers only'}</h2>
-        <p className="text-gray-600">
-          {school
-            ? 'The school-wide rubric is managed by administrators.'
-            : 'Ask an admin to add you as a teacher to create and manage rubrics.'}
-        </p>
+        <div className="text-6xl mb-4">🛡️</div>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">Admins only</h2>
+        <p className="text-gray-600">The school-wide rubric is managed by administrators.</p>
       </div>
     );
   }
@@ -309,9 +305,9 @@ export default function RubricManager({ scope = 'teacher' }) {
           <div className="text-sm text-gray-700 bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 mb-6">
             {school ? (
               <>
-                The active school-wide rubric is the default for every teacher who hasn't set their own:{' '}
+                The active school-wide rubric is the default for everyone who hasn't set their own:{' '}
                 <strong>{schoolActive ? `“${schoolActive.title}”` : 'none set, so the built-in rubric (5 criteria, 1–4 each) is used'}</strong>.
-                Teachers can view and copy it, but only admins can change it.
+                Everyone can view and copy it, but only admins can change it.
               </>
             ) : (
               <>
@@ -349,7 +345,7 @@ export default function RubricManager({ scope = 'teacher' }) {
                 <h3 className="font-semibold text-gray-800 mb-1">{school ? 'School-wide rubrics' : 'School-wide rubric'}</h3>
                 <p className="text-xs text-gray-500 mb-3">
                   {school
-                    ? 'Only one is active at a time. Set one active to make it the default for teachers.'
+                    ? 'Only one is active at a time. Set one active to make it the default for everyone.'
                     : 'Set by the administrator. Used when you have no default rubric of your own. Copy it to start your own.'}
                 </p>
                 <div className="space-y-3">
@@ -370,7 +366,7 @@ export default function RubricManager({ scope = 'teacher' }) {
             isSystem ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-gray-50 border-gray-200 text-gray-700'
           }`}>
             {isSystem
-              ? '🏫 School-wide rubric: applies to every teacher who has no default rubric of their own.'
+              ? '🏫 School-wide rubric: applies to everyone who has no default rubric of their own.'
               : '👤 Personal rubric: only you can see and use it.'}
           </div>
           <div>

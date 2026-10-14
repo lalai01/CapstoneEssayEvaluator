@@ -73,8 +73,12 @@ class EvaluationRequest(BaseModel):
     text: str
     evaluation_type: str = "analytic"
     rubric_id: Optional[int] = None   # omit to use the teacher's default rubric
-    # "auto" picks a model per essay; or force "deepseek" / "local"
-    ai_model: Literal["auto", "deepseek", "local"] = "auto"
+    # "auto" picks a model per essay; or force "deepseek" / "local" (= "llama")
+    # / "llama" / "gemma". The Evaluate page runs all three AIs side by side
+    # with strict_model=True: each result is that AI's alone, with no fallback
+    # to another model.
+    ai_model: Literal["auto", "deepseek", "local", "llama", "gemma"] = "auto"
+    strict_model: bool = False
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -942,7 +946,6 @@ def _check_can_edit(user: dict, row: dict):
         if not is_admin(user):
             raise HTTPException(403, "Only admins can change school-wide rubrics.")
     else:
-        _require_teacher(user, "change rubrics")
         if row.get("user_id") != user["id"]:
             raise HTTPException(403, "You can only change your own rubrics.")
 
@@ -962,7 +965,7 @@ def _with_flags(row: dict, user: dict) -> dict:
     return {
         **row,
         "is_system": bool(row.get("is_system")),
-        "can_edit": is_admin(user) if row.get("is_system") else (row.get("user_id") == user["id"] and is_teacher(user)),
+        "can_edit": is_admin(user) if row.get("is_system") else row.get("user_id") == user["id"],
     }
 
 @app.post("/rubrics")
@@ -971,8 +974,6 @@ def create_rubric(rubric: RubricCreate,
                   user_client: Client = Depends(get_user_client)):
     if rubric.is_system and not is_admin(user):
         raise HTTPException(403, "Only admins can create school-wide rubrics.")
-    if not rubric.is_system:
-        _require_teacher(user, "create rubrics")
     data = rubric.dict()
     data["criteria"] = _validate_criteria(rubric.criteria)
     data["user_id"] = user["id"]
@@ -1331,7 +1332,8 @@ def get_ocr_status(job_id: str):
 # get a per-hour allowance per IP; signed-in users aren't limited. Counts are
 # kept in memory (one backend process) and reset when it restarts.
 GUEST_LIMITS = {
-    "evaluate": int(os.environ.get("GUEST_EVALS_PER_HOUR", "5")),
+    # Each essay is evaluated by three AIs (three calls), so 15 = 5 essays.
+    "evaluate": int(os.environ.get("GUEST_EVALS_PER_HOUR", "15")),
     "ocr": int(os.environ.get("GUEST_UPLOADS_PER_HOUR", "10")),
 }
 _guest_hits: Dict[str, List[float]] = {}
@@ -1349,7 +1351,7 @@ def _client_ip(request: Request) -> str:
 
 def _check_guest_quota(request: Request, kind: str):
     limit = GUEST_LIMITS[kind]
-    action = "evaluate essays" if kind == "evaluate" else "upload files"
+    action = "run AI evaluations (3 per essay)" if kind == "evaluate" else "upload files"
     if limit <= 0:
         raise HTTPException(401, {"code": "sign_in_required",
                                   "message": f"Please sign in to {action}."})
@@ -1370,7 +1372,7 @@ def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
     criteria, rubric_info = resolve_rubric(user["id"] if user else None,
                                            req.rubric_id if user else None)
     result = run_evaluation(req.text, req.evaluation_type, use_rag=use_rag, rubric=criteria,
-                            ai_model=req.ai_model)
+                            ai_model=req.ai_model, strict_model=req.strict_model)
     if result.get("error"):
         return EvaluationResponse(
             scores={"main_statement": 0, "organization": 0,
@@ -1493,16 +1495,17 @@ def get_knowledge(id: int, user=Depends(get_current_user)):
 @app.post("/override")
 def save_override(override: OverrideRequest, user=Depends(get_current_user)):
     """
-    Save a teacher override. `teacher_feedback` is the teacher's remarks
-    (required) and `suggested_changes` their suggestions for the student.
+    Save an override: corrected scores with remarks (`teacher_feedback`,
+    required) and suggestions (`suggested_changes`). Anyone signed in can
+    override; only a teacher's override is marked approved (approved_by) and
+    so feeds the AI's learning (RAG). Others are kept for the user only.
     """
-    _require_teacher(user, "override evaluations")
     if not override.teacher_feedback.strip():
-        raise HTTPException(422, "Teacher remarks are required.")
+        raise HTTPException(422, "Remarks are required.")
 
     data = override.dict()
     data["user_id"] = user["id"]
-    data["approved_by"] = user.get("email")
+    data["approved_by"] = user.get("email") if is_teacher(user) else None
     if not data.get("teacher_scores"):
         data.pop("teacher_scores", None)
     if not data.get("ai_model"):

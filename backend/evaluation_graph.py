@@ -31,7 +31,8 @@ class EvaluationState(TypedDict, total=False):
     _analysis: Optional[Dict[str, Any]]
     _validated: Optional[bool]
     rubric: Optional[Dict[str, Any]]
-    ai_model: Optional[str]   # "auto" | "deepseek" | "local"
+    ai_model: Optional[str]   # "auto" | "deepseek" | "local"/"llama" | "gemma"
+    strict_model: Optional[bool]   # only the chosen AI (side-by-side comparison)
 
 
 # ---------------------------------------------------------------------------
@@ -49,13 +50,15 @@ def score_node(state: EvaluationState) -> dict:
     if state.get("evaluation_type") == "holistic":
         # One quick overall judgement; only if every model fails do we fall
         # back to deriving the score from the slower analytic scoring.
-        scores = ai_holistic_score(state["essay_text"], state.get("ai_model") or "auto")
+        scores = ai_holistic_score(state["essay_text"], state.get("ai_model") or "auto",
+                                   strict=bool(state.get("strict_model")))
         if scores is None:
             analytic = calculate_analytic_scores(
                 state["essay_text"],
                 analysis,
                 rubric=state.get("rubric"),
                 preference=state.get("ai_model") or "auto",
+                strict=bool(state.get("strict_model")),
             )
             score = holistic_from_analytic(analytic, state.get("rubric"))
             by = analytic.get("evaluated_by") or {}
@@ -73,6 +76,7 @@ def score_node(state: EvaluationState) -> dict:
             analysis,
             rubric=state.get("rubric"),
             preference=state.get("ai_model") or "auto",
+            strict=bool(state.get("strict_model")),
         )
     return {"scores": scores, "_analysis": analysis}
 
@@ -108,9 +112,11 @@ def feedback_node(state: EvaluationState) -> dict:
             state.get("rag_context") or "",
             rubric=state.get("rubric"),
         )
+    # The AI that scored the essay also writes its feedback.
+    by = state["scores"].get("evaluated_by") or {}
     enhanced = enhance_feedback_with_ai(
         state["essay_text"], state["scores"], analysis, rule_feedback,
-        rubric=state.get("rubric"),
+        rubric=state.get("rubric"), model=by.get("model"), provider=by.get("provider"),
     )
     return {"feedback": enhanced}
 
@@ -152,13 +158,14 @@ evaluation_graph = build_graph()
 # Public entry point
 # ---------------------------------------------------------------------------
 def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool, rubric=None,
-                   ai_model: str = "auto") -> dict:
+                   ai_model: str = "auto", strict_model: bool = False) -> dict:
     initial: EvaluationState = {
         "essay_text": essay_text,
         "evaluation_type": evaluation_type,
         "use_rag": use_rag,
         "rubric": rubric,
         "ai_model": ai_model,
+        "strict_model": strict_model,
         "scores": None,
         "feedback": None,
         "rag_context": None,

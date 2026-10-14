@@ -109,20 +109,23 @@ export const deleteSavedEssay = async (id) => {
 // ---------- Evaluation ----------
 // rubricId: a rubric from GET /rubrics, or null for the teacher's default.
 // aiModel: 'auto' (chosen per essay), 'deepseek' or 'local'.
-export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto') => {
+// strict: only that AI scores (no fallback to another model), used when the
+// three AIs evaluate side by side. The local models share the server's CPU,
+// so allow up to 5 minutes.
+export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false) => {
   const response = await apiClient.post(
     '/evaluate',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel },
-    { timeout: 180000 }  // 3 min — extended prompt with criterion_feedback
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict },
+    { timeout: 300000 }
   );
   return response.data;
 };
 
-export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto') => {
+export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false) => {
   const response = await apiClient.post(
     '/evaluate-rag',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel },
-    { timeout: 180000 }
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict },
+    { timeout: 300000 }
   );
   return response.data;
 };

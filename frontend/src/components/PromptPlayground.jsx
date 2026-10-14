@@ -445,8 +445,9 @@ function ComparisonTable({ raters, stats, reference, referenceLabel, showReferen
     <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
       <h4 className="font-semibold text-gray-800 mb-1">📊 Scoring Difference Table</h4>
       <p className="text-xs text-gray-500 mb-3">
-        Pairwise columns show row model minus column model. Bold = more than one rubric level apart.
-        Highlighted rows are criteria where the models disagree most.
+        Each row is one criterion. <strong>Consensus</strong> is the AIs’ average grade and <strong>Spread</strong> how much
+        they disagree. Columns like “A−B” show how many points higher AI A graded than AI B (bold = more than one
+        rubric level apart). Highlighted rows are where the AIs disagree most.
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -719,6 +720,67 @@ function ClosestSummary({ stats, criteria, raters, referenceMode, referenceLabel
   );
 }
 
+// ---- Plain-language readings of the statistics (for non-technical users) ----
+
+const PLAIN_TERMS = [
+  ['Consensus', 'The average grade of the AIs: what they would give if they voted together.'],
+  ['Spread', 'How much the AIs disagree on one criterion. Small spread = they gave similar grades.'],
+  ['Similarity', 'How close this AI’s grades are to the comparison (100% = exactly the same grades).'],
+  ['Avg distance', 'On average, how far this AI’s grades are from the comparison, on a 0–100 scale. Lower is closer.'],
+  ['Bias · Lenient · Strict', 'Whether this AI tends to grade higher (lenient) or lower (strict) than the comparison. Balanced means neither.'],
+  ['Weighted score', 'The overall grade this AI gave the essay, counting each criterion by its importance in the rubric.'],
+  ['Criteria closest', 'On how many criteria this AI was the nearest to the comparison.'],
+  ['Differentiation', 'Whether the AI tells strong and weak areas apart. Low means it gave almost the same score to everything.'],
+  ['Exact match · Within ±1', 'How often two AIs gave the identical score, or scores at most one level apart.'],
+  ['Avg |diff|', 'On average, how many points apart two AIs are on a criterion.'],
+  ['Correlation r', 'Whether two AIs agree on which parts of the essay are strongest and weakest. Near 1 = same pattern, near 0 = no clear pattern, below 0 = opposite views. Needs at least 3 criteria.'],
+];
+
+function PlainGlossary() {
+  return (
+    <details className="rounded-lg border border-sky-200 bg-sky-50/60 p-3 text-sm">
+      <summary className="cursor-pointer font-semibold text-sky-900">📖 What do these numbers mean? (in plain words)</summary>
+      <dl className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+        {PLAIN_TERMS.map(([term, meaning]) => (
+          <div key={term}>
+            <dt className="font-semibold text-gray-800">{term}</dt>
+            <dd className="text-gray-600">{meaning}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+function plainCorrelation(r) {
+  if (!isNum(r)) return 'not enough criteria to compare strong and weak areas';
+  if (r >= 0.7) return 'agree on which areas are strong and weak';
+  if (r >= 0.4) return 'partly agree on which areas are strong and weak';
+  if (r > -0.1) return 'don’t clearly agree on which areas are strong and weak';
+  return 'see the strong and weak areas the opposite way';
+}
+
+function plainPair(p) {
+  if (!p.n) return '—';
+  const within = p.adjacent / p.n;
+  const closeness = within >= 0.8 ? 'Usually within one level'
+    : within >= 0.5 ? 'Often within one level' : 'Often more than one level apart';
+  return `${closeness}; ${plainCorrelation(p.r)}.`;
+}
+
+function plainRater(r, referenceMode) {
+  const ref = referenceMode === 'teacher' ? 'your grades'
+    : referenceMode === 'system' ? 'the system evaluator' : 'the other AIs';
+  const sim = r.similarity;
+  const near = !isNum(sim) ? 'Grades' : sim >= 90 ? 'Grades almost the same as'
+    : sim >= 75 ? 'Grades about the same as' : sim >= 60 ? 'Grades somewhat differently from' : 'Grades quite differently from';
+  const lean = r.tendency.label === 'Lenient' ? ', a little more generously'
+    : r.tendency.label === 'Strict' ? ', a little more strictly' : '';
+  const diff = isNum(r.differentiation) && r.differentiation < 0.5
+    ? 'gives almost the same score to every criterion' : 'tells strong and weak areas apart';
+  return `${near} ${ref}${lean}; ${diff}.`;
+}
+
 function StatisticsPanel({
   stats, raters, criteria, referenceMode, setReferenceMode, referenceLabel,
   teacherRef, setTeacherRef, systemRef, onRunSystem, systemLoading, canRunSystem,
@@ -756,6 +818,8 @@ function StatisticsPanel({
           ))}
         </div>
       </div>
+
+      <PlainGlossary />
 
       {referenceMode === 'consensus' && (
         <p className="text-xs text-gray-600 bg-gray-50 rounded-lg p-2">
@@ -838,6 +902,9 @@ function StatisticsPanel({
               <dt className="text-gray-500" title="Standard deviation of this model's own scores across criteria">Differentiation</dt>
               <dd className="text-right">{r.differentiation.toFixed(1)}</dd>
             </dl>
+            <p className="mt-2 text-xs text-gray-700 bg-gray-50 rounded-md p-2">
+              <span className="font-semibold">In plain words: </span>{plainRater(r, referenceMode)}
+            </p>
           </div>
         ))}
         {raters.filter((r) => !r.scores).map((r) => (
@@ -864,6 +931,7 @@ function StatisticsPanel({
                   <th className="font-medium text-center">Within ±1</th>
                   <th className="font-medium text-center">Avg |diff|</th>
                   <th className="font-medium text-center" title="Pearson correlation of normalized scores; needs 3+ criteria and variation">Correlation r</th>
+                  <th className="font-medium text-left pl-3">In plain words</th>
                 </tr>
               </thead>
               <tbody>
@@ -874,6 +942,7 @@ function StatisticsPanel({
                     <td className="text-center">{p.n ? `${p.adjacent}/${p.n} (${Math.round((p.adjacent / p.n) * 100)}%)` : '—'}</td>
                     <td className="text-center">{isNum(p.mae) ? `${p.mae.toFixed(2)} pts` : '—'}</td>
                     <td className="text-center">{isNum(p.r) ? p.r.toFixed(2) : '—'}</td>
+                    <td className="text-left pl-3 text-gray-700 text-xs">{plainPair(p)}</td>
                   </tr>
                 ))}
               </tbody>

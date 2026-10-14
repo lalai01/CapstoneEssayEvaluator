@@ -584,16 +584,24 @@ export default function Results({
               </div>
             ) : (
               <>
-                <button
-                  onClick={handleSaveToKB}
-                  className="w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
-                >
-                  💾 Save to My Knowledge Base
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleSaveToKB}
+                    className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                  >
+                    💾 Save to My Knowledge Base
+                  </button>
+                  <button
+                    onClick={handleReject}
+                    className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                  >
+                    ✏️ Override Scores
+                  </button>
+                </div>
                 <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
                   {isAdmin
-                    ? '🔒 Approvals and overrides are done by teachers. To grade as well, add your email as a teacher in the Admin Dashboard.'
-                    : '🔒 Only teachers can approve evaluations or override AI scores. Ask an admin to add you as a teacher.'}
+                    ? 'ℹ️ Your overrides are saved to your Learning Hub. Only teachers’ overrides and approvals teach the AI; to grade as a teacher, add your email as a teacher in the Admin Dashboard.'
+                    : 'ℹ️ Disagree with the AI? Override it: your scores and remarks are saved to your Learning Hub. Only teachers’ overrides and approvals teach the AI.'}
                 </p>
               </>
             )}
@@ -746,7 +754,7 @@ export default function Results({
       {showOverrideModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in">
           <div className="bg-white rounded-2xl p-6 max-w-2xl w-full mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h3 className="text-2xl font-bold mb-4 text-gray-800">Teacher Override</h3>
+            <h3 className="text-2xl font-bold mb-4 text-gray-800">{isTeacher ? 'Teacher Override' : 'Override the AI’s Scores'}</h3>
 
             <label className="block text-sm font-semibold mb-2">Your Scores</label>
             <div className="mb-4 border rounded-xl overflow-hidden">
@@ -791,10 +799,12 @@ export default function Results({
             )}
 
             <label htmlFor="override-remarks" className="block text-sm font-semibold mb-1">
-              Teacher's remarks <span className="text-red-500">*</span>
+              {isTeacher ? 'Teacher’s remarks' : 'Your remarks'} <span className="text-red-500">*</span>
             </label>
             <p className="text-xs text-gray-500 mb-1">
-              Your own assessment: what the AI got wrong and how you judge the essay. Saved to the Learning Hub and used to improve later evaluations.
+              {isTeacher
+                ? 'Your own assessment: what the AI got wrong and how you judge the essay. Saved to the Learning Hub and used to improve later evaluations.'
+                : 'Why you disagree with the AI. Saved to your Learning Hub for your own reference; only a teacher’s override changes what the AI learns.'}
             </p>
             <textarea
               id="override-remarks"

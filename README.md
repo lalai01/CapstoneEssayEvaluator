@@ -29,17 +29,17 @@ A web app that scores essays against a configurable rubric, gives written feedba
 
 | Area | What it does |
 |---|---|
-| **Evaluate Essay** | Paste text or upload an image, PDF or DOCX, then choose a scoring mode. **Analytic** gives a separate score for each rubric criterion (e.g. thesis, organization, evidence, grammar; teachers can add others such as vocabulary or transitions) with detailed per-criterion feedback; it takes longer. **Holistic** gives one overall 1–5 score for coherence, organization, style and content together, from a single short AI call with no second feedback call, so it's faster and cheaper; if that call fails, the score is derived from the analytic criteria and the result says so. Optional RAG adds feedback from similar past essays. **AI model:** Auto (recommended), DeepSeek, or Llama 3.2 (local); see [Choosing the AI model](#choosing-the-ai-model). |
+| **Evaluate Essay** | Paste text or upload an image, PDF or DOCX, then choose a scoring mode. **Analytic** gives a separate score for each rubric criterion (e.g. thesis, organization, evidence, grammar; teachers can add others such as vocabulary or transitions) with detailed per-criterion feedback; it takes longer. **Holistic** gives one overall 1–5 score for coherence, organization, style and content together, from a single short AI call with no second feedback call, so it's faster and cheaper; if that call fails, the score is derived from the analytic criteria and the result says so. Optional RAG adds feedback from similar past essays. **Three AIs** (DeepSeek, Llama 3.2 and Gemma 2) evaluate every essay at once; their results appear side by side as each finishes, and the user picks the one they prefer; see [Three AIs per essay](#three-ais-per-essay). |
 | **Highlighted essay** | After an evaluation, the essay is shown with the parts to fix highlighted: grammar/spelling errors (red, from the AI's grammar fixes), passages the recommendations refer to (violet, the AI quotes them), vague wording such as "very" or "a lot" (amber), and sentences over 30 words (blue underline). Click a highlight to see the suggested change; each type can be switched off. Works for both scoring modes. |
 | **Evaluation report** | **Generate Evaluation Report** creates a multi-page PDF. It includes student, class and teacher details, the rubric used, the total, percentage, weighted score and grade, a per-criterion breakdown (with override scores beside the AI's), strengths and focus areas, criterion comments, feedback, grammar fixes, recommendations, and a teacher comment and signature area. The optional appendix shows the **essay with the same highlights as on screen**: colored backgrounds, a blue underline for long sentences, and numbered [n] marks explained in a **Marked Issues** list. Teachers can also add an **AI-revised reference version** (`POST /revise-essay`, teachers only). It keeps the student's position and ideas, fixes the marked issues, never invents facts (it leaves [placeholders] where evidence is needed), and is clearly labelled as AI-generated, not the student's work. |
 | **Satisfaction rating** | After an evaluation, the user rates it 1–10, colored red (1–3), amber (4–6) or green (7–10) wherever it appears. The rating is stored with Knowledge Base entries and teacher overrides. |
-| **Teacher override** (teachers only) | **Reject & Override** an evaluation. The teacher enters their own score per criterion, **teacher's remarks** (required, in their own words, with the AI feedback shown for reference) and **suggestions for the student** (optional). The approving teacher is recorded. Overrides go to the Learning Hub, feed back into RAG, and the remarks fill the teacher comments in the evaluation report. |
+| **Override** (everyone signed in) | **Override** an evaluation: enter your own score per criterion, **remarks** (required, with the AI feedback shown for reference) and **suggestions** (optional). Overrides go to the Learning Hub. A **teacher's** override is recorded as approved, feeds back into RAG, and fills the teacher comments in the evaluation report; a student's or admin's override is kept for themselves and doesn't change what the AI learns. |
 | **Knowledge Base** | Saved evaluations. A teacher's save is **✅ Approved** (and used by RAG); a student's save is kept privately as **not approved**. Each entry shows which AI scored it, its rubric, its approval, its satisfaction, and whether the essay was also overridden. Search, sort, and filter by AI model, approval, and override status. |
-| **Learning Hub** | Teacher overrides, with essay title, the AI that was overridden, AI-vs-teacher scores, remarks and suggestions. The same search, sort and AI filter, plus filters for "scores changed" and "also in Knowledge Base". |
+| **Learning Hub** | Your overrides, with essay title, the AI that was overridden, AI-vs-teacher scores, remarks and suggestions. The same search, sort and AI filter, plus filters for "scores changed" and "also in Knowledge Base". |
 | **AI Prompt Playground** | Runs the same prompt on three models side by side. A **Score Comparison** table (Category / Primary / Compare / Diff) compares any two of them and can be saved as a PDF report. Agreement statistics are described [below](#prompt-playground-statistics). |
 | **Rubrics** (teachers only) | Teachers create their own rubrics. Each criterion has its own maximum score (1–2 up to 1–10), weight and level descriptors, and teachers can add criteria of their own. A teacher's **default** rubric is used for their evaluations. They can copy the school-wide rubric as a starting point. Personal rubrics are private to their owner. |
 | **School Rubric** (admin only) | Admins create and activate the school-wide rubric, the default for every teacher without their own. Teachers can view and copy it but not change it; the backend rejects such changes with 403. |
-| **Navigation** | A top bar shows the main pages to everyone, plus a **Teacher** menu (Learning Hub, My Rubrics) for teachers and an **Admin** menu (Admin Dashboard, School Rubric, Manage Surveys, OCR Labeler) for admins. People only see menus their role allows; on small screens the menu collapses into a drawer. The account menu shows the email, role badges and Sign out. |
+| **Navigation** | A top bar shows the main pages to everyone, plus a **My Work** menu (Knowledge Base, Learning Hub, My Rubrics) for everyone signed in and an **Admin** menu (Admin Dashboard, School Rubric, Manage Surveys, OCR Labeler) for admins. People only see menus their role allows; on small screens the menu collapses into a drawer. The account menu shows the email, role badges and Sign out. |
 | **Admin Dashboard** (admin only) | Add teachers and admins by email (no SQL needed). Each teacher is **Active**, **Inactive** (keeps the record but removes teacher rights until reactivated) or **Removed** (a soft delete, restorable). Summary cards show the counts, and an **activity log** records who added, removed, activated or deactivated whom, and when. |
 | **Surveys** | Admins create surveys; logged-in users answer them in the **Surveys** tab. |
 | **OCR Labeler** (admin) | Verify the transcripts of uploaded handwritten pages (prefilled line by line with what the reader saw) or discard unusable photos, to build a handwriting dataset. |
@@ -49,9 +49,9 @@ A web app that scores essays against a configurable rubric, gives written feedba
 
 | Role | Can |
 |---|---|
-| **Student** (default) | Evaluate essays, save them privately (not approved), use the Playground |
-| **Teacher · Approver** | Everything a student can, plus override AI scores, approve evaluations into the Knowledge Base, and create rubrics |
-| **Admin** | Run the system: manage roles, surveys, OCR labels and the **school-wide rubric**. Admins are **not** teachers: they don't override, approve or keep personal rubrics, unless their email is also added as a teacher (then they hold both roles) |
+| **Student** (default) | Evaluate essays, save them privately (not approved), override the AI for their own records, create their own rubrics, use the Playground |
+| **Teacher · Approver** | Everything a student can, plus approve evaluations into the Knowledge Base; their overrides teach the AI |
+| **Admin** | Run the system: manage roles, surveys, OCR labels and the **school-wide rubric**. Admins are **not** teachers: their saves and overrides don't teach the AI unless their email is also added as a teacher (then they hold both roles) |
 
 These rules are enforced on the server: a student who calls the API directly still can't override or approve. Teachers are managed in the **🛡️ Admin Dashboard** (stored in the `teachers` table); only **active**, not-removed teachers have teacher rights. A user whose `app_metadata.role` is `teacher` is also a teacher. Admin and teacher are separate roles; one person can hold both.
 
@@ -341,9 +341,11 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 
 ---
 
-## Choosing the AI model
+## Three AIs per essay
 
-On the Evaluate page the teacher picks **Auto** (default), **DeepSeek** or **Llama 3.2 (local)**. Auto decides per essay:
+Clicking **Evaluate** sends the essay to **DeepSeek** (cloud), **Llama 3.2 3B** and **Gemma 2 2B** (both on our server, via Ollama) at the same time (`ai_model` = `deepseek` / `llama` / `gemma` with `strict_model: true`). Each card fills in as its AI finishes, with its overall score and its **own** feedback (the AI that scored also writes the feedback). The first real AI result is shown straight away; the user can switch to any other, and the chosen one is what's displayed, saved, overridden and put in the report. In this mode there is no fallback to another model, so each card is genuinely that AI's work; an AI that isn't available says so (rule-based scores, clearly marked).
+
+The API still accepts `ai_model: "auto"` (and `local` for Llama) without `strict_model`, which picks one model per essay:
 
 | Situation | Model | Why |
 |---|---|---|
@@ -352,7 +354,7 @@ On the Evaluate page the teacher picks **Auto** (default), **DeepSeek** or **Lla
 | Anything else | Llama 3.2 3B (local) | Fast enough, free, and the essay stays on the server |
 | `DEEPSEEK_API_KEY` not set | Llama 3.2 3B | Nothing else is available |
 
-If the chosen model fails, Auto tries the other one, then falls back to rule-based scoring. An explicit **local** choice never sends the essay to the cloud, even as a fallback. The result card shows which model scored the essay and why.
+If the chosen model fails (outside the three-AI mode), Auto tries the other one, then falls back to rule-based scoring. An explicit **local** choice never sends the essay to the cloud, even as a fallback. The result card shows which model scored the essay and why.
 
 ## Prompt Playground statistics
 
@@ -412,7 +414,7 @@ All routes except `/health`, `/ocr*`, `/test-prompt`, `/rubric*`, `/suggestions`
 | GET | `/rubric/active?rubric_id=` | The rubric an evaluation would use for the caller (or the given one): info and criteria |
 | GET | `/rubric`, `/suggestions` | Built-in rubric and usage guide |
 | GET/POST/PUT/DELETE | `/rubrics`, `/rubrics/{id}` | Rubric CRUD: teachers manage their own; `is_system: true` (school-wide) is admin-only |
-| POST | `/override` | Teacher override `{ original_essay, original_scores, teacher_scores?, teacher_feedback, suggested_changes?, satisfaction? }` |
+| POST | `/override` | Override (any signed-in user; approved only for teachers) `{ original_essay, original_scores, teacher_scores?, teacher_feedback, suggested_changes?, satisfaction? }` |
 | GET | `/learning-kb` | Your overrides |
 | POST/GET | `/knowledge`, `/knowledge/{id}` | Knowledge Base |
 | POST | `/test-prompt` | `{ ai_provider: deepseek \| gemma \| ollama \| llamacpp, system_prompt, user_prompt, model? }` |
