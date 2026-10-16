@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { apiClient, getRubric } from '../api';
+import { apiClient, getRubric, importRubricFile } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { DEFAULT_CRITERIA, labelFromKey, errorMessage, slugify } from '../lib/scoring';
 
@@ -44,6 +44,21 @@ function toCriteria(rows) {
   }
   return criteria;
 }
+
+function importedRows(criteria, fileName) {
+  return criteria.map((c) => ({
+    id: `imp-${Math.random().toString(36).slice(2)}`,
+    key: '',
+    label: c.label,
+    max_score: Math.min(MAX_SCORE, Math.max(MIN_SCORE, Number(c.max_score) || 4)),
+    weight: Number(c.weight ?? 1),
+    levels: Object.fromEntries(Object.entries(c.levels || {}).map(([k, v]) => [Number(k), v])),
+    importedFrom: fileName,
+  }));
+}
+
+const RUBRIC_FILE_TYPES = '.pdf,.xlsx,.csv';
+const SOURCE_NAMES = { gemini: 'Gemini', deepseek: 'DeepSeek', table: 'the built-in table reader' };
 
 function newRow() {
   return {
@@ -111,6 +126,10 @@ export default function RubricManager({ scope = 'teacher' }) {
   const [openLevels, setOpenLevels] = useState({});
   const [loading, setLoading] = useState(false);
   const [defaultCriteria, setDefaultCriteria] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState(null);   // { file, source, count, warnings }
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!user) return;
@@ -130,7 +149,48 @@ export default function RubricManager({ scope = 'teacher' }) {
     }
   };
 
+  // Read a rubric file. Outside the editor it starts a new rubric; inside,
+  // the criteria are added to the ones already there (duplicates are marked).
+  const importFile = async (file) => {
+    if (!file) return;
+    if (!/\.(pdf|xlsx|csv)$/i.test(file.name)) {
+      toast.error('Choose a PDF, an Excel file (.xlsx) or a CSV.');
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await importRubricFile(file);
+      const fresh = importedRows(result.criteria, file.name);
+      if (editing) {
+        setRows((prev) => [...prev, ...fresh]);
+        if (!title.trim()) setTitle(result.title);
+      } else {
+        openEditor({
+          id: 'new',
+          system: school,
+          rubricTitle: result.title,
+          rubricDescription: `Imported from ${file.name}`,
+          editorRows: fresh,
+        });
+      }
+      setImportNote({ file: file.name, source: result.source, count: fresh.length, warnings: result.warnings || [] });
+      toast.success(`Read ${fresh.length} criteria from ${file.name}. Check them, then save.`);
+    } catch (err) {
+      toast.error('Import failed: ' + errorMessage(err));
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const onDropFile = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    importFile(e.dataTransfer?.files?.[0]);
+  };
+
   const openEditor = ({ id, system, rubricTitle, rubricDescription, editorRows }) => {
+    setImportNote(null);
     setEditing(id);
     setIsSystem(system);
     setTitle(rubricTitle);
@@ -286,19 +346,51 @@ export default function RubricManager({ scope = 'teacher' }) {
 
   const cardHandlers = { onActivate: activate, onEdit: startEdit, onDelete: remove, onCopy: startCopy };
 
+  // A criterion "already exists" when an earlier row has the same name (the
+  // same AI key), e.g. after importing a file into a rubric that has it.
+  const duplicates = new Map();   // row id → the earlier row's name
+  {
+    const firstByKey = new Map();
+    for (const r of rows) {
+      const key = slugify(r.label);
+      if (!key) continue;
+      if (firstByKey.has(key)) duplicates.set(r.id, firstByKey.get(key));
+      else firstByKey.set(key, r.label);
+    }
+  }
+  const titleTaken = title.trim()
+    ? rubrics.find((r) => r.id !== editing && r.title?.trim().toLowerCase() === title.trim().toLowerCase())
+    : null;
+
   return (
     <div className="glass-card rounded-2xl shadow-xl p-6 max-w-6xl mx-auto">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
         <h2 className="text-2xl font-bold text-indigo-700">{school ? '🏫 School Rubric' : '📐 My Rubrics'}</h2>
         {!editing && (
-          <button
-            onClick={() => startNew(school)}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
-          >
-            {school ? '+ New School-wide Rubric' : '+ New Rubric'}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={importing}
+              className="bg-white border border-indigo-300 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-50 transition disabled:opacity-50"
+            >
+              {importing ? '⏳ Reading file…' : '📄 Import from PDF/Excel'}
+            </button>
+            <button
+              onClick={() => startNew(school)}
+              className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+            >
+              {school ? '+ New School-wide Rubric' : '+ New Rubric'}
+            </button>
+          </div>
         )}
       </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={RUBRIC_FILE_TYPES}
+        className="hidden"
+        onChange={(e) => importFile(e.target.files?.[0])}
+      />
 
       {!editing && (
         <>
@@ -374,9 +466,12 @@ export default function RubricManager({ scope = 'teacher' }) {
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full border rounded-lg p-2"
+              className={`w-full border rounded-lg p-2 ${titleTaken ? 'border-amber-400 bg-amber-50' : ''}`}
               placeholder="e.g., Argumentative Essay Rubric"
             />
+            {titleTaken && (
+              <p className="mt-1 text-xs text-amber-700">⚠️ You already have a rubric called “{titleTaken.title}”. Saving creates a second one; rename it if that isn't what you want.</p>
+            )}
           </div>
           <div>
             <label className="block font-medium mb-1">Description (optional)</label>
@@ -398,8 +493,49 @@ export default function RubricManager({ scope = 'teacher' }) {
             </span>
           </div>
 
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
+            onDrop={onDropFile}
+            className={`rounded-lg border-2 border-dashed px-4 py-3 text-sm text-center transition ${
+              dragging ? 'border-indigo-500 bg-indigo-100' : 'border-indigo-200 bg-white'
+            }`}
+          >
+            {importing ? (
+              <span className="text-indigo-700">⏳ Reading the rubric… this can take up to a minute.</span>
+            ) : (
+              <>
+                📄 Add criteria from a rubric file: drag a PDF or Excel file here, or{' '}
+                <button type="button" onClick={() => fileInputRef.current?.click()} className="text-indigo-700 underline font-medium">
+                  browse
+                </button>
+                .
+              </>
+            )}
+          </div>
+
+          {importNote && (
+            <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
+              Read {importNote.count} criteria from <strong>{importNote.file}</strong> using {SOURCE_NAMES[importNote.source] || importNote.source}.
+              Check names, scores and descriptions below; change or remove any, or add your own, then save.
+              {importNote.warnings.map((w) => <div key={w} className="text-xs text-amber-800 mt-1">⚠️ {w}</div>)}
+            </div>
+          )}
+
           {rows.map((row, index) => (
-            <div key={row.id} className="bg-gray-50 p-4 rounded-lg border">
+            <div key={row.id} className={`p-4 rounded-lg border ${duplicates.has(row.id) ? 'bg-amber-50 border-amber-400' : 'bg-gray-50'}`}>
+              {(duplicates.has(row.id) || row.importedFrom) && (
+                <div className="flex flex-wrap gap-2 mb-2 text-xs">
+                  {duplicates.has(row.id) && (
+                    <span className="rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 font-medium">
+                      ⚠️ Already exists: “{duplicates.get(row.id)}” is above. Rename or remove one.
+                    </span>
+                  )}
+                  {row.importedFrom && (
+                    <span className="rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">📄 Imported from {row.importedFrom}</span>
+                  )}
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-[2fr_1.5fr_auto_auto_auto] gap-3 items-end">
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Criterion name</label>

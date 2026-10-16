@@ -968,6 +968,24 @@ def _with_flags(row: dict, user: dict) -> dict:
         "can_edit": is_admin(user) if row.get("is_system") else row.get("user_id") == user["id"],
     }
 
+@app.post("/rubrics/import")
+def import_rubric_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """
+    Read criteria from an uploaded rubric (PDF, .xlsx or .csv). Nothing is
+    saved: the editor shows them for the user to review, change and save.
+    """
+    data = file.file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "The file is too large (10 MB maximum).")
+    import rubric_import
+    try:
+        return rubric_import.import_rubric(data, file.filename or "")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        print(f"❌ Rubric import failed: {e}")
+        raise HTTPException(500, "The file couldn't be read. Is it a valid PDF or Excel file?")
+
 @app.post("/rubrics")
 def create_rubric(rubric: RubricCreate,
                   user: dict = Depends(get_current_user),
