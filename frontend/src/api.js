@@ -142,6 +142,17 @@ export const reviseEssay = async (text, grammarIssues = [], recommendations = []
 };
 
 // ---------- Rubric & Suggestions ----------
+// Read criteria from a rubric file (PDF, .xlsx, .csv). Nothing is saved.
+export const importRubricFile = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await apiClient.post('/rubrics/import', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 180000,
+  });
+  return response.data;
+};
+
 export const getRubric = async () => {
   const response = await apiClient.get('/rubric');
   return response.data;
