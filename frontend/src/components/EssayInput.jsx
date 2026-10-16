@@ -5,45 +5,57 @@ import FileUpload from './FileUpload';
 import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
-import useLeaveWarning from '../lib/useLeaveWarning';
+import useDraft from '../lib/draft';
 import { EVALUATION_AIS } from '../lib/evaluationAis';
 
-export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
-  const { user } = useAuth();
+export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChooseAi, setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
+  const { user, loading: authLoading } = useAuth();
   const [rubrics, setRubrics] = useState([]);
-  const [rubricId, setRubricId] = useState('');   // '' = the teacher's default
-  const [title, setTitle] = useState('');
+  // Everything typed or chosen here is kept as a draft in this browser, so a
+  // refresh or a visit to another page doesn't lose it.
+  const [rubricId, setRubricId] = useDraft('rubricId', '');   // '' = the teacher's default
+  const [title, setTitle] = useDraft('title', '');
   const [titleError, setTitleError] = useState(false);
   const titleRef = useRef(null);
-  const [text, setText] = useState('');
-  const [evalTypeLocal, setEvalTypeLocal] = useState('analytic');
-  const [extractedText, setExtractedText] = useState('');
-  const [ocrInfo, setOcrInfo] = useState(null);
-  const [useRag, setUseRag] = useState(true);
+  const [text, setText] = useDraft('text', '');
+  const [evalTypeLocal, setEvalTypeLocal] = useDraft('evalType', 'analytic');
+  const [extractedText, setExtractedText] = useDraft('extractedText', '');
+  const [ocrInfo, setOcrInfo] = useDraft('ocrInfo', null);
+  const [useRag, setUseRag] = useDraft('useRag', true);
+  const [confirmNew, setConfirmNew] = useState(false);
 
   // Text read from an uploaded file replaces the typing box: it's what gets
   // evaluated, and the box stays locked until the extracted text is removed.
   const hasExtracted = extractedText.trim().length > 0;
   const essayToEvaluate = () => (hasExtracted ? extractedText.trim() : text.trim());
-
-  // Typed or extracted work is lost on refresh / Back; ask first.
-  useLeaveWarning(!!(text.trim() || hasExtracted || loading));
+  const hasDraft = !!(title.trim() || text.trim() || hasExtracted);
 
   const removeExtracted = () => {
     setExtractedText('');
     setOcrInfo(null);
   };
 
+  const startNewEssay = () => {
+    setConfirmNew(false);
+    setTitle('');
+    setText('');
+    removeExtracted();
+    setTitleError(false);
+    onNewEssay?.();
+    toast.success('Draft cleared. Start your new essay.');
+  };
+
   useEffect(() => {
     if (!user) {
       setRubrics([]);
-      setRubricId('');
+      // Keep the chosen rubric while the sign-in is still loading after a refresh.
+      if (!authLoading) setRubricId('');
       return;
     }
     listRubrics()
       .then((data) => setRubrics(Array.isArray(data) ? data : []))
       .catch(() => setRubrics([]));
-  }, [user]);
+  }, [user, authLoading, setRubricId]);
 
   const myRubrics = rubrics.filter((r) => !r.is_system);
   const schoolRubrics = rubrics.filter((r) => r.is_system && r.is_active);
@@ -164,10 +176,25 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
   return (
     <div className="space-y-6">
       <div className="glass-card rounded-2xl shadow-xl p-6 animate-slide-up">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-          <span className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm">1</span>
-          Input Your Essay
-        </h2>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+            <span className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm">1</span>
+            Input Your Essay
+          </h2>
+          {(hasDraft || hasResults) && (
+            <button
+              type="button"
+              onClick={() => setConfirmNew(true)}
+              disabled={loading}
+              className="text-sm border border-gray-300 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition disabled:opacity-50"
+            >
+              ＋ Start a new essay
+            </button>
+          )}
+        </div>
+        {hasDraft && (
+          <p className="-mt-2 mb-4 text-xs text-gray-500">💾 Draft saved in this browser. It stays after a refresh until you start a new essay or sign out.</p>
+        )}
 
         {/* Login notice for anonymous users */}
         {!user && (
@@ -341,6 +368,19 @@ export default function EssayInput({ setAiRuns, onChooseAi, setScores, setFeedba
           {loading ? <div className="spinner mx-auto"></div> : (useRag ? '✨ Evaluate with RAG' : '✨ Evaluate Essay')}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmNew}
+        tone="warning"
+        icon="📝"
+        title="Start a new essay?"
+        confirmLabel="Clear and start new"
+        cancelLabel="Keep my draft"
+        onConfirm={startNewEssay}
+        onCancel={() => setConfirmNew(false)}
+      >
+        <p>This clears the title, the essay text and the current results. Save anything you want to keep to the Knowledge Base first.</p>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={!!shortDialog}

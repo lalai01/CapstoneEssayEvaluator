@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import EssayInput from './components/EssayInput';
 import Results from './components/Results';
@@ -18,6 +18,7 @@ import AiChoice from './components/AiChoice';
 import NavBar from './components/NavBar';
 import { useAuth } from './context/AuthContext';
 import useLeaveWarning from './lib/useLeaveWarning';
+import useDraft from './lib/draft';
 
 // Who may open each page. Admins and teachers are separate roles: admins run
 // the system, teachers do the grading. One person can hold both roles, and
@@ -26,20 +27,33 @@ import useLeaveWarning from './lib/useLeaveWarning';
 //   user    - any signed-in user (students included)
 //   teacher - teachers (approvers)
 //   admin   - admins
+// `path` is the page's own URL, so it can be bookmarked, shared and reloaded.
 const PAGES = [
-  { id: 'home', label: 'Home', icon: 'home', access: 'public', group: 'main' },
-  { id: 'evaluate', label: 'Evaluate', icon: 'evaluate', access: 'public', group: 'main' },
-  { id: 'playground', label: 'Playground', icon: 'playground', access: 'public', group: 'main' },
-  { id: 'knowledge', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'workspace', description: 'Evaluations you saved' },
-  { id: 'surveys', label: 'Surveys', icon: 'surveys', access: 'user', group: 'main' },
-  { id: 'rateus', label: 'Rate Us', icon: 'rateus', access: 'public', group: 'main' },
-  { id: 'learning', label: 'Learning Hub', icon: 'learning', access: 'user', group: 'workspace', description: 'Your overrides, remarks and score changes' },
-  { id: 'rubrics', label: 'My Rubrics', icon: 'rubrics', access: 'user', group: 'workspace', description: 'Create rubrics and choose your default' },
-  { id: 'admins', label: 'Admin Dashboard', icon: 'dashboard', access: 'admin', group: 'admin', description: 'Teachers, admins and the activity log' },
-  { id: 'school-rubric', label: 'School Rubric', icon: 'school', access: 'admin', group: 'admin', description: 'Default rubric for every teacher' },
-  { id: 'admin', label: 'Manage Surveys', icon: 'list', access: 'admin', group: 'admin', description: 'Create surveys and read responses' },
-  { id: 'ocr-labeler', label: 'OCR Labeler', icon: 'tag', access: 'admin', group: 'admin', description: 'Correct OCR samples for training' },
+  { id: 'home', path: '/', label: 'Home', icon: 'home', access: 'public', group: 'main' },
+  { id: 'evaluate', path: '/evaluate', label: 'Evaluate', icon: 'evaluate', access: 'public', group: 'main' },
+  { id: 'playground', path: '/playground', label: 'Playground', icon: 'playground', access: 'public', group: 'main' },
+  { id: 'knowledge', path: '/knowledge-base', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'workspace', description: 'Evaluations you saved' },
+  { id: 'surveys', path: '/surveys', label: 'Surveys', icon: 'surveys', access: 'user', group: 'main' },
+  { id: 'rateus', path: '/rate-us', label: 'Rate Us', icon: 'rateus', access: 'public', group: 'main' },
+  { id: 'learning', path: '/learning-hub', label: 'Learning Hub', icon: 'learning', access: 'user', group: 'workspace', description: 'Your overrides, remarks and score changes' },
+  { id: 'rubrics', path: '/my-rubrics', label: 'My Rubrics', icon: 'rubrics', access: 'user', group: 'workspace', description: 'Create rubrics and choose your default' },
+  { id: 'admins', path: '/admin', label: 'Admin Dashboard', icon: 'dashboard', access: 'admin', group: 'admin', description: 'Teachers, admins and the activity log' },
+  { id: 'school-rubric', path: '/school-rubric', label: 'School Rubric', icon: 'school', access: 'admin', group: 'admin', description: 'Default rubric for every teacher' },
+  { id: 'admin', path: '/manage-surveys', label: 'Manage Surveys', icon: 'list', access: 'admin', group: 'admin', description: 'Create surveys and read responses' },
+  { id: 'ocr-labeler', path: '/ocr-labeler', label: 'OCR Labeler', icon: 'tag', access: 'admin', group: 'admin', description: 'Correct OCR samples for training' },
 ];
+
+const pageFromPath = (pathname) => {
+  const path = pathname.replace(/\/+$/, '') || '/';
+  return PAGES.find((p) => p.path === path);
+};
+
+// Results restored after a refresh: an AI still working when the page was
+// reloaded lost its answer, so its card says so instead of spinning forever.
+const restoreRuns = (runs) => Object.fromEntries(Object.entries(runs).map(([id, run]) => [id,
+  run?.status === 'running'
+    ? { status: 'failed', error: 'Interrupted: the page was reloaded while this AI was working. Evaluate again.' }
+    : run]));
 
 const MENU_GROUPS = [
   { id: 'workspace', label: 'My Work', caption: 'Your evaluations, overrides and rubrics', icon: 'knowledge' },
@@ -54,13 +68,12 @@ const ROLE_BADGES = {
 };
 
 function App() {
-  const [scores, setScores] = useState(null);
-  // Evaluation results aren't kept across a refresh; ask before leaving.
-  useLeaveWarning(!!scores);
+  // The latest evaluation is kept as a draft, so a refresh shows it again.
+  const [scores, setScores] = useDraft('scores', null);
 
   // The three AIs evaluate every essay; the user picks whose result to use.
-  const [aiRuns, setAiRuns] = useState(null);   // { [aiId]: { status, scores, feedback, ms, error } }
-  const [chosenAi, setChosenAi] = useState(null);
+  const [aiRuns, setAiRuns] = useDraft('aiRuns', null, restoreRuns);   // { [aiId]: { status, scores, feedback, ms, error } }
+  const [chosenAi, setChosenAi] = useDraft('chosenAi', null);
   const chooseAi = (id, run) => {
     const picked = run || aiRuns?.[id];
     setChosenAi(id);
@@ -69,12 +82,40 @@ function App() {
       setFeedback(picked.feedback);
     }
   };
-  const [feedback, setFeedback] = useState('');
+  const [feedback, setFeedback] = useDraft('feedback', '');
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('home');
-  const [currentEssay, setCurrentEssay] = useState('');
-  const [essayTitle, setEssayTitle] = useState('');
-  const [evalType, setEvalType] = useState('analytic');
+  // An evaluation in progress can't survive a refresh; ask first.
+  useLeaveWarning(loading);
+  const [currentEssay, setCurrentEssay] = useDraft('evaluatedEssay', '');
+  const [essayTitle, setEssayTitle] = useDraft('evaluatedTitle', '');
+  const [evalType, setEvalType] = useDraft('evaluatedType', 'analytic');
+
+  const clearResults = () => {
+    setAiRuns(null);
+    setChosenAi(null);
+    setScores(null);
+    setFeedback('');
+    setCurrentEssay('');
+    setEssayTitle('');
+  };
+
+  // The page shown follows the URL; Back and Forward move between pages.
+  const [activeTab, setActiveTabState] = useState(() => pageFromPath(window.location.pathname)?.id || 'home');
+  useEffect(() => {
+    if (!pageFromPath(window.location.pathname)) {
+      window.history.replaceState(null, '', '/' + window.location.search + window.location.hash);
+    }
+    const onPopState = () => setActiveTabState(pageFromPath(window.location.pathname)?.id || 'home');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+  const setActiveTab = (id) => {
+    const page = PAGES.find((p) => p.id === id);
+    if (!page) return;
+    if (window.location.pathname !== page.path) window.history.pushState(null, '', page.path);
+    setActiveTabState(id);
+    window.scrollTo(0, 0);
+  };
 
   const [showOverrideModal, setShowOverrideModal] = useState(false);
   const [teacherFeedback, setTeacherFeedback] = useState('');
@@ -82,7 +123,7 @@ function App() {
 
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  const { user, isAdmin, isTeacher, role, signOut } = useAuth();
+  const { user, isAdmin, isTeacher, role, signOut, loading: authLoading, roleLoading } = useAuth();
 
   const canOpen = (access) =>
     access === 'public' ||
@@ -90,9 +131,18 @@ function App() {
     (access === 'teacher' && isTeacher) ||
     (access === 'admin' && isAdmin);
   const pages = PAGES.filter((p) => canOpen(p.access));
-  // If the current page is no longer allowed (signed out, role changed),
-  // show Home instead of a page the user can't use.
-  const currentTab = pages.some((p) => p.id === activeTab) ? activeTab : 'home';
+  const activePage = PAGES.find((p) => p.id === activeTab);
+  const allowed = pages.some((p) => p.id === activeTab);
+  // After a reload the sign-in and role are still loading: wait for them
+  // rather than turning a valid link away.
+  const waiting = !allowed && (authLoading || roleLoading);
+  const currentTab = allowed ? activeTab : null;
+
+  useEffect(() => {
+    document.title = activePage && activePage.id !== 'home'
+      ? `${activePage.label} · AI Essay Evaluator`
+      : 'AI Essay Evaluator';
+  }, [activePage]);
 
   // An admin who is also a teacher shows both badges.
   const roleBadges = !role ? [] : [
@@ -120,10 +170,44 @@ function App() {
         />
 
         <div className="container mx-auto px-4 py-8 max-w-7xl">
+          {waiting && (
+            <div className="flex justify-center py-24" aria-label="Loading">
+              <div className="spinner" />
+            </div>
+          )}
+          {!allowed && !waiting && activePage && (
+            <div className="glass-card rounded-2xl shadow-xl p-8 bg-white/95 max-w-lg mx-auto text-center animate-fade-in">
+              <div className="text-4xl" aria-hidden="true">🔒</div>
+              <h2 className="text-xl font-bold text-gray-800 mt-2">{activePage.label}</h2>
+              <p className="text-gray-600 mt-2">
+                {activePage.access === 'user' && !user
+                  ? 'Sign in to open this page.'
+                  : 'This page is only for administrators.'}
+              </p>
+              <div className="mt-5 flex justify-center gap-3">
+                {activePage.access === 'user' && !user && (
+                  <button
+                    onClick={() => setShowLoginModal(true)}
+                    className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+                  >
+                    Sign in
+                  </button>
+                )}
+                <button
+                  onClick={() => setActiveTab('home')}
+                  className="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition"
+                >
+                  Go to Home
+                </button>
+              </div>
+            </div>
+          )}
           {currentTab === 'home' && <HomePage setActiveTab={setActiveTab} />}
           {currentTab === 'evaluate' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-fade-in">
               <EssayInput
+                onNewEssay={clearResults}
+                hasResults={!!aiRuns}
                 setAiRuns={setAiRuns}
                 onChooseAi={chooseAi}
                 setScores={setScores}

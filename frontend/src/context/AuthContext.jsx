@@ -1,8 +1,14 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { getMe } from '../api'
+import { clearDrafts } from '../lib/draft'
 
 const AuthContext = createContext({})
+
+// After signing in, come back to the page the user was on (e.g. /my-rubrics).
+// Supabase only allows URLs in its Redirect URLs list and otherwise uses the
+// Site URL, so the worst case is landing on Home as before.
+const returnUrl = () => window.location.origin + window.location.pathname
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
@@ -77,7 +83,7 @@ export const AuthProvider = ({ children }) => {
   const signInWithEmailLink = async (email) => {
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: window.location.origin },
+      options: { emailRedirectTo: returnUrl() },
     })
     if (error) throw error
   }
@@ -87,16 +93,24 @@ export const AuthProvider = ({ children }) => {
   const signInWithGoogle = () => supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: window.location.origin,
+      redirectTo: returnUrl(),
       queryParams: { prompt: 'select_account' },
     },
   })
   const signInWithYahoo = () => supabase.auth.signInWithOAuth({ provider: 'custom:yahoo' })
-  const signOut = () => supabase.auth.signOut()
+  // Drafts belong to whoever wrote them: clear them and reload, so the next
+  // person on a shared computer starts with an empty page.
+  const signOut = async () => {
+    await supabase.auth.signOut()
+    clearDrafts()
+    window.location.assign('/')
+  }
+  // Signed in, but the role (admin / teacher) isn't known yet.
+  const roleLoading = !!userId && !checked
 
   return (
     <AuthContext.Provider value={{
-      user, isAdmin, isTeacher, role, loading,
+      user, isAdmin, isTeacher, role, loading, roleLoading,
       signInWithGoogle, signInWithYahoo, signInWithEmail, signInWithEmailLink, signOut,
     }}>
       {children}
