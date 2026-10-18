@@ -46,9 +46,13 @@ function useDismiss(open, setOpen, ref) {
   }, [open, setOpen, ref]);
 }
 
-const linkBase = 'inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors';
+// whitespace-nowrap: a label never breaks onto a second line (which made
+// neighbouring labels overlap on mid-size screens).
+const linkBase = 'relative inline-flex items-center gap-1.5 xl:gap-2 px-2.5 xl:px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors';
 const linkIdle = 'text-slate-300 hover:text-white hover:bg-white/10';
 const linkActive = 'text-white bg-white/15 shadow-inner';
+// Underline under the current top-bar tab.
+const activeBar = 'after:absolute after:left-2.5 after:right-2.5 after:-bottom-[13px] after:h-0.5 after:rounded-full after:bg-indigo-400';
 
 function GroupMenu({ group, items, currentTab, onSelect }) {
   const [open, setOpen] = useState(false);
@@ -63,7 +67,7 @@ function GroupMenu({ group, items, currentTab, onSelect }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className={`${linkBase} ${active ? linkActive : linkIdle}`}
+        className={`${linkBase} ${active ? `${linkActive} ${activeBar}` : linkIdle}`}
       >
         <Icon name={group.icon} className="w-4 h-4" />
         {group.label}
@@ -183,29 +187,32 @@ export default function NavBar({ items, groups, currentTab, onSelect, user, role
           <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shadow-md">
             AE
           </span>
-          <span className="hidden sm:flex flex-col items-start leading-tight">
-            <span className="text-white font-semibold">AI Essay Evaluator</span>
-            <span className="text-[11px] text-slate-400">Writing assessment platform</span>
+          {/* The name needs room the tabs use on mid-size screens: show it on
+              phones (no tabs there) and wide screens only. */}
+          <span className="hidden sm:flex lg:hidden xl:flex flex-col items-start leading-tight">
+            <span className="text-white font-semibold whitespace-nowrap">AI Essay Evaluator</span>
+            <span className="text-[11px] text-slate-400 whitespace-nowrap">Writing assessment platform</span>
           </span>
         </button>
 
-        <nav aria-label="Main" className="hidden lg:flex items-center gap-1 ml-4">
+        <nav aria-label="Main" className="hidden lg:flex items-center gap-0.5 xl:gap-1 ml-2 xl:ml-4 min-w-0">
           {mainItems.map((item) => (
             <button
               key={item.id}
               type="button"
               aria-current={currentTab === item.id ? 'page' : undefined}
               onClick={() => select(item.id)}
-              className={`${linkBase} ${currentTab === item.id ? linkActive : linkIdle}`}
+              title={item.short ? item.label : undefined}
+              className={`${linkBase} ${currentTab === item.id ? `${linkActive} ${activeBar}` : linkIdle}`}
             >
-              <Icon name={item.icon} className="w-4 h-4" />
-              {item.label}
+              <Icon name={item.icon} className="w-4 h-4 shrink-0" />
+              {item.short || item.label}
             </button>
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-2">
-          <div className="hidden lg:flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1 xl:gap-2 shrink-0">
+          <div className="hidden lg:flex items-center gap-0.5 xl:gap-1">
             {visibleGroups.map((g) => (
               <GroupMenu key={g.id} group={g} items={g.items} currentTab={currentTab} onSelect={select} />
             ))}

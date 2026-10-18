@@ -32,7 +32,7 @@ import useDraft from './lib/draft';
 const PAGES = [
   { id: 'home', path: '/', label: 'Home', icon: 'home', access: 'public', group: 'main' },
   { id: 'evaluate', path: '/evaluate', label: 'Evaluate', icon: 'evaluate', access: 'public', group: 'main' },
-  { id: 'compare', path: '/compare-scores', aliases: ['/playground'], label: 'Compare with My Scores', icon: 'compare', access: 'public', group: 'main' },
+  { id: 'compare', path: '/compare-scores', aliases: ['/playground'], label: 'Compare with My Scores', short: 'Compare', icon: 'compare', access: 'public', group: 'main' },
   { id: 'knowledge', path: '/knowledge-base', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'workspace', description: 'Evaluations you saved' },
   { id: 'surveys', path: '/surveys', label: 'Surveys', icon: 'surveys', access: 'user', group: 'main' },
   { id: 'rateus', path: '/rate-us', label: 'Rate Us', icon: 'rateus', access: 'public', group: 'main' },

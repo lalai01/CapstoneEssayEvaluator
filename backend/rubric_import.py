@@ -23,8 +23,9 @@ import re
 
 import requests
 
-MAX_LEVELS = 10            # the editor allows max scores 2-10
+MAX_LEVELS = 10            # levels kept per criterion
 MIN_LEVELS = 2
+MAX_POINTS = 100           # highest score a criterion can have (evaluator.MAX_SCORE_LIMIT)
 MAX_DESCRIPTION = 600      # characters kept per level description
 
 INSTRUCTIONS = """Extract the essay grading rubric from this document.
@@ -35,9 +36,13 @@ INSTRUCTIONS = """Extract the essay grading rubric from this document.
   standards that aren't part of the scoring grid.
 - For each criterion list its performance levels with a numeric "score":
   use the rubric's own numbers when it has them (e.g. 4, 3, 2, 1). If the
-  levels are names (e.g. Excellent / Adequate / Needs Work), number them
-  from 1 for the lowest upward. A level labelled with a points range (e.g.
-  "Excellent (18-20)") is ONE level, not one level per point.
+  levels are names only (e.g. Excellent / Adequate / Needs Work), number
+  them from 1 for the lowest upward.
+- Keep the rubric's real points. A level with a points range (e.g.
+  "Excellent (18-20)") is ONE level: "score" = the lowest points of the
+  range (18), "max" = the highest (20), "label" = its name (Excellent).
+  Never renumber point ranges to 1-4.
+- "max_score": the criterion's maximum points (e.g. 20), if stated.
 - Include every criterion row of the scoring grid, even when a sheet or page
   has many; don't merge or skip criteria.
 - "description": the level's descriptor, copied faithfully; join bullet
@@ -57,12 +62,14 @@ SCHEMA = {
                 "properties": {
                     "name": {"type": "STRING"},
                     "weight": {"type": "NUMBER"},
+                    "max_score": {"type": "INTEGER"},
                     "levels": {
                         "type": "ARRAY",
                         "items": {
                             "type": "OBJECT",
                             "properties": {
                                 "score": {"type": "INTEGER"},
+                                "max": {"type": "INTEGER"},
                                 "label": {"type": "STRING"},
                                 "description": {"type": "STRING"},
                             },
@@ -153,8 +160,8 @@ def _deepseek(text):
     from ai_models import call_deepseek
     if not os.environ.get("DEEPSEEK_API_KEY"):
         raise RuntimeError("DeepSeek isn't configured")
-    shape = ('{"title": "...", "criteria": [{"name": "...", "weight": 1, '
-             '"levels": [{"score": 4, "label": "...", "description": "..."}]}]}')
+    shape = ('{"title": "...", "criteria": [{"name": "...", "weight": 1, "max_score": 20, '
+             '"levels": [{"score": 18, "max": 20, "label": "Excellent", "description": "..."}]}]}')
     reply = call_deepseek(
         "You convert grading rubrics into JSON. Reply with a single JSON object only.",
         f"{INSTRUCTIONS}\n\nReply with JSON shaped like:\n{shape}\n\nRubric (table cells "
@@ -179,39 +186,58 @@ def _is_level_label(cell):
     return bool(cell) and len(cell.split()) <= 4 and bool(LEVEL_WORDS.match(cell))
 
 
+POINTS_RANGE = re.compile(r"(\d+)\s*(?:-|–|—|to)\s*(\d+)")
+POINTS_TEXT = re.compile(r"[(\[]?\s*\d+\s*(?:(?:-|–|—|to)\s*\d+)?\s*(?:pts?\.?|points?)?\s*[)\]]?", re.I)
+
+
+def _level_of(cell):
+    """A header cell → {"score", "top", "label"}: "Excellent (18-20)" gives
+    score 18, top 20; "4" gives 4, 4; "5 Mastery" gives 5, 5, "Mastery";
+    a name alone gives no score (numbered later)."""
+    label = _clean(POINTS_TEXT.sub(" ", cell))
+    span = POINTS_RANGE.search(cell)
+    if span:
+        low, high = sorted((int(span.group(1)), int(span.group(2))))
+        return {"score": low, "top": high, "label": label}
+    number = re.search(r"\d+", cell)
+    score = int(number.group()) if number else None
+    return {"score": score, "top": score, "label": label}
+
+
 def _header(row):
     """
-    For a header row of level labels ("Score | 4 | 3 | 2 | 1 | NS"): its
-    labelled columns as [(column, score or None)], None for columns that
-    aren't levels (e.g. "NS", "Not Scored"). None if the row isn't a header.
+    For a header row of level labels ("Score | 4 | 3 | 2 | 1 | NS" or
+    "Criterion | Excellent (18-20) | Proficient (15-17) | ..."): its labelled
+    columns as [(column, level or None)], None for columns that aren't levels
+    (e.g. "NS", "Not Scored", "Maximum"). None if the row isn't a header.
     """
     cells = [(i, c) for i, c in enumerate(row) if i > 0 and c and not HEADER_WORDS.match(c)]
-    levels = [(i, c) for i, c in cells if _is_level_label(c)]
+    levels = [(i, _level_of(c)) for i, c in cells if _is_level_label(c)]
     if len(levels) < MIN_LEVELS or len(cells) - len(levels) > 1:
         return None
-    numbers = [re.match(r"\d+", c) for _, c in levels]
-    if all(numbers) and len({int(n.group()) for n in numbers}) == len(levels):
-        scores = [int(n.group()) for n in numbers]
-    else:
-        scores = list(range(len(levels), 0, -1))   # named levels, best first
-    score_of = dict(zip((i for i, _ in levels), scores))
-    return [(i, score_of.get(i)) for i, _ in cells]
+    scores = [lv["score"] for _, lv in levels]
+    if None in scores or len(set(scores)) != len(scores):
+        # Named levels, best first: number them down to 1.
+        for n, (_, lv) in zip(range(len(levels), 0, -1), levels):
+            lv["score"] = lv["top"] = n
+    level_at = dict(levels)
+    return [(i, level_at.get(i)) for i, _ in cells]
 
 
 def _row_levels(row, header):
-    """{score: description} for a criterion row under the given header."""
+    """[(level, description)] for a criterion row under the given header."""
     filled = [(i, c) for i, c in enumerate(row) if i > 0 and c]
     if header is None:
         # No header: the level columns count down from the left.
         n = len(row) - 1
-        return {n - (i - 1): c for i, c in filled}
+        return [({"score": n - (i - 1), "top": n - (i - 1), "label": ""}, c) for i, c in filled]
     columns = dict(header)
     if all(i in columns for i, _ in filled):
         pairs = [(columns[i], c) for i, c in filled]       # cells line up with the header
     else:
         # Merged cells shift columns (common in PDFs): match by order instead.
-        pairs = [(s, c) for (_, s), (_, c) in zip(header, filled)]
-    return {s: c for s, c in pairs if s is not None}
+        pairs = [(lv, c) for (_, lv), (_, c) in zip(header, filled)]
+    return [(lv, c) for lv, c in pairs if lv is not None]
 
 
 def table_rubric(table):
@@ -247,8 +273,8 @@ def table_rubric(table):
         levels = _row_levels(row, header)
         if len(levels) < MIN_LEVELS:
             continue
-        item = {"name": row[0], "weight": 1, "levels": [
-            {"score": s, "description": d} for s, d in levels.items()]}
+        item = {"name": row[0], "weight": 1, "max_score": max(lv["top"] for lv, _ in levels), "levels": [
+            {"score": lv["score"], "max": lv["top"], "label": lv["label"], "description": d} for lv, d in levels]}
         if not row[0]:
             unnamed = item
         elif not SKIP_ROWS.search(row[0]):
@@ -265,6 +291,13 @@ def table_rubric(table):
 
 # ---------------------------------------------------------------- normalize
 
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize(raw):
     """AI or table output → editor criteria; drops anything unusable."""
     criteria, warnings, seen = [], [], set()
@@ -273,27 +306,43 @@ def _normalize(raw):
         # Some PDFs store text twice: "Development: Analysis Development: Analysis".
         name = re.sub(r"^(.{6,}?)\s+\1\b.*$", r"\1", name)
         levels = [lv for lv in (item.get("levels") or []) if isinstance(lv, dict)]
-        scored = []
+        scored = []   # (lowest score, highest score, description)
         for lv in levels:
             try:
-                scored.append((int(lv.get("score")), _clean(lv.get("description"))[:MAX_DESCRIPTION]))
+                low = int(lv.get("score"))
             except (TypeError, ValueError):
                 continue
+            high = max(low, _int(lv.get("max"), low))
+            text, label = _clean(lv.get("description")), _clean(lv.get("label"))
+            # Keep the level's name ("Excellent: ...") when it isn't just a number.
+            if label and text and not label.isdigit() and not text.lower().startswith(label.lower()):
+                text = f"{label}: {text}"
+            scored.append((low, high, text[:MAX_DESCRIPTION]))
         if not name or len(scored) < MIN_LEVELS:
             continue
-        distinct = sorted({s for s, _ in scored})
-        if distinct[0] < 1 or distinct[-1] > MAX_LEVELS:
-            # Points (e.g. 25/20/15) or 0-based scales: keep the order, renumber 1..n.
+        distinct = sorted({s for s, _, _ in scored})
+        top = max(h for _, h, _ in scored)
+        if distinct[0] < 0 or top > MAX_POINTS or len(distinct) > MAX_LEVELS:
+            # Out of range or one level per point: keep the order, renumber 1..n.
             if len(distinct) > MAX_LEVELS:
                 warnings.append(f"“{name}” had more than {MAX_LEVELS} levels; only the top {MAX_LEVELS} were kept.")
                 distinct = distinct[-MAX_LEVELS:]
             rank = {s: i + 1 for i, s in enumerate(distinct)}
-            scored = [(rank[s], d) for s, d in scored if s in rank]
+            scored = [(rank[s], rank[s], d) for s, _, d in scored if s in rank]
+        elif distinct[0] == 0:
+            # Scores start at 0, but scoring starts at 1: a band "0-10" starts
+            # at 1; plain 0/1/2 levels move up by one.
+            if any(h > s for s, h, _ in scored):
+                scored = [(max(s, 1), max(h, 1), d) for s, h, d in scored]
+            else:
+                scored = [(s + 1, h + 1, d) for s, h, d in scored]
         level_map = {}
-        for s, d in scored:
+        for s, _, d in scored:
             if d and s not in level_map:
                 level_map[s] = d
-        max_score = max(MIN_LEVELS, max(s for s, _ in scored))
+        top = max(h for _, h, _ in scored)
+        stated = _int(item.get("max_score"), 0)
+        max_score = max(MIN_LEVELS, top, stated if top <= stated <= MAX_POINTS else 0)
         try:
             weight = float(item.get("weight") or 1)
         except (TypeError, ValueError):

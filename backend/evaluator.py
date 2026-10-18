@@ -110,7 +110,11 @@ DEFAULT_WEIGHTS = {
     "grammar": 1.0,
 }
 
-MAX_SCORE_LIMIT = 10
+# A criterion is scored 1..max_score. Up to 100 so points-based rubrics
+# (e.g. 20 points per criterion) keep their real scale. Their levels can be
+# bands: a level is keyed by its lowest score and covers the scores up to the
+# next level, e.g. {18: "Excellent", 15: "Proficient", ...} on 1-20.
+MAX_SCORE_LIMIT = 100
 
 
 def _to_number(value, default, cast=float):
@@ -176,6 +180,17 @@ def rubric_meta(rubric):
         {"key": key, "label": c["label"], "max_score": c["max_score"], "weight": c["weight"]}
         for key, c in normalize_rubric(rubric).items()
     ]
+
+
+def level_ranges(criterion):
+    """[(low, high, descriptor)] from the best level down: each level covers
+    the scores from its own up to just below the next level."""
+    levels = criterion.get("levels") or {}
+    out, top = [], criterion["max_score"]
+    for low in sorted(levels, reverse=True):
+        out.append((low, top, levels[low]))
+        top = low - 1
+    return out
 
 
 def descriptor_for(criterion, score):
@@ -472,8 +487,9 @@ def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, pr
     rubric_block = ""
     for key, c in criteria.items():
         rubric_block += f"\n[{key}] {c['label']} — score 1 to {c['max_score']}\n"
-        for level in sorted(c["levels"], reverse=True):
-            rubric_block += f"  {level}: {c['levels'][level]}\n"
+        for low, high, text in level_ranges(c):
+            # Bands of a points-based rubric show their range: "18-20: ...".
+            rubric_block += f"  {low if high <= low else f'{low}-{high}'}: {text}\n"
 
     facts = _essay_facts(essay_text)
 
