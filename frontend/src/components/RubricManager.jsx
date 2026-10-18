@@ -179,7 +179,13 @@ export default function RubricManager({ scope = 'teacher' }) {
       const result = await importRubricFile(file);
       const fresh = importedRows(result.criteria, file.name);
       if (editing) {
-        setRows((prev) => [...prev, ...fresh]);
+        // Uploading the same file again replaces its earlier criteria instead
+        // of adding them twice; blank rows are dropped. Criteria typed by hand
+        // or from other files stay (duplicates among them are marked).
+        setRows((prev) => [
+          ...prev.filter((r) => r.label.trim() && r.importedFrom !== file.name),
+          ...fresh,
+        ]);
         if (!title.trim()) setTitle(result.title);
       } else {
         openEditor({
@@ -193,7 +199,11 @@ export default function RubricManager({ scope = 'teacher' }) {
       setImportNote({ file: file.name, source: result.source, count: fresh.length, warnings: result.warnings || [] });
       toast.success(`Read ${fresh.length} criteria from ${file.name}. Check them, then save.`);
     } catch (err) {
-      toast.error('Import failed: ' + errorMessage(err));
+      // A file open in Excel is locked by Windows: the browser can't read it
+      // and the upload fails without a server reply.
+      toast.error(err?.response
+        ? 'Import failed: ' + errorMessage(err)
+        : `Couldn’t read or send ${file.name}. If it’s open in Excel or another program, close it and try again.`);
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -556,7 +566,10 @@ export default function RubricManager({ scope = 'teacher' }) {
           {importNote && (
             <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
               Read {importNote.count} criteria from <strong>{importNote.file}</strong> using {SOURCE_NAMES[importNote.source] || importNote.source}.
-              Check names, scores and descriptions below; change or remove any, or add your own, then save.
+              Check names, scores and descriptions below; change or remove any, or add your own.
+              <div className="mt-1 font-semibold text-amber-800">
+                💾 Not saved yet: click “{editing === 'new' ? (isSystem ? 'Save & Activate' : 'Save & Make Default') : 'Save'}” at the bottom to add it to your rubrics.
+              </div>
               {importNote.warnings.map((w) => <div key={w} className="text-xs text-amber-800 mt-1">⚠️ {w}</div>)}
             </div>
           )}
