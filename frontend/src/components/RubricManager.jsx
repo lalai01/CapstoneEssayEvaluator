@@ -5,7 +5,24 @@ import { useAuth } from '../context/AuthContext';
 import { DEFAULT_CRITERIA, labelFromKey, errorMessage, slugify } from '../lib/scoring';
 
 const MIN_SCORE = 2;
-const MAX_SCORE = 10;
+const MAX_SCORE = 100;
+// Up to this max score each score has its own descriptor; above it (points
+// rubrics such as 20 per criterion) descriptors are bands, e.g. 18–20.
+const PER_SCORE_LIMIT = 10;
+
+// Band levels of a row, best first: [{ from, to, text }]. A level is keyed by
+// its lowest score and runs up to just below the next level.
+function bandsOf(row) {
+  const starts = Object.keys(row.levels).map(Number)
+    .filter((n) => n >= 1 && n <= row.max_score && row.levels[n] !== undefined)
+    .sort((a, b) => b - a);
+  let to = row.max_score;
+  return starts.map((from) => {
+    const band = { from, to, text: row.levels[from] };
+    to = from - 1;
+    return band;
+  });
+}
 const DEFAULT_WEIGHTS = Object.fromEntries(DEFAULT_CRITERIA.map((c) => [c.key, c.weight]));
 
 
@@ -244,6 +261,28 @@ export default function RubricManager({ scope = 'teacher' }) {
     )));
   };
 
+  // Bands: move a band's lowest score, add a band, or remove one.
+  const moveBand = (row, from, to) => {
+    if (!(to >= 1 && to <= row.max_score) || to === from) return;
+    if (row.levels[to] !== undefined) {
+      toast.error(`Another level already starts at ${to}.`);
+      return;
+    }
+    const { [from]: text, ...rest } = row.levels;
+    updateRow(row.id, { levels: { ...rest, [to]: text } });
+  };
+  const addBand = (row) => {
+    const taken = new Set(bandsOf(row).map((b) => b.from));
+    const lowest = Math.min(row.max_score + 1, ...taken);
+    const start = lowest > 1 ? Math.max(1, Math.floor(lowest / 2)) : [...Array(row.max_score).keys()].map((i) => i + 1).find((n) => !taken.has(n));
+    if (!start) return;
+    updateRow(row.id, { levels: { ...row.levels, [start]: '' } });
+  };
+  const removeBand = (row, from) => {
+    const { [from]: _removed, ...rest } = row.levels;
+    updateRow(row.id, { levels: rest });
+  };
+
   const moveRow = (index, delta) => {
     setRows((prev) => {
       const next = [...prev];
@@ -264,7 +303,7 @@ export default function RubricManager({ scope = 'teacher' }) {
       if (!key) return `"${r.label}" needs at least one letter or number in its name.`;
       if (seen.has(key)) return `"${seen.get(key)}" and "${r.label}" are too similar: both become the AI key "${key}". Rename one.`;
       seen.set(key, r.label);
-      if (!(r.max_score >= MIN_SCORE && r.max_score <= MAX_SCORE)) return `"${r.label}" max score must be ${MIN_SCORE}–${MAX_SCORE}.`;
+      if (!(Number.isInteger(r.max_score) && r.max_score >= MIN_SCORE && r.max_score <= MAX_SCORE)) return `"${r.label}" max score must be a whole number from ${MIN_SCORE} to ${MAX_SCORE}.`;
       if (!(r.weight >= 0)) return `"${r.label}" weight must be 0 or more.`;
     }
     return null;
@@ -560,15 +599,16 @@ export default function RubricManager({ scope = 'teacher' }) {
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Max score</label>
-                  <select
+                  <input
+                    type="number"
+                    min={MIN_SCORE}
+                    max={MAX_SCORE}
+                    step="1"
                     value={row.max_score}
-                    onChange={(e) => updateRow(row.id, { max_score: Number(e.target.value) })}
-                    className="border rounded-lg p-2 text-sm bg-white"
-                  >
-                    {Array.from({ length: MAX_SCORE - MIN_SCORE + 1 }, (_, i) => MIN_SCORE + i).map((n) => (
-                      <option key={n} value={n}>1–{n}</option>
-                    ))}
-                  </select>
+                    onChange={(e) => updateRow(row.id, { max_score: e.target.value === '' ? '' : Number(e.target.value) })}
+                    className="w-20 border rounded-lg p-2 text-sm bg-white"
+                    title={`Scored 1 to this number (${MIN_SCORE}–${MAX_SCORE}), e.g. 4 for a 4-level rubric or 20 for 20 points.`}
+                  />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Weight</label>
@@ -600,11 +640,48 @@ export default function RubricManager({ scope = 'teacher' }) {
               >
                 {openLevels[row.id] ? '▲ Hide' : '▼ Edit'} level descriptors
                 <span className="text-gray-500">
-                  {' '}({Object.entries(row.levels).filter(([l, t]) => Number(l) <= row.max_score && t?.trim()).length}/{row.max_score} filled)
+                  {row.max_score > PER_SCORE_LIMIT
+                    ? ` (${bandsOf(row).length} score bands)`
+                    : ` (${Object.entries(row.levels).filter(([l, t]) => Number(l) <= row.max_score && t?.trim()).length}/${row.max_score} filled)`}
                 </span>
               </button>
 
-              {openLevels[row.id] && (
+              {openLevels[row.id] && row.max_score > PER_SCORE_LIMIT && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs text-gray-500">
+                    Scored 1–{row.max_score}. Each band covers a range of points, e.g. Excellent 18–20. Set where a band
+                    starts; it runs up to the band above it.
+                  </p>
+                  {bandsOf(row).map((band) => (
+                    <div key={band.from} className="rounded-lg border bg-white p-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 mb-1">
+                        <span>Scores</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max={row.max_score}
+                          defaultValue={band.from}
+                          onBlur={(e) => moveBand(row, band.from, Number(e.target.value))}
+                          className="w-16 border rounded p-1 text-sm"
+                          aria-label={`Band starting score (currently ${band.from})`}
+                        />
+                        <span>to {band.to}</span>
+                        <button onClick={() => removeBand(row, band.from)} className="ml-auto text-red-600 hover:underline">Remove</button>
+                      </div>
+                      <textarea
+                        value={band.text || ''}
+                        onChange={(e) => updateLevel(row.id, band.from, e.target.value)}
+                        className="w-full border rounded-lg p-2 text-sm"
+                        rows="2"
+                        placeholder={`What earns ${band.from}–${band.to} out of ${row.max_score}? e.g. "Excellent: …"`}
+                      />
+                    </div>
+                  ))}
+                  <button onClick={() => addBand(row)} className="text-sm text-indigo-700 hover:underline">+ Add score band</button>
+                </div>
+              )}
+
+              {openLevels[row.id] && row.max_score <= PER_SCORE_LIMIT && (
                 <div className="mt-3 space-y-2">
                   <p className="text-xs text-gray-500">
                     Optional. Describe what earns each score; levels left blank use the nearest described level below.
