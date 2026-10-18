@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 const ICON_PATHS = {
   home: 'M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10',
   evaluate: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',
-  playground: 'M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3M7.5 15h9',
+  compare: 'M3 21h18M6 21V11M11 21V5M16 21v-7M21 21V9',
   knowledge: 'M4 5a2 2 0 012-2h13v16H6a2 2 0 00-2 2zM4 19V5M8 7h7',
   surveys: 'M9 4h6v3H9zM8 5H6v16h12V5h-2M9 12h6M9 16h4',
   rateus: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z',

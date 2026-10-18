@@ -36,7 +36,10 @@ INSTRUCTIONS = """Extract the essay grading rubric from this document.
 - For each criterion list its performance levels with a numeric "score":
   use the rubric's own numbers when it has them (e.g. 4, 3, 2, 1). If the
   levels are names (e.g. Excellent / Adequate / Needs Work), number them
-  from 1 for the lowest upward.
+  from 1 for the lowest upward. A level labelled with a points range (e.g.
+  "Excellent (18-20)") is ONE level, not one level per point.
+- Include every criterion row of the scoring grid, even when a sheet or page
+  has many; don't merge or skip criteria.
 - "description": the level's descriptor, copied faithfully; join bullet
   points with "; ". Leave it empty only if the cell is empty.
 - "weight": the criterion's relative importance if the rubric states points,
@@ -312,6 +315,26 @@ def _normalize(raw):
     return criteria, warnings
 
 
+def _words(label):
+    return set(re.findall(r"[a-z0-9]+", label.lower())) - {"and", "the", "of", "a", "to", "in"}
+
+
+def _add_missed(ai_criteria, table_criteria):
+    """
+    Criteria the table reader found that the AI left out (AIs sometimes stop
+    early or skip rows). A table criterion counts as present when an AI
+    criterion shares most of its words, e.g. "Thesis" vs "Thesis and Focus".
+    """
+    present = [_words(c["label"]) for c in ai_criteria]
+    missed = []
+    for c in table_criteria:
+        words = _words(c["label"])
+        if words and not any(len(words & p) >= max(1, min(len(words), len(p)) // 2 + 1) or words <= p or p <= words
+                             for p in present if p):
+            missed.append(c)
+    return missed
+
+
 def import_rubric(data, filename):
     suffix = os.path.splitext(filename or "")[1].lower()
     if suffix not in (".pdf", ".xlsx", ".csv"):
@@ -333,21 +356,26 @@ def import_rubric(data, filename):
         readers.append(("gemini", lambda: _gemini([{"text": INSTRUCTIONS + "\n\nRubric (cells separated by |):\n\n" + text[:20000]}])))
     readers.append(("deepseek", lambda: _deepseek(text)))
 
+    # Criteria from every table: some rubrics put one criterion on each page.
+    found = [c for table in tables for c in table_rubric(table)]
+    table_criteria, table_warnings = _normalize(found) if len(found) >= 2 else ([], [])
+
     for source, read in readers:
         try:
             result = read()
             criteria, warnings = _normalize(result.get("criteria") or [])
             if criteria:
-                return {"title": _clean(result.get("title")) or title, "criteria": criteria,
+                added = _add_missed(criteria, table_criteria)
+                warnings += [f"“{c['label']}” was missed by {source.title()} and added from the file’s table; "
+                             "please check it." for c in added]
+                return {"title": _clean(result.get("title")) or title, "criteria": criteria + added,
                         "source": source, "warnings": warnings}
             attempts.append(f"{source}: no criteria found")
         except Exception as e:  # unavailable, quota, bad reply: try the next reader
             attempts.append(f"{source}: {str(e)[:120]}")
     print(f"[rubric import] AI readers unavailable or empty: {attempts}")
 
-    # Criteria from every table: some rubrics put one criterion on each page.
-    found = [c for table in tables for c in table_rubric(table)]
-    criteria, warnings = _normalize(found) if len(found) >= 2 else ([], [])
+    criteria, warnings = table_criteria, table_warnings
     if criteria:
         return {"title": title, "criteria": criteria, "source": "table",
                 "warnings": warnings + ["Read with the built-in table reader (no AI was available); "

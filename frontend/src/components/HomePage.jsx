@@ -28,7 +28,7 @@ const FEATURES = [
   { icon: '🖍️', title: 'Highlighted essay & reports', text: 'See exactly which sentences need work, on screen and in the PDF report.' },
   { icon: '✏️', title: 'Teacher override', text: 'Correct a score, add remarks, and approve results; corrections go into the learning hub.' },
   { icon: '🧠', title: 'Learns from past reviews', text: 'Similar, teacher-approved evaluations are retrieved (RAG) to keep feedback consistent.' },
-  { icon: '🤖', title: 'Multi-AI playground', text: 'Compare DeepSeek, Llama 3.2 and Gemma on the same essay, with agreement statistics.' },
+  { icon: '⚖️', title: 'Compare with your scores', text: 'DeepSeek, Llama 3.2 and Gemma 2 grade every essay; enter your own scores to see which AI is closest to you.' },
 ];
 
 export default function HomePage({ setActiveTab }) {

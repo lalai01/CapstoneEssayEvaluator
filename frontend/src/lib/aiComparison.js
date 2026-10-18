@@ -4,7 +4,7 @@
 // Creativity 1–5), so every distance is measured on a normalized 0–100
 // scale: 0 = the criterion's minimum (1), 100 = its maximum.
 
-import { fractionOf, isNum, weightedFraction, averageFraction, NON_CRITERION_KEYS, labelFromKey } from './scoring';
+import { fractionOf, isNum, weightedFraction, averageFraction } from './scoring';
 
 // Mean signed difference (in normalized points) beyond which a model is
 // called lenient or strict relative to the reference.
@@ -41,27 +41,6 @@ export function tendency(bias) {
   if (bias > BIAS_THRESHOLD) return { label: 'Lenient', className: 'bg-emerald-100 text-emerald-800' };
   if (bias < -BIAS_THRESHOLD) return { label: 'Strict', className: 'bg-red-100 text-red-800' };
   return { label: 'Balanced', className: 'bg-blue-100 text-blue-800' };
-}
-
-// Criteria to compare: the active rubric's criteria that at least one model
-// returned, then any other numeric keys the models returned.
-export function buildCriteria(parsedList, rubricCriteria) {
-  const present = new Set();
-  const observedMax = {};
-  for (const p of parsedList) {
-    if (!p) continue;
-    for (const [k, v] of Object.entries(p)) {
-      if (NON_CRITERION_KEYS.has(k) || !isNum(v)) continue;
-      present.add(k);
-      observedMax[k] = Math.max(observedMax[k] || 0, v);
-    }
-  }
-  const fromRubric = (rubricCriteria || []).filter((c) => present.has(c.key));
-  const known = new Set(fromRubric.map((c) => c.key));
-  const extra = [...present]
-    .filter((k) => !known.has(k))
-    .map((k) => ({ key: k, label: labelFromKey(k), max_score: Math.max(4, observedMax[k]), weight: 1 }));
-  return [...fromRubric, ...extra];
 }
 
 // For each rater, the mean of the other raters' scores.
@@ -202,54 +181,4 @@ export function computeStats(criteria, raters, reference) {
     perCriterion,
     allAgreeCount: perCriterion.filter((c) => c.allAgree).length,
   };
-}
-
-// ---------- Session history (per-browser) ----------
-const HISTORY_KEY = 'playground-ai-comparison-history';
-
-export function loadHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-export function saveHistory(history) {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-200)));
-  } catch {
-    // Storage unavailable (private mode etc.) — history is a convenience only.
-  }
-}
-
-// Aggregate logged runs per model name.
-export function summarizeHistory(history) {
-  const byModel = {};
-  for (const run of history) {
-    for (const m of run.models || []) {
-      const s = (byModel[m.name] ||= { name: m.name, runs: 0, closest: 0, maes: [], biases: [] });
-      s.runs++;
-      if (run.closest === m.name) s.closest++;
-      if (isNum(m.mae)) s.maes.push(m.mae);
-      if (isNum(m.bias)) s.biases.push(m.bias);
-    }
-  }
-  return Object.values(byModel)
-    .map((s) => {
-      const avgBias = mean(s.biases);
-      const avgMae = mean(s.maes);
-      return {
-        name: s.name,
-        runs: s.runs,
-        closest: s.closest,
-        closestRate: s.runs ? s.closest / s.runs : 0,
-        avgSimilarity: avgMae === null ? null : 100 - avgMae,
-        avgBias,
-        tendency: tendency(avgBias),
-      };
-    })
-    .sort((a, b) => b.closestRate - a.closestRate || (b.avgSimilarity ?? 0) - (a.avgSimilarity ?? 0));
 }
