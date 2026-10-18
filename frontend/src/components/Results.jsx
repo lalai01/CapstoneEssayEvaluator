@@ -17,6 +17,11 @@ import {
   satisfactionStyle,
 } from '../lib/scoring';
 
+// Override is hidden for now: three AIs already evaluate every essay and the
+// user compares them instead. Set to true to bring the buttons back; the
+// override dialog and saving code below are kept unchanged.
+const SHOW_OVERRIDE = false;
+
 // ============================================================
 // Scoring helpers
 // ============================================================
@@ -575,12 +580,14 @@ export default function Results({
                 >
                   ✅ Approve & Save to KB
                 </button>
-                <button
-                  onClick={handleReject}
-                  className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
-                >
-                  ✏️ Reject & Override
-                </button>
+                {SHOW_OVERRIDE && (
+                  <button
+                    onClick={handleReject}
+                    className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                  >
+                    ✏️ Reject & Override
+                  </button>
+                )}
               </div>
             ) : (
               <>
@@ -591,18 +598,22 @@ export default function Results({
                   >
                     💾 Save to My Knowledge Base
                   </button>
-                  <button
-                    onClick={handleReject}
-                    className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
-                  >
-                    ✏️ Override Scores
-                  </button>
+                  {SHOW_OVERRIDE && (
+                    <button
+                      onClick={handleReject}
+                      className="flex-1 bg-gradient-to-r from-red-500 to-orange-500 text-white py-2 rounded-xl font-semibold shadow-md hover:shadow-lg transition"
+                    >
+                      ✏️ Override Scores
+                    </button>
+                  )}
                 </div>
-                <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
-                  {isAdmin
-                    ? 'ℹ️ Your overrides are saved to your Learning Hub. Only teachers’ overrides and approvals teach the AI; to grade as a teacher, add your email as a teacher in the Admin Dashboard.'
-                    : 'ℹ️ Disagree with the AI? Override it: your scores and remarks are saved to your Learning Hub. Only teachers’ overrides and approvals teach the AI.'}
-                </p>
+                {SHOW_OVERRIDE && (
+                  <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
+                    {isAdmin
+                      ? 'ℹ️ Your overrides are saved to your Learning Hub. Only teachers’ overrides and approvals teach the AI; to grade as a teacher, add your email as a teacher in the Admin Dashboard.'
+                      : 'ℹ️ Disagree with the AI? Override it: your scores and remarks are saved to your Learning Hub. Only teachers’ overrides and approvals teach the AI.'}
+                  </p>
+                )}
               </>
             )}
             <button

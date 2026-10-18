@@ -3,7 +3,8 @@ import { Toaster } from 'react-hot-toast';
 import EssayInput from './components/EssayInput';
 import Results from './components/Results';
 import KnowledgeBase from './components/KnowledgeBase';
-import PromptPlayground from './components/PromptPlayground';
+import CompareScores from './components/CompareScores';
+import AiStatistics from './components/AiStatistics';
 import LearningFeedback from './components/LearningFeedback';
 import HomePage from './components/HomePage';
 import RateUs from './components/RateUs';
@@ -31,7 +32,7 @@ import useDraft from './lib/draft';
 const PAGES = [
   { id: 'home', path: '/', label: 'Home', icon: 'home', access: 'public', group: 'main' },
   { id: 'evaluate', path: '/evaluate', label: 'Evaluate', icon: 'evaluate', access: 'public', group: 'main' },
-  { id: 'playground', path: '/playground', label: 'Playground', icon: 'playground', access: 'public', group: 'main' },
+  { id: 'compare', path: '/compare-scores', aliases: ['/playground'], label: 'Compare with My Scores', icon: 'compare', access: 'public', group: 'main' },
   { id: 'knowledge', path: '/knowledge-base', label: 'Knowledge Base', icon: 'knowledge', access: 'user', group: 'workspace', description: 'Evaluations you saved' },
   { id: 'surveys', path: '/surveys', label: 'Surveys', icon: 'surveys', access: 'user', group: 'main' },
   { id: 'rateus', path: '/rate-us', label: 'Rate Us', icon: 'rateus', access: 'public', group: 'main' },
@@ -45,7 +46,7 @@ const PAGES = [
 
 const pageFromPath = (pathname) => {
   const path = pathname.replace(/\/+$/, '') || '/';
-  return PAGES.find((p) => p.path === path);
+  return PAGES.find((p) => p.path === path || p.aliases?.includes(path));   // aliases: old links
 };
 
 // Results restored after a refresh: an AI still working when the page was
@@ -102,8 +103,10 @@ function App() {
   // The page shown follows the URL; Back and Forward move between pages.
   const [activeTab, setActiveTabState] = useState(() => pageFromPath(window.location.pathname)?.id || 'home');
   useEffect(() => {
-    if (!pageFromPath(window.location.pathname)) {
-      window.history.replaceState(null, '', '/' + window.location.search + window.location.hash);
+    // Unknown paths go Home; old links (e.g. /playground) show their new path.
+    const page = pageFromPath(window.location.pathname);
+    if (page?.path !== window.location.pathname) {
+      window.history.replaceState(null, '', (page?.path || '/') + window.location.search + window.location.hash);
     }
     const onPopState = () => setActiveTabState(pageFromPath(window.location.pathname)?.id || 'home');
     window.addEventListener('popstate', onPopState);
@@ -220,6 +223,15 @@ function App() {
               />
               <div className="space-y-6 min-w-0">
               <AiChoice runs={aiRuns} chosen={chosenAi} onChoose={chooseAi} />
+              <AiStatistics aiRuns={aiRuns} />
+              {aiRuns && (
+                <button
+                  onClick={() => setActiveTab('compare')}
+                  className="w-full rounded-xl border border-indigo-200 bg-white/95 px-4 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-50 transition"
+                >
+                  ⚖️ Compare the AIs with my own scores →
+                </button>
+              )}
               <Results
                 key={chosenAi || 'none'}
                 scores={scores}
@@ -240,7 +252,16 @@ function App() {
           )}
           {currentTab === 'knowledge' && <KnowledgeBase />}
           {currentTab === 'learning' && <LearningFeedback />}
-          {currentTab === 'playground' && <PromptPlayground />}
+          {currentTab === 'compare' && (
+            <CompareScores
+              aiRuns={aiRuns}
+              chosenAi={chosenAi}
+              onChooseAi={chooseAi}
+              essayTitle={essayTitle}
+              evaluatedEssay={currentEssay}
+              onGoEvaluate={() => setActiveTab('evaluate')}
+            />
+          )}
           {currentTab === 'rateus' && <RateUs />}
           {currentTab === 'surveys' && <UserSurveys />}
           {currentTab === 'admin' && <AdminSurveys />}

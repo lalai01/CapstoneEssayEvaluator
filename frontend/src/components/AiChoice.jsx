@@ -1,18 +1,6 @@
 import React from 'react';
-import { averageFraction, getCriteria, gradeFromFraction, weightedFraction } from '../lib/scoring';
 import { EVALUATION_AIS } from '../lib/evaluationAis';
-
-function overall(scores) {
-  if (!scores) return null;
-  if (typeof scores.holistic_score === 'number') {
-    const f = (scores.holistic_score - 1) / 4;
-    return { text: `${scores.holistic_score}/5`, grade: gradeFromFraction(f) };
-  }
-  const criteria = getCriteria(scores);
-  const f = weightedFraction(scores, criteria) ?? averageFraction(scores, criteria);
-  if (f === null) return null;
-  return { text: `${Math.round(f * 100)}%`, grade: gradeFromFraction(f) };
-}
+import { overallResult as overall } from '../lib/evaluationStats';
 
 const seconds = (ms) => (ms ? `${Math.round(ms / 1000)} s` : '');
 
