@@ -17,10 +17,9 @@ import {
   satisfactionStyle,
 } from '../lib/scoring';
 
-// Override is hidden for now: three AIs already evaluate every essay and the
-// user compares them instead. Set to true to bring the buttons back; the
-// override dialog and saving code below are kept unchanged.
-const SHOW_OVERRIDE = false;
+// Override buttons (Override Scores / Reject & Override). Set to false to
+// hide them; the override dialog and saving code stay either way.
+const SHOW_OVERRIDE = true;
 
 // ============================================================
 // Scoring helpers
