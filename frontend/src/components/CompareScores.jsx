@@ -58,7 +58,7 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
         <div className="text-4xl" aria-hidden="true">⚖️</div>
         <h1 className="text-2xl font-bold text-gray-800 mt-2">Compare with My Scores</h1>
         <p className="text-gray-600 mt-2">
-          Evaluate an essay first. Its three AI results (DeepSeek, Llama 3.2 and Gemma 2) appear here, and you can
+          Evaluate an essay first. Its three AI results (DeepSeek, Llama 3.2 and Qwen 2.5) appear here, and you can
           enter your own scores to see which AI grades closest to you.
         </p>
         <button

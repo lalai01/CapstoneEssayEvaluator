@@ -74,10 +74,10 @@ class EvaluationRequest(BaseModel):
     evaluation_type: str = "analytic"
     rubric_id: Optional[int] = None   # omit to use the teacher's default rubric
     # "auto" picks a model per essay; or force "deepseek" / "local" (= "llama")
-    # / "llama" / "gemma". The Evaluate page runs all three AIs side by side
+    # / "llama" / "qwen" ("gemma" = older name). The Evaluate page runs all three AIs side by side
     # with strict_model=True: each result is that AI's alone, with no fallback
     # to another model.
-    ai_model: Literal["auto", "deepseek", "local", "llama", "gemma"] = "auto"
+    ai_model: Literal["auto", "deepseek", "local", "llama", "qwen", "gemma"] = "auto"
     strict_model: bool = False
 
 class EvaluationResponse(BaseModel):

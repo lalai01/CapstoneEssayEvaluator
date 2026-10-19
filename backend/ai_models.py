@@ -261,8 +261,9 @@ def test_prompt(ai_provider, system_prompt, user_prompt, model=None, json_mode=F
 
     if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat", json_mode)
-    elif provider == "gemma":
-        return call_ollama(system_prompt, user_prompt, model or "gemma2:2b", json_mode, json_schema)
+    elif provider in ("qwen", "gemma"):   # the second local AI ("gemma" is its older name)
+        default = os.environ.get("SECOND_LOCAL_MODEL", "qwen2.5:1.5b")
+        return call_ollama(system_prompt, user_prompt, model or default, json_mode, json_schema)
     elif provider == "ollama":
         return call_ollama(system_prompt, user_prompt, model or "llama3.2:3b", json_mode, json_schema)
     elif provider == "llamacpp":
