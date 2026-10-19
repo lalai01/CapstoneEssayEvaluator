@@ -149,9 +149,9 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
         return false;
       }
     };
-    // Llama and Qwen both run on the server's CPU: one at a time is faster
-    // than both at once (no swapping models in and out of memory).
-    const [cloud, local] = [EVALUATION_AIS.filter((a) => a.id === 'deepseek'), EVALUATION_AIS.filter((a) => a.id !== 'deepseek')];
+    // Cloud AIs (DeepSeek, Groq) run at once; local models share the server's
+    // CPU, where one at a time is faster (no swapping models in and out of memory).
+    const [cloud, local] = [EVALUATION_AIS.filter((a) => !a.local), EVALUATION_AIS.filter((a) => a.local)];
     const runLocalInTurn = async () => {
       const results = [];
       for (const ai of local) results.push(await runOne(ai));

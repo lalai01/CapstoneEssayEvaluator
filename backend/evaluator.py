@@ -404,7 +404,28 @@ MODEL_LABELS = {
     "qwen2.5:3b": "Qwen 2.5 3B (Ollama)",
     "gemma2:2b": "Gemma 2 2B (Ollama)",
     "deepseek-chat": "DeepSeek Chat",
+    "llama-3.3-70b-versatile": "Groq · Llama 3.3 70B",
+    "llama-3.1-8b-instant": "Groq · Llama 3.1 8B",
 }
+
+
+def model_label(model):
+    if model in MODEL_LABELS:
+        return MODEL_LABELS[model]
+    if str(model).startswith("gemini"):
+        return f"Gemini ({model})"
+    return model
+
+
+def provider_of(model):
+    """Which service runs a model: Ollama names have a tag ("llama3.2:3b")."""
+    if model.startswith("deepseek"):
+        return "deepseek"
+    if model.startswith("gemini"):
+        return "gemini"
+    if ":" in model:
+        return "ollama"
+    return "groq"
 
 
 def evaluated_by(model=None):
@@ -412,9 +433,8 @@ def evaluated_by(model=None):
     if model is None:
         return {"provider": "heuristic", "model": None,
                 "label": "Rule-based scoring (AI unavailable)"}
-    provider = "deepseek" if model.startswith("deepseek") else "ollama"
-    return {"provider": provider, "model": model,
-            "label": MODEL_LABELS.get(model, model)}
+    return {"provider": provider_of(model), "model": model,
+            "label": model_label(model)}
 
 
 LOCAL_SCORING_MODEL = "llama3.2:3b"
@@ -423,16 +443,29 @@ LOCAL_SCORING_MODEL = "llama3.2:3b"
 # SECOND_LOCAL_MODEL (and `ollama pull` it) to try another, e.g. qwen2.5:3b.
 SECOND_SCORING_MODEL = os.environ.get("SECOND_LOCAL_MODEL", "qwen2.5:1.5b")
 CLOUD_SCORING_MODEL = "deepseek-chat"
+# The third AI: Llama 3.3 70B on Groq (free tier, answers in seconds). When
+# Groq fails or is over its limit, Gemini answers instead and the card says so.
+GROQ_SCORING_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+CLOUD_PROVIDERS = ("deepseek", "groq", "gemini")
+
+
+def _gemini_model():
+    import gemini_ocr
+    return gemini_ocr._models()[0]
+
+
+def _gemini_available():
+    return bool(os.environ.get("GEMINI_API_KEY", "").strip())
 # How much essay text each model is given. The local model's context is
 # small, so it reads roughly the first 650 words; DeepSeek reads far more.
 LOCAL_ESSAY_CHARS = 4000
 CLOUD_ESSAY_CHARS = 16000
-SCORING_PREFERENCES = ("auto", "deepseek", "local", "llama", "qwen", "gemma")
+SCORING_PREFERENCES = ("auto", "deepseek", "local", "llama", "qwen", "gemma", "groq")
 # The model each explicit preference means ("local" is the older name for
 # Llama; "gemma" is the older name for the second local AI).
 PREFERRED_MODEL = {"deepseek": CLOUD_SCORING_MODEL, "local": LOCAL_SCORING_MODEL,
                    "llama": LOCAL_SCORING_MODEL, "qwen": SECOND_SCORING_MODEL,
-                   "gemma": SECOND_SCORING_MODEL}
+                   "gemma": SECOND_SCORING_MODEL, "groq": GROQ_SCORING_MODEL}
 
 
 def _cloud_available():
@@ -457,9 +490,12 @@ def choose_scoring_model(essay_text, criteria, preference="auto"):
     if preference in ("local", "llama"):
         return {**local, "reason": "You chose Llama 3.2, which runs on our server, so the essay stayed there."}
     if preference in ("qwen", "gemma"):
-        name = MODEL_LABELS.get(SECOND_SCORING_MODEL, SECOND_SCORING_MODEL).replace(" (Ollama)", "")
+        name = model_label(SECOND_SCORING_MODEL).replace(" (Ollama)", "")
         return {"provider": "ollama", "model": SECOND_SCORING_MODEL, "preference": preference,
                 "reason": f"You chose {name}, which runs on our server, so the essay stayed there."}
+    if preference == "groq":
+        return {"provider": "groq", "model": GROQ_SCORING_MODEL, "preference": preference,
+                "reason": "You chose Groq (Llama 3.3 70B in the cloud)."}
     if preference == "deepseek":
         if _cloud_available():
             return {**cloud, "reason": "You chose DeepSeek."}
@@ -491,7 +527,7 @@ def _is_default_rubric_shape(criteria):
 
 def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, provider="ollama"):
     criteria = normalize_rubric(rubric)
-    essay_limit = CLOUD_ESSAY_CHARS if provider == "deepseek" else LOCAL_ESSAY_CHARS
+    essay_limit = CLOUD_ESSAY_CHARS if provider in CLOUD_PROVIDERS else LOCAL_ESSAY_CHARS
 
     rubric_block = ""
     for key, c in criteria.items():
@@ -553,7 +589,7 @@ Example D - Disorganized essay with no thesis and no evidence:
     )
     # Local models run on the server's CPU, where every generated word costs
     # time: ask them for a shorter answer (the scores are the same).
-    brief = provider != "deepseek"
+    brief = provider not in CLOUD_PROVIDERS
     per_criterion = "<1 sentence explaining this score>" if brief else "<2-3 sentences explaining this score>"
     feedback_lines = ",\n".join(
         f'    "{key}": "{per_criterion}"' for key in criteria
@@ -628,10 +664,10 @@ RULES:
 """
 
     try:
-        if provider == "deepseek":
-            from ai_models import call_deepseek
-            content = call_deepseek(
-                system_msg, user_msg, model=model, json_mode=True, temperature=0.0
+        if provider in CLOUD_PROVIDERS:
+            from ai_models import call_cloud
+            content = call_cloud(
+                provider, system_msg, user_msg, model=model, json_mode=True, temperature=0.0
             )["text"].strip()
         else:
             # The shared Ollama client keeps the model loaded between essays
@@ -946,9 +982,15 @@ def _scoring_attempts(choice, strict):
     """
     if strict:
         wanted = PREFERRED_MODEL.get(choice["preference"])
-        return [choice] if wanted is None or choice["model"] == wanted else []
+        attempts = [choice] if wanted is None or choice["model"] == wanted else []
+        if choice["preference"] == "groq" and _gemini_available():
+            attempts.append({"provider": "gemini", "model": _gemini_model()})
+        return attempts
     attempts = [choice]
-    if choice["provider"] == "deepseek":
+    if choice["provider"] == "groq":
+        if _gemini_available():
+            attempts.append({"provider": "gemini", "model": _gemini_model()})
+    elif choice["provider"] == "deepseek":
         attempts.append({"provider": "ollama", "model": LOCAL_SCORING_MODEL})
     elif choice["preference"] == "auto" and _cloud_available():
         attempts.append({"provider": "deepseek", "model": CLOUD_SCORING_MODEL})
@@ -961,6 +1003,7 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="aut
     attempts = _scoring_attempts(choice, strict)
     _last_failure.reason = None
 
+    first_failure = None
     for i, attempt in enumerate(attempts):
         ai = ai_score_all_criteria(
             essay_text, rubric=criteria, model=attempt["model"], provider=attempt["provider"]
@@ -968,20 +1011,23 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="aut
         if ai is not None:
             reason = choice["reason"]
             if i > 0:
-                reason += (f" {MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond, "
-                           f"so {MODEL_LABELS.get(attempt['model'], attempt['model'])} was used instead.")
+                why = f" ({first_failure})" if first_failure else ""
+                reason += (f" {model_label(choice['model'])} didn't respond{why}, "
+                           f"so {model_label(attempt['model'])} was used instead.")
             ai["evaluated_by"] = {**ai["evaluated_by"], "selection": choice["preference"], "reason": reason}
             print(f"✅ AI scoring succeeded with {attempt['model']}")
             return ai
         print(f"⚠️ AI scoring with {attempt['model']} failed")
+        if i == 0:
+            first_failure = getattr(_last_failure, "reason", None)
 
     print("⚠️ AI scoring failed, using heuristics")
     result = _heuristic_scores_for_rubric(essay_text, analysis, criteria)
     if strict and not attempts:
         wanted = PREFERRED_MODEL[choice["preference"]]
-        why = f"{MODEL_LABELS.get(wanted, wanted)} isn't configured on the server"
+        why = f"{model_label(wanted)} isn't configured on the server"
     elif strict:
-        why = f"{MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond"
+        why = f"{model_label(choice['model'])} didn't respond"
         detail = getattr(_last_failure, "reason", None)
         if detail:
             why += f" ({detail})"
@@ -1045,7 +1091,7 @@ def ai_holistic_score(essay_text, preference="auto", strict=False):
     )
 
     for i, attempt in enumerate(attempts):
-        limit = CLOUD_ESSAY_CHARS if attempt["provider"] == "deepseek" else LOCAL_ESSAY_CHARS
+        limit = CLOUD_ESSAY_CHARS if attempt["provider"] in CLOUD_PROVIDERS else LOCAL_ESSAY_CHARS
         user_msg = f"""Read the whole essay and give ONE holistic score from 1 to 5 that reflects
 its overall coherence, organization, style and content together. Do not score
 criteria separately.
@@ -1066,10 +1112,10 @@ Reply with JSON only:
   "grammar_issues": [{{"original": "<text copied exactly from the essay>", "correction": "<fix>", "explanation": "<short>"}}]}}
 At most 5 grammar_issues, only real errors ([] if none)."""
         try:
-            if attempt["provider"] == "deepseek":
-                from ai_models import call_deepseek
-                content = call_deepseek(system_msg, user_msg, model=attempt["model"],
-                                        json_mode=True, temperature=0.0)["text"]
+            if attempt["provider"] in CLOUD_PROVIDERS:
+                from ai_models import call_cloud
+                content = call_cloud(attempt["provider"], system_msg, user_msg, model=attempt["model"],
+                                     json_mode=True, temperature=0.0)["text"]
             else:
                 from ai_models import call_ollama
                 content = call_ollama(system_msg, user_msg, model=attempt["model"],
@@ -1086,8 +1132,8 @@ At most 5 grammar_issues, only real errors ([] if none)."""
         issues = parsed.get("grammar_issues")
         reason = choice["reason"]
         if i > 0:
-            reason += (f" {MODEL_LABELS.get(choice['model'], choice['model'])} didn't respond, "
-                       f"so {MODEL_LABELS.get(attempt['model'], attempt['model'])} was used instead.")
+            reason += (f" {model_label(choice['model'])} didn't respond, "
+                       f"so {model_label(attempt['model'])} was used instead.")
         return {
             "holistic_score": score,
             "level_description": HOLISTIC_RUBRIC[score],
@@ -1592,7 +1638,7 @@ def enhance_feedback_with_ai(essay_text, scores, analysis, rule_feedback, facts=
     the essay (model/provider), so each AI in a comparison gives its own
     feedback; Llama when none is given."""
     ollama_url = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-    if not model or provider not in ("deepseek", "ollama"):
+    if not model or provider not in ("ollama", *CLOUD_PROVIDERS):
         model, provider = LOCAL_SCORING_MODEL, "ollama"
 
     if facts is None:
@@ -1649,9 +1695,9 @@ Write only the final feedback paragraph:"""
 
     try:
         enhanced = ""
-        if provider == "deepseek":
-            from ai_models import call_deepseek
-            enhanced = call_deepseek(system_msg, user_msg, model=model, temperature=0.4)["text"].strip()
+        if provider in CLOUD_PROVIDERS:
+            from ai_models import call_cloud
+            enhanced = call_cloud(provider, system_msg, user_msg, model=model, temperature=0.4)["text"].strip()
         else:
             response = requests.post(
                 f"{ollama_url}/api/chat",
