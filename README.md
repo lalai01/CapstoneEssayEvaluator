@@ -171,6 +171,7 @@ npm run dev                       # http://localhost:5173
 | `SUPABASE_JWT_SECRET` | no | No longer used. Tokens are verified by Supabase Auth itself (`/auth/v1/user`), which works with both legacy and new signing keys. |
 | `DEEPSEEK_API_KEY` | for DeepSeek | OCR correction and the Playground DeepSeek slot |
 | `OLLAMA_URL` | no | Default `http://ollama:11434` |
+| `LOCAL_MODEL` | no | The local AI on the Evaluate page (runs on the VPS CPU; the essay stays on the server). Default `qwen2.5:1.5b` (replaced Llama 3.2 3B: about twice as fast); it gets a compact prompt and short answer. Pull it in Ollama first. |
 | `SECOND_LOCAL_MODEL` | no | A second local AI (no longer shown on the Evaluate page; Groq replaced it). Default `qwen2.5:1.5b` (replaced Gemma 2 2B: faster on CPU, more reliable JSON). Pull it in Ollama first. |
 | `GROQ_API_KEY` | for the Groq AI | Free key from console.groq.com. The third AI on the Evaluate page is GPT-OSS 120B on Groq (answers in seconds). Without it, or when Groq is over its free-tier limit, Gemini answers instead and the card says so. Server only, never in the frontend or git. |
 | `GROQ_MODEL` | no | Default `openai/gpt-oss-120b` (`openai/gpt-oss-20b` is faster). If Groq retires the model, the backend switches to the best chat model Groq still offers. |

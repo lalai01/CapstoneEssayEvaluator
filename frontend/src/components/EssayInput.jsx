@@ -149,7 +149,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
         return false;
       }
     };
-    // Cloud AIs (DeepSeek, Groq) run at once; local models share the server's
+    // Cloud AIs (DeepSeek, GPT-OSS) run at once; local models share the server's
     // CPU, where one at a time is faster (no swapping models in and out of memory).
     const [cloud, local] = [EVALUATION_AIS.filter((a) => !a.local), EVALUATION_AIS.filter((a) => a.local)];
     const runLocalInTurn = async () => {

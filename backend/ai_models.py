@@ -105,7 +105,10 @@ def _groq_pick_model(api_key, retired):
     r = requests.get(GROQ_MODELS_URL, headers={"Authorization": f"Bearer {api_key}"}, timeout=20)
     r.raise_for_status()
     available = [m["id"] for m in r.json().get("data", []) if not NOT_CHAT.search(m["id"])]
-    for wanted in GROQ_PREFERRED:
+    # The second Groq card (Qwen) should stay a different model from GPT-OSS.
+    preferred = (["qwen/", "llama", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+                 if "qwen" in retired else GROQ_PREFERRED)
+    for wanted in preferred:
         for model in available:
             if model == wanted or (wanted.endswith(("/", "llama", "gpt-oss")) and model.startswith(wanted)):
                 print(f"[groq] {retired} isn't available; using {model}")
@@ -226,7 +229,20 @@ def call_cloud(provider, system_prompt, user_prompt, model=None, json_mode=False
     raise ValueError(f"Unknown cloud AI: {provider}")
 
 
-# ---------- Ollama (Gemma / Llama) ----------
+# ---------- Ollama (the local AI) ----------
+def warm_up_ollama(model):
+    """Load the local model into memory now (an empty request does that), so
+    the first evaluation doesn't wait for it. Safe to fail: it's only a head start."""
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    try:
+        requests.post(f"{ollama_url}/api/generate",
+                      json={"model": model, "keep_alive": OLLAMA_KEEP_ALIVE}, timeout=180)
+        print(f"[ollama] {model} loaded and ready")
+    except Exception as e:
+        print(f"[ollama] couldn't preload {model}: {e}")
+
+
+
 # In JSON mode a small model that loses the format often emits only
 # whitespace until the token limit. Stop after this many blank chunks.
 MAX_BLANK_CHUNKS = 40

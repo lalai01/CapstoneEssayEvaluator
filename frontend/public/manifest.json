@@ -2,7 +2,7 @@
   "id": "/",
   "name": "AI Essay Evaluator",
   "short_name": "Essay Evaluator",
-  "description": "Evaluate essays with three AIs (DeepSeek, Llama 3.2 and Groq) against your own rubrics, read handwritten essays, and compare the AI scores with yours.",
+  "description": "Evaluate essays with three AIs (DeepSeek, GPT-OSS and a local Qwen) against your own rubrics, read handwritten essays, and compare the AI scores with yours.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
