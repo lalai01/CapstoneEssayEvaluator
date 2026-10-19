@@ -182,6 +182,15 @@ def rubric_meta(rubric):
     ]
 
 
+def _first_sentence(text, limit):
+    """The first sentence of a descriptor, at most `limit` characters."""
+    text = " ".join(str(text).split())
+    end = re.search(r"[.!?;](\s|$)", text)
+    if end and end.end() <= limit:
+        return text[:end.end()].strip()
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
 def level_ranges(criterion):
     """[(low, high, descriptor)] from the best level down: each level covers
     the scores from its own up to just below the next level."""
@@ -408,6 +417,7 @@ MODEL_LABELS = {
     "llama-3.1-8b-instant": "Groq · Llama 3.1 8B",
     "openai/gpt-oss-120b": "Groq · GPT-OSS 120B",
     "openai/gpt-oss-20b": "Groq · GPT-OSS 20B",
+    "qwen/qwen3.8-27b": "Groq · Qwen 3.8 27B",
 }
 
 
@@ -441,7 +451,11 @@ def evaluated_by(model=None):
             "label": model_label(model)}
 
 
-LOCAL_SCORING_MODEL = "llama3.2:3b"
+# The local AI (runs on the VPS CPU, the essay stays on our server). Qwen 2.5
+# 1.5B is about half Llama 3.2 3B's size and follows the JSON format well; it
+# gets a compact prompt and a short answer, so it finishes in well under a
+# minute. Set LOCAL_MODEL (and `ollama pull` it) to use another, e.g. llama3.2:3b.
+LOCAL_SCORING_MODEL = os.environ.get("LOCAL_MODEL", "qwen2.5:1.5b")
 # The second local AI. Qwen 2.5 1.5B replaced Gemma 2 2B: about twice as fast
 # on the VPS CPU and better at returning the required JSON. Set
 # SECOND_LOCAL_MODEL (and `ollama pull` it) to try another, e.g. qwen2.5:3b.
@@ -465,11 +479,11 @@ def _gemini_available():
 LOCAL_ESSAY_CHARS = 4000
 CLOUD_ESSAY_CHARS = 16000
 SCORING_PREFERENCES = ("auto", "deepseek", "local", "llama", "qwen", "gemma", "groq")
-# The model each explicit preference means ("local" is the older name for
-# Llama; "gemma" is the older name for the second local AI).
+# The model each explicit preference means. "local" is the on-server AI;
+# "llama", "qwen" and "gemma" are older names for it.
 PREFERRED_MODEL = {"deepseek": CLOUD_SCORING_MODEL, "local": LOCAL_SCORING_MODEL,
-                   "llama": LOCAL_SCORING_MODEL, "qwen": SECOND_SCORING_MODEL,
-                   "gemma": SECOND_SCORING_MODEL, "groq": GROQ_SCORING_MODEL}
+                   "llama": LOCAL_SCORING_MODEL, "qwen": LOCAL_SCORING_MODEL,
+                   "gemma": LOCAL_SCORING_MODEL, "groq": GROQ_SCORING_MODEL}
 
 
 def _cloud_available():
@@ -491,12 +505,9 @@ def choose_scoring_model(essay_text, criteria, preference="auto"):
     local = {"provider": "ollama", "model": LOCAL_SCORING_MODEL, "preference": preference}
     cloud = {"provider": "deepseek", "model": CLOUD_SCORING_MODEL, "preference": preference}
 
-    if preference in ("local", "llama"):
-        return {**local, "reason": "You chose Llama 3.2, which runs on our server, so the essay stayed there."}
-    if preference in ("qwen", "gemma"):
-        name = model_label(SECOND_SCORING_MODEL).replace(" (Ollama)", "")
-        return {"provider": "ollama", "model": SECOND_SCORING_MODEL, "preference": preference,
-                "reason": f"You chose {name}, which runs on our server, so the essay stayed there."}
+    if preference in ("local", "llama", "qwen", "gemma"):
+        name = model_label(LOCAL_SCORING_MODEL).replace(" (Ollama)", "")
+        return {**local, "reason": f"You chose {name}, which runs on our server, so the essay stayed there."}
     if preference == "groq":
         return {"provider": "groq", "model": GROQ_SCORING_MODEL, "preference": preference,
                 "reason": "You chose Groq (a large open model in the cloud)."}
@@ -533,10 +544,15 @@ def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, pr
     criteria = normalize_rubric(rubric)
     essay_limit = CLOUD_ESSAY_CHARS if provider in CLOUD_PROVIDERS else LOCAL_ESSAY_CHARS
 
+    # Local models read the prompt on the server's CPU, where every word costs
+    # time: they get each level descriptor shortened to its first sentence.
+    compact = provider not in CLOUD_PROVIDERS
     rubric_block = ""
     for key, c in criteria.items():
         rubric_block += f"\n[{key}] {c['label']} — score 1 to {c['max_score']}\n"
         for low, high, text in level_ranges(c):
+            if compact:
+                text = _first_sentence(text, 140)
             # Bands of a points-based rubric show their range: "18-20: ...".
             rubric_block += f"  {low if high <= low else f'{low}-{high}'}: {text}\n"
 
@@ -599,8 +615,8 @@ Example D - Disorganized essay with no thesis and no evidence:
         f'    "{key}": "{per_criterion}"' for key in criteria
     )
     length_rules = (
-        "- At most 2 grammar_issues.\n"
-        "- Provide 2 recommendations. Each must reference a specific part of the essay.\n"
+        "- At most 1 grammar_issues entry (grammar is also checked separately).\n"
+        "- Provide 1 recommendation. It must reference a specific part of the essay.\n"
         "- Every criterion_feedback value must be a plain string of 1 sentence.\n"
         "- Keep each quote short: one phrase from the essay, under 25 words."
     ) if brief else (
@@ -684,7 +700,7 @@ RULES:
             # per criterion, 2 grammar notes and 2 recommendations.
             content = call_ollama(
                 system_msg, user_msg, model=model, json_mode=True, temperature=0.0,
-                max_tokens=min(1000, 450 + 90 * len(criteria)),
+                max_tokens=min(800, 250 + 70 * len(criteria)),
                 json_schema=_scoring_schema(criteria, brief),
             )["text"].strip()
 
@@ -959,17 +975,17 @@ def _scoring_schema(criteria, brief):
                for key, c in criteria.items()},
             "criterion_feedback": {
                 "type": "object",
-                "properties": {key: text(260 if brief else 500) for key in criteria},
+                "properties": {key: text(180 if brief else 500) for key in criteria},
                 "required": list(criteria),
             },
             "grammar_issues": {
-                "type": "array", "maxItems": 2 if brief else 5,
+                "type": "array", "maxItems": 1 if brief else 5,
                 "items": {"type": "object", "properties": {
                     "original": text(160), "correction": text(160), "explanation": text(160)},
                     "required": ["original", "correction", "explanation"]},
             },
             "recommendations": {
-                "type": "array", "maxItems": 2 if brief else 5,
+                "type": "array", "maxItems": 1 if brief else 5,
                 "items": {"type": "object", "properties": {
                     "title": text(60), "issue": text(200), "suggestion": text(240), "quote": text(200)},
                     "required": ["title", "issue", "suggestion", "quote"]},
@@ -989,7 +1005,7 @@ def _scoring_attempts(choice, strict):
     if strict:
         wanted = PREFERRED_MODEL.get(choice["preference"])
         attempts = [choice] if wanted is None or choice["model"] == wanted else []
-        if choice["preference"] == "groq" and _gemini_available():
+        if choice["provider"] == "groq" and _gemini_available():
             attempts.append({"provider": "gemini", "model": _gemini_model()})
         return attempts
     attempts = [choice]

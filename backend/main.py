@@ -22,6 +22,14 @@ from evaluator import resolve_rubric
 # ---------- FastAPI App ----------
 app = FastAPI(title="AI Essay Evaluator API")
 
+
+@app.on_event("startup")
+def _preload_local_ai():
+    # Load the local AI into memory in the background, so the first essay
+    # after a restart doesn't wait for it (startup isn't delayed).
+    from ai_models import warm_up_ollama
+    threading.Thread(target=warm_up_ollama, args=(evaluator.LOCAL_SCORING_MODEL,), daemon=True).start()
+
 # ---------- CORS Configuration ----------
 ALLOWED_ORIGINS = [
     "http://localhost:5173",

@@ -15,7 +15,7 @@ const STEPS = [
   },
   {
     n: 2, color: 'bg-emerald-100 text-emerald-700', title: 'AI evaluation',
-    text: 'Scored against your teacher’s rubric with DeepSeek or Llama 3.2 (or let Auto pick), with a grammar check by LanguageTool, written feedback and the parts that need work highlighted.',
+    text: 'Scored against your teacher’s rubric by three AIs at once (DeepSeek, GPT-OSS and Qwen on our own server), with a grammar check by LanguageTool, written feedback and the parts that need work highlighted.',
   },
   {
     n: 3, color: 'bg-violet-100 text-violet-700', title: 'Review & improve',
@@ -29,7 +29,7 @@ const FEATURES = [
   { icon: '🖍️', title: 'Highlighted essay & reports', text: 'See exactly which sentences need work, on screen and in the PDF report.' },
   { icon: '✏️', title: 'Teacher override', text: 'Correct a score, add remarks, and approve results; corrections go into the learning hub.' },
   { icon: '🧠', title: 'Learns from past reviews', text: 'Similar, teacher-approved evaluations are retrieved (RAG) to keep feedback consistent.' },
-  { icon: '⚖️', title: 'Compare with your scores', text: 'DeepSeek, Llama 3.2 and Groq grade every essay; enter your own scores to see which AI is closest to you.' },
+  { icon: '⚖️', title: 'Compare with your scores', text: 'DeepSeek, GPT-OSS and a local Qwen grade every essay; enter your own scores to see which AI is closest to you.' },
 ];
 
 export default function HomePage({ setActiveTab }) {
@@ -169,7 +169,7 @@ export default function HomePage({ setActiveTab }) {
             <h2 className="text-2xl font-bold text-gray-800">Where your essay goes</h2>
             <ul className="mt-3 space-y-2 text-gray-700">
               <li>• Your essays and results are stored in the app’s database (Supabase).</li>
-              <li>• Scoring with <strong>DeepSeek</strong> sends the essay text to DeepSeek’s service. Choose <strong>Llama 3.2 (local)</strong> to keep it on our own server.</li>
+              <li>• To be scored, the essay text is sent to <strong>DeepSeek</strong> and to <strong>Groq</strong> (GPT-OSS); if Groq is unavailable, <strong>Google Gemini</strong> scores it instead. The <strong>Qwen 2.5 (local)</strong> result is produced on our own server, so for that one the essay doesn’t leave it.</li>
               <li>• Photos of handwritten essays are read by <strong>Google Gemini</strong>.</li>
             </ul>
           </div>
