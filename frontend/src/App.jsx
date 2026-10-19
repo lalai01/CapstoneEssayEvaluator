@@ -146,6 +146,27 @@ function App() {
       : 'AI Essay Evaluator';
   }, [activePage]);
 
+  // The chosen AI's full result, shown on Evaluate and, once the user picks
+  // an AI there, on Compare with My Scores. onCompare adds the Compare button.
+  const resultsPanel = (onCompare) => (
+    <Results
+      key={chosenAi || 'none'}
+      scores={scores}
+      feedback={feedback}
+      loading={loading}
+      essayText={currentEssay}
+      essayTitle={essayTitle}
+      evalType={evalType}
+      showOverrideModal={showOverrideModal}
+      setShowOverrideModal={setShowOverrideModal}
+      teacherFeedback={teacherFeedback}
+      setTeacherFeedback={setTeacherFeedback}
+      suggestedChanges={suggestedChanges}
+      setSuggestedChanges={setSuggestedChanges}
+      onCompare={onCompare}
+    />
+  );
+
   // An admin who is also a teacher shows both badges.
   const roleBadges = !role ? [] : [
     ...(isAdmin ? [ROLE_BADGES.admin] : []),
@@ -222,22 +243,7 @@ function App() {
               />
               <div className="space-y-6 min-w-0">
               <AiChoice runs={aiRuns} chosen={chosenAi} onChoose={chooseAi} />
-              <Results
-                key={chosenAi || 'none'}
-                scores={scores}
-                feedback={feedback}
-                loading={loading}
-                essayText={currentEssay}
-                essayTitle={essayTitle}
-                evalType={evalType}
-                showOverrideModal={showOverrideModal}
-                setShowOverrideModal={setShowOverrideModal}
-                teacherFeedback={teacherFeedback}
-                setTeacherFeedback={setTeacherFeedback}
-                suggestedChanges={suggestedChanges}
-                setSuggestedChanges={setSuggestedChanges}
-                onCompare={() => setActiveTab('compare')}
-              />
+              {resultsPanel(() => setActiveTab('compare'))}
               </div>
             </div>
           )}
@@ -251,6 +257,7 @@ function App() {
               essayTitle={essayTitle}
               evaluatedEssay={currentEssay}
               onGoEvaluate={() => setActiveTab('evaluate')}
+              resultsPanel={resultsPanel()}
             />
           )}
           {currentTab === 'rateus' && <RateUs />}

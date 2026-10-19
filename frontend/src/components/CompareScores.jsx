@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import AiStatistics from './AiStatistics';
 import useDraft from '../lib/draft';
@@ -11,7 +11,11 @@ const fmt = (n) => (isNum(n) ? n.toFixed(1) : '—');
 // "Which AI scores closest to you?" The three AIs already evaluated the essay
 // on the Evaluate page; here the user enters their own scores and sees which
 // AI is nearest, then can use that AI's result.
-export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle, evaluatedEssay, onGoEvaluate }) {
+// resultsPanel: the chosen AI's full result (the same panel as on Evaluate),
+// shown below once the user uses an AI here.
+export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle, evaluatedEssay, onGoEvaluate, resultsPanel }) {
+  const [showResult, setShowResult] = useState(false);
+  const resultRef = useRef(null);
   const { raters, criteria } = useMemo(() => evaluationRaters(aiRuns), [aiRuns]);
   const forEssay = essayKey(evaluatedEssay);
   // The user's scores are kept as a draft, for this essay only.
@@ -71,10 +75,16 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
     );
   }
 
+  // Uses the selected AI's result and shows it below (scrolling to it);
+  // pressed again on the AI in use, it just shows the result.
   const useSelected = () => {
     if (!selectedAi) return;
-    onChooseAi(selectedId);
-    toast.success(`${selectedAi.name}’s result is now the chosen one on the Evaluate page.`);
+    if (selectedId !== chosenAi) {
+      onChooseAi(selectedId);
+      toast.success(`${selectedAi.name}’s result is now in use. It’s shown below and on the Evaluate page.`);
+    }
+    setShowResult(true);
+    setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
 
   return (
@@ -160,10 +170,13 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
 
           <button
             onClick={useSelected}
-            disabled={!selectedAi || selectedId === chosenAi}
-            className="mt-4 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={!selectedAi}
+            className={`mt-4 px-4 py-2 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed ${
+              selectedId === chosenAi
+                ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
           >
-            {selectedId === chosenAi ? '✓ In use' : 'Use this AI’s result'}
+            {selectedId === chosenAi ? '✓ In use · Show result' : 'Use this AI’s result'}
           </button>
           <button onClick={onGoEvaluate} className="mt-4 ml-3 text-sm text-indigo-700 underline">
             View results on Evaluate
@@ -190,6 +203,21 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
           )}
         </section>
       </div>
+
+      {showResult && chosenAi && resultsPanel && (
+        <section ref={resultRef} className="scroll-mt-20 space-y-3" aria-labelledby="result-in-use-title">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="result-in-use-title" className="text-lg font-bold text-white drop-shadow">
+              {EVALUATION_AIS.find((ai) => ai.id === chosenAi)?.icon}{' '}
+              {EVALUATION_AIS.find((ai) => ai.id === chosenAi)?.name}’s result (in use)
+            </h2>
+            <button onClick={() => setShowResult(false)} className="text-sm text-indigo-100 underline">
+              Hide result
+            </button>
+          </div>
+          {resultsPanel}
+        </section>
+      )}
 
       {entered.length > 0 && (
         <section className="glass-card rounded-2xl shadow-xl p-6 bg-white/95" aria-labelledby="chart-title">
