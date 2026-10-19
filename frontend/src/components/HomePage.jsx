@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import RobotAssistant from './RobotAssistant';
+import useInstallPrompt from '../lib/installPrompt';
 
 const HIGHLIGHTS = [
   { icon: '✍️', text: 'Reads handwriting in seconds' },
@@ -32,6 +33,7 @@ const FEATURES = [
 ];
 
 export default function HomePage({ setActiveTab }) {
+  const { canInstall, install } = useInstallPrompt();
   useEffect(() => {
     const sections = document.querySelectorAll('.scroll-section');
     const observer = new IntersectionObserver(
@@ -88,6 +90,14 @@ export default function HomePage({ setActiveTab }) {
               <a href="#how-it-works" className="bg-white border border-gray-300 text-gray-800 px-6 py-3 rounded-xl font-semibold hover:bg-gray-50 transition">
                 How it works
               </a>
+              {canInstall && (
+                <button
+                  onClick={install}
+                  className="bg-white border border-indigo-300 text-indigo-700 px-6 py-3 rounded-xl font-semibold hover:bg-indigo-50 transition"
+                >
+                  📲 Install the app
+                </button>
+              )}
             </div>
           </div>
 

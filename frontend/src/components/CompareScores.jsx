@@ -93,6 +93,8 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
         </div>
       </section>
 
+      <AiStatistics aiRuns={aiRuns} title="📈 How the three AIs compare with each other" />
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <section className="glass-card rounded-2xl shadow-xl p-6 bg-white/95" aria-labelledby="your-scores-title">
           <h2 id="your-scores-title" className="text-lg font-bold text-gray-800">Your scores</h2>
@@ -218,8 +220,6 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
           </div>
         </section>
       )}
-
-      <AiStatistics aiRuns={aiRuns} title="📈 How the three AIs compare with each other" />
 
       <p className="text-xs text-gray-500">
         Agreement is based on this essay only; compare several essays for a broader picture. Read each AI’s feedback

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import useInstallPrompt from '../lib/installPrompt';
 
 // Simple outline icons (24×24, stroke-based).
 const ICON_PATHS = {
@@ -20,7 +21,26 @@ const ICON_PATHS = {
   menu: 'M4 6h16M4 12h16M4 18h16',
   close: 'M6 6l12 12M18 6L6 18',
   logout: 'M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l-5-5 5-5M5 12h11',
+  download: 'M12 3v12M7 10l5 5 5-5M5 21h14',
 };
+
+// Shown only when the browser says the app can be installed (Chrome/Edge on
+// Windows, Android, ChromeOS) and it isn't already running as the app.
+function InstallButton({ className = '', onDone }) {
+  const { canInstall, install } = useInstallPrompt();
+  if (!canInstall) return null;
+  return (
+    <button
+      type="button"
+      onClick={async () => { await install(); onDone?.(); }}
+      title="Install AI Essay Evaluator as an app on this device"
+      className={`inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/50 px-2.5 py-2 text-sm font-medium text-indigo-100 hover:bg-indigo-500/20 whitespace-nowrap transition-colors ${className}`}
+    >
+      <Icon name="download" className="w-4 h-4" />
+      Install app
+    </button>
+  );
+}
 
 export function Icon({ name, className = 'w-5 h-5' }) {
   return (
@@ -212,6 +232,7 @@ export default function NavBar({ items, groups, currentTab, onSelect, user, role
         </nav>
 
         <div className="ml-auto flex items-center gap-1 xl:gap-2 shrink-0">
+          <InstallButton className="hidden xl:inline-flex" />
           <div className="hidden lg:flex items-center gap-0.5 xl:gap-1">
             {visibleGroups.map((g) => (
               <GroupMenu key={g.id} group={g} items={g.items} currentTab={currentTab} onSelect={select} />
@@ -245,6 +266,7 @@ export default function NavBar({ items, groups, currentTab, onSelect, user, role
       {mobileOpen && (
         <nav aria-label="Main" className="lg:hidden border-t border-white/10 bg-slate-950/95 max-h-[calc(100vh-4rem)] overflow-y-auto">
           <div className="max-w-7xl mx-auto px-4 py-3 space-y-4">
+            <InstallButton className="w-full justify-center" onDone={() => setMobileOpen(false)} />
             {[{ id: 'main', label: 'Menu', items: mainItems }, ...visibleGroups].map((section) => (
               <div key={section.id}>
                 <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">

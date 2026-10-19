@@ -260,6 +260,7 @@ export default function Results({
   setTeacherFeedback,
   suggestedChanges,
   setSuggestedChanges,
+  onCompare,   // opens Compare with My Scores (the AIs' statistics live there)
 }) {
   const { user, isTeacher, isAdmin } = useAuth();
   const [teacherScores, setTeacherScores] = React.useState({});
@@ -622,6 +623,14 @@ export default function Results({
             >
               📄 Generate Evaluation Report
             </button>
+            {onCompare && (
+              <button
+                onClick={onCompare}
+                className="w-full bg-white border-2 border-indigo-300 text-indigo-700 py-2 rounded-xl font-semibold hover:bg-indigo-50 transition"
+              >
+                ⚖️ Compare the AIs with My Own Scores
+              </button>
+            )}
           </div>
         ) : (
           <div className="mt-5 space-y-3">
@@ -631,6 +640,14 @@ export default function Results({
             >
               📄 Generate Evaluation Report
             </button>
+            {onCompare && (
+              <button
+                onClick={onCompare}
+                className="w-full bg-white border-2 border-indigo-300 text-indigo-700 py-2 rounded-xl font-semibold hover:bg-indigo-50 transition"
+              >
+                ⚖️ Compare the AIs with My Own Scores
+              </button>
+            )}
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-center">
               <p className="text-amber-800 text-sm">
                 🔒 <strong>Sign in with Google or Yahoo</strong> to save this evaluation. As a guest it isn&apos;t
