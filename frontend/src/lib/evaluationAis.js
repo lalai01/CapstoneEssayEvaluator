@@ -5,7 +5,7 @@
 export const EVALUATION_AIS = [
   { id: 'deepseek', name: 'DeepSeek', where: 'Cloud', icon: '🌐', bar: 'bg-blue-500', chip: 'bg-blue-50 text-blue-800 border-blue-200' },
   { id: 'llama', name: 'Llama 3.2', where: 'Our server', local: true, icon: '🦙', bar: 'bg-violet-500', chip: 'bg-violet-50 text-violet-800 border-violet-200' },
-  // Groq (Llama 3.3 70B) replaced the slower local Gemma 2 / Qwen 2.5; when
+  // Groq (GPT-OSS 120B) replaced the slower local Gemma 2 / Qwen 2.5; when
   // Groq is unavailable the server uses Gemini and the card says so.
-  { id: 'groq', name: 'Groq', where: 'Cloud · Llama 3.3 70B', icon: '🚀', bar: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  { id: 'groq', name: 'Groq', where: 'Cloud · GPT-OSS 120B', icon: '🚀', bar: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
 ];
