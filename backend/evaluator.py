@@ -552,7 +552,8 @@ Example D - Disorganized essay with no thesis and no evidence:
     length_rules = (
         "- At most 2 grammar_issues.\n"
         "- Provide 2 recommendations. Each must reference a specific part of the essay.\n"
-        "- Every criterion_feedback value must be a plain string of 1 sentence."
+        "- Every criterion_feedback value must be a plain string of 1 sentence.\n"
+        "- Keep each quote short: one phrase from the essay, under 25 words."
     ) if brief else (
         "- Provide 3–5 recommendations. Each must reference a specific part of the essay.\n"
         "- Every criterion_feedback value must be a plain string of 2-3 sentences."
@@ -628,8 +629,11 @@ RULES:
             # (no reload each time), forces JSON, caps the answer length and
             # gives up at its deadline instead of hanging.
             from ai_models import call_ollama
+            # Room for the answer grows with the rubric: scores, one sentence
+            # per criterion, 2 grammar notes and 2 recommendations.
             content = call_ollama(
-                system_msg, user_msg, model=model, json_mode=True, temperature=0.0, max_tokens=700,
+                system_msg, user_msg, model=model, json_mode=True, temperature=0.0,
+                max_tokens=min(1000, 450 + 90 * len(criteria)),
                 json_schema=_scoring_schema(criteria, brief),
             )["text"].strip()
 
@@ -639,42 +643,18 @@ RULES:
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError:
-            start = content.find("{")
-            if start == -1:
+            # Extra text around the JSON, or an answer cut off at the length
+            # limit: keep every complete part (the scores come first).
+            parsed = _salvage_json(content)
+            if parsed is None:
                 raise
-            depth = 0
-            in_string = False
-            escape = False
-            end = -1
-            for i in range(start, len(content)):
-                c = content[i]
-                if escape:
-                    escape = False
-                    continue
-                if c == "\\":
-                    escape = True
-                    continue
-                if c == '"':
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if c == "{":
-                    depth += 1
-                elif c == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = i
-                        break
-            if end == -1:
-                raise
-            parsed = json.loads(content[start:end + 1])
+            print(f"[scoring] {model}: reply was incomplete or wrapped in text; recovered the complete part")
 
         result = {}
         for key, c in criteria.items():
-            if key not in parsed:
+            score = _find_score(parsed, key, c["label"])
+            if score is None:
                 return _failure(f"its reply had no score for '{c['label']}'")
-            score = int(parsed[key])
             if score < 1 or score > c["max_score"]:
                 return _failure(f"it gave '{c['label']}' {score}, outside 1-{c['max_score']}")
             result[key] = score
@@ -682,11 +662,14 @@ RULES:
         cf = parsed.get("criterion_feedback")
         result["criterion_feedback"] = cf if isinstance(cf, dict) else {}
 
+        # Items cut off by the length limit lack their last fields: drop them.
         gi = parsed.get("grammar_issues")
-        result["grammar_issues"] = gi if isinstance(gi, list) else []
+        result["grammar_issues"] = [g for g in gi if isinstance(g, dict) and g.get("original") and g.get("correction")] \
+            if isinstance(gi, list) else []
 
         recs = parsed.get("recommendations")
-        result["recommendations"] = recs if isinstance(recs, list) else []
+        result["recommendations"] = [r for r in recs if isinstance(r, dict) and r.get("suggestion")] \
+            if isinstance(recs, list) else []
 
         result["criteria_meta"] = rubric_meta(criteria)
         result["evaluated_by"] = evaluated_by(model)
@@ -849,10 +832,75 @@ def _failure(reason):
     return None
 
 
+def _salvage_json(content):
+    """
+    The JSON object in a reply that has extra text around it or was cut off
+    at the length limit: everything up to the last complete value, with the
+    open brackets closed. None if not even that parses.
+    """
+    start = content.find("{")
+    if start == -1:
+        return None
+    stack, in_string, escape, cuts = [], False, False, []
+    for i in range(start, len(content)):
+        c = content[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+            continue
+        if c == '"':
+            in_string = True
+        elif c in "{[":
+            stack.append("}" if c == "{" else "]")
+        elif c in "}]":
+            if stack:
+                stack.pop()
+            cuts.append((i + 1, list(stack)))
+            if not stack:
+                break                       # the object is complete
+        elif c == ",":
+            cuts.append((i, list(stack)))   # everything before a comma is complete
+    for pos, still_open in reversed(cuts):
+        try:
+            value = json.loads(content[start:pos] + "".join(reversed(still_open)))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _find_score(parsed, key, label):
+    """A criterion's score from a model reply, tolerating the small slips local
+    models make: "18" or 17.5 instead of 18, the label instead of the key,
+    or the scores nested under "scores"."""
+    def norm(text):
+        return re.sub(r"[^a-z0-9]+", "", str(text).lower())
+    places = [parsed] + [v for k, v in parsed.items() if k in ("scores", "score") and isinstance(v, dict)]
+    wanted = {norm(key), norm(label)}
+    for place in places:
+        for k, v in place.items():
+            if k == key or norm(k) in wanted:
+                if isinstance(v, dict):
+                    v = v.get("score")
+                try:
+                    return int(round(float(v)))
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
 def _scoring_schema(criteria, brief):
     """JSON schema for Ollama's structured output: forces the exact keys and
-    score ranges, which small local models often get wrong otherwise."""
-    text = {"type": "string"}
+    score ranges, which small local models often get wrong otherwise. Text
+    fields have a maximum length so a long essay can't make the answer run
+    past its token limit (which would cut the JSON off)."""
+    def text(limit):
+        return {"type": "string", "maxLength": limit}
     return {
         "type": "object",
         "properties": {
@@ -860,19 +908,19 @@ def _scoring_schema(criteria, brief):
                for key, c in criteria.items()},
             "criterion_feedback": {
                 "type": "object",
-                "properties": {key: text for key in criteria},
+                "properties": {key: text(260 if brief else 500) for key in criteria},
                 "required": list(criteria),
             },
             "grammar_issues": {
                 "type": "array", "maxItems": 2 if brief else 5,
                 "items": {"type": "object", "properties": {
-                    "original": text, "correction": text, "explanation": text},
+                    "original": text(160), "correction": text(160), "explanation": text(160)},
                     "required": ["original", "correction", "explanation"]},
             },
             "recommendations": {
                 "type": "array", "maxItems": 2 if brief else 5,
                 "items": {"type": "object", "properties": {
-                    "title": text, "issue": text, "suggestion": text, "quote": text},
+                    "title": text(60), "issue": text(200), "suggestion": text(240), "quote": text(200)},
                     "required": ["title", "issue", "suggestion", "quote"]},
             },
         },
@@ -958,10 +1006,10 @@ def _parse_json_object(content):
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        start, end = content.find("{"), content.rfind("}")
-        if start == -1 or end <= start:
+        parsed = _salvage_json(content)   # prose around it, or cut off at the length limit
+        if parsed is None:
             raise
-        return json.loads(content[start:end + 1])
+        return parsed
 
 
 HOLISTIC_PLAIN = {

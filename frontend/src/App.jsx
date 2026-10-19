@@ -4,7 +4,6 @@ import EssayInput from './components/EssayInput';
 import Results from './components/Results';
 import KnowledgeBase from './components/KnowledgeBase';
 import CompareScores from './components/CompareScores';
-import AiStatistics from './components/AiStatistics';
 import LearningFeedback from './components/LearningFeedback';
 import HomePage from './components/HomePage';
 import RateUs from './components/RateUs';
@@ -223,15 +222,6 @@ function App() {
               />
               <div className="space-y-6 min-w-0">
               <AiChoice runs={aiRuns} chosen={chosenAi} onChoose={chooseAi} />
-              <AiStatistics aiRuns={aiRuns} />
-              {aiRuns && (
-                <button
-                  onClick={() => setActiveTab('compare')}
-                  className="w-full rounded-xl border border-indigo-200 bg-white/95 px-4 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-50 transition"
-                >
-                  ⚖️ Compare the AIs with my own scores →
-                </button>
-              )}
               <Results
                 key={chosenAi || 'none'}
                 scores={scores}
@@ -246,6 +236,7 @@ function App() {
                 setTeacherFeedback={setTeacherFeedback}
                 suggestedChanges={suggestedChanges}
                 setSuggestedChanges={setSuggestedChanges}
+                onCompare={() => setActiveTab('compare')}
               />
               </div>
             </div>
