@@ -281,7 +281,7 @@ export default function AdminSurveys() {
       const systemPrompt = "You are a professional data analyst. Generate a concise, insightful conclusion from the survey data. Use formal, friendly language.";
       const userPrompt = `Analyze the following survey results and write a conclusion:\n\n${summary}`;
 
-      const response = await testPrompt('gemma', systemPrompt, userPrompt, 'gemma2:2b');
+      const response = await testPrompt('qwen', systemPrompt, userPrompt);
       setConclusion(response.result?.text || 'Could not generate conclusion.');
     } catch (err) {
       toast.error('Failed to generate conclusion');

@@ -149,7 +149,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
         return false;
       }
     };
-    // Llama and Gemma both run on the server's CPU: one at a time is faster
+    // Llama and Qwen both run on the server's CPU: one at a time is faster
     // than both at once (no swapping models in and out of memory).
     const [cloud, local] = [EVALUATION_AIS.filter((a) => a.id === 'deepseek'), EVALUATION_AIS.filter((a) => a.id !== 'deepseek')];
     const runLocalInTurn = async () => {

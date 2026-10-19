@@ -5,7 +5,7 @@ A web app that scores essays against a configurable rubric, gives written feedba
 - **Frontend:** React 19 + Vite + Tailwind, hosted on Firebase Hosting (`https://capstoneessayevaluator.web.app`)
 - **Backend:** FastAPI (Python 3.11) in Docker on a Contabo VPS (`https://essay-evaluator.duckdns.org`, set as `VITE_API_URL`)
 - **Data and auth:** Supabase (Postgres, Auth with Google/Yahoo, Storage)
-- **AI models:** DeepSeek API and Ollama (Llama 3.2 3B, Gemma 2 2B), reachable from the backend. llama.cpp (Phi-3.5 Mini) is still supported by the API but no longer offered in the Playground, because it was too slow on the VPS CPU.
+- **AI models:** DeepSeek API and Ollama (Llama 3.2 3B, Qwen 2.5 1.5B), reachable from the backend. llama.cpp (Phi-3.5 Mini) is still supported by the API but no longer offered in the Playground, because it was too slow on the VPS CPU.
 
 ---
 
@@ -81,7 +81,7 @@ FastAPI backend (Docker, Contabo VPS)
    └── rag.py                TF-IDF retrieval over the knowledge base and teacher overrides
    │
    ├──► Supabase (tables, storage bucket "ocr-samples")
-   ├──► Ollama   http://ollama:11434       (llama3.2:3b scoring/feedback, gemma2:2b)
+   ├──► Ollama   http://ollama:11434       (llama3.2:3b scoring/feedback, qwen2.5:1.5b)
    ├──► llama.cpp http://llamacpp:8080/v1   (Phi-3.5 Mini)
    └──► DeepSeek API                         (OCR correction, Playground)
 ```
@@ -134,7 +134,7 @@ frontend/
 
 ### Backend
 
-Requirements: Python 3.11, Tesseract OCR, Java (for LanguageTool), and an Ollama instance with `llama3.2:3b` and `gemma2:2b` pulled.
+Requirements: Python 3.11, Tesseract OCR, Java (for LanguageTool), and an Ollama instance with `llama3.2:3b` and `qwen2.5:1.5b` pulled.
 
 ```bash
 cd backend
@@ -171,6 +171,7 @@ npm run dev                       # http://localhost:5173
 | `SUPABASE_JWT_SECRET` | no | No longer used. Tokens are verified by Supabase Auth itself (`/auth/v1/user`), which works with both legacy and new signing keys. |
 | `DEEPSEEK_API_KEY` | for DeepSeek | OCR correction and the Playground DeepSeek slot |
 | `OLLAMA_URL` | no | Default `http://ollama:11434` |
+| `SECOND_LOCAL_MODEL` | no | The second local AI on the Evaluate page. Default `qwen2.5:1.5b` (replaced Gemma 2 2B: faster on CPU, more reliable JSON). Pull it in Ollama first. |
 | `LLAMACPP_URL` | no | Default `http://llamacpp:8080/v1` |
 | `LLAMACPP_MODEL` | no | Default `Phi-3.5-mini-instruct-Q4_K_M.gguf` |
 | `ADMIN_EMAILS` | no | Optional extra admin emails, comma-separated. Prefer the `admin_users` table so emails stay out of config files. |
@@ -343,7 +344,7 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 
 ## Three AIs per essay
 
-Clicking **Evaluate** sends the essay to **DeepSeek** (cloud), **Llama 3.2 3B** and **Gemma 2 2B** (both on our server, via Ollama) at the same time (`ai_model` = `deepseek` / `llama` / `gemma` with `strict_model: true`). Each card fills in as its AI finishes, with its overall score and its **own** feedback (the AI that scored also writes the feedback). The first real AI result is shown straight away; the user can switch to any other, and the chosen one is what's displayed, saved, overridden and put in the report. In this mode there is no fallback to another model, so each card is genuinely that AI's work; an AI that isn't available says so (rule-based scores, clearly marked).
+Clicking **Evaluate** sends the essay to **DeepSeek** (cloud), **Llama 3.2 3B** and **Qwen 2.5 1.5B** (both on our server, via Ollama) at the same time (`ai_model` = `deepseek` / `llama` / `gemma` with `strict_model: true`). Each card fills in as its AI finishes, with its overall score and its **own** feedback (the AI that scored also writes the feedback). The first real AI result is shown straight away; the user can switch to any other, and the chosen one is what's displayed, saved, overridden and put in the report. In this mode there is no fallback to another model, so each card is genuinely that AI's work; an AI that isn't available says so (rule-based scores, clearly marked).
 
 The API still accepts `ai_model: "auto"` (and `local` for Llama) without `strict_model`, which picks one model per essay:
 
@@ -358,7 +359,7 @@ If the chosen model fails (outside the three-AI mode), Auto tries the other one,
 
 ## Prompt Playground statistics
 
-Three slots (A, B, C) send the essay to the chosen models. By default: A = DeepSeek, B = Gemma 2 2B (Ollama), C = Llama 3.2 3B (Ollama). Any slot can use any of the three.
+Three slots (A, B, C) send the essay to the chosen models. By default: A = DeepSeek, B = Qwen 2.5 1.5B (Ollama), C = Llama 3.2 3B (Ollama). Any slot can use any of the three.
 
 **Speed on the VPS CPU.** DeepSeek runs in the cloud, so it starts immediately. The local models (Ollama and llama.cpp) run **one at a time**, shown as "queued", because running them together makes each slower and causes timeouts. They also get a **compact prompt**: the same rubric with no long example, one-sentence notes, and at most 3 grammar fixes and 3 recommendations. Answers are requested in JSON mode, capped at 1,024 tokens, and **streamed**, so a slow but working model isn't cut off (overall limit 280 s). Ollama keeps models loaded for 30 minutes (`OLLAMA_KEEP_ALIVE`) to skip reload time. Each slot shows its time and tokens per second.
  The prompts are built automatically from the rubric that applies to the user, so nobody edits prompts by hand. Admins can still open **Advanced (admin): Edit Prompts** to change them. Once an admin edits them, rubric changes no longer overwrite their version until they click **Rebuild from rubric**.

@@ -31,7 +31,7 @@ class EvaluationState(TypedDict, total=False):
     _analysis: Optional[Dict[str, Any]]
     _validated: Optional[bool]
     rubric: Optional[Dict[str, Any]]
-    ai_model: Optional[str]   # "auto" | "deepseek" | "local"/"llama" | "gemma"
+    ai_model: Optional[str]   # "auto" | "deepseek" | "local"/"llama" | "qwen" (older: "gemma")
     strict_model: Optional[bool]   # only the chosen AI (side-by-side comparison)
 
 

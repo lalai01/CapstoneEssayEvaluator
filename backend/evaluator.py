@@ -399,6 +399,9 @@ def _essay_facts(essay_text):
 
 MODEL_LABELS = {
     "llama3.2:3b": "Llama 3.2 3B (Ollama)",
+    "llama3.2:1b": "Llama 3.2 1B (Ollama)",
+    "qwen2.5:1.5b": "Qwen 2.5 1.5B (Ollama)",
+    "qwen2.5:3b": "Qwen 2.5 3B (Ollama)",
     "gemma2:2b": "Gemma 2 2B (Ollama)",
     "deepseek-chat": "DeepSeek Chat",
 }
@@ -415,16 +418,21 @@ def evaluated_by(model=None):
 
 
 LOCAL_SCORING_MODEL = "llama3.2:3b"
-GEMMA_SCORING_MODEL = "gemma2:2b"
+# The second local AI. Qwen 2.5 1.5B replaced Gemma 2 2B: about twice as fast
+# on the VPS CPU and better at returning the required JSON. Set
+# SECOND_LOCAL_MODEL (and `ollama pull` it) to try another, e.g. qwen2.5:3b.
+SECOND_SCORING_MODEL = os.environ.get("SECOND_LOCAL_MODEL", "qwen2.5:1.5b")
 CLOUD_SCORING_MODEL = "deepseek-chat"
 # How much essay text each model is given. The local model's context is
 # small, so it reads roughly the first 650 words; DeepSeek reads far more.
 LOCAL_ESSAY_CHARS = 4000
 CLOUD_ESSAY_CHARS = 16000
-SCORING_PREFERENCES = ("auto", "deepseek", "local", "llama", "gemma")
-# The model each explicit preference means ("local" is the older name for Llama).
+SCORING_PREFERENCES = ("auto", "deepseek", "local", "llama", "qwen", "gemma")
+# The model each explicit preference means ("local" is the older name for
+# Llama; "gemma" is the older name for the second local AI).
 PREFERRED_MODEL = {"deepseek": CLOUD_SCORING_MODEL, "local": LOCAL_SCORING_MODEL,
-                   "llama": LOCAL_SCORING_MODEL, "gemma": GEMMA_SCORING_MODEL}
+                   "llama": LOCAL_SCORING_MODEL, "qwen": SECOND_SCORING_MODEL,
+                   "gemma": SECOND_SCORING_MODEL}
 
 
 def _cloud_available():
@@ -448,9 +456,10 @@ def choose_scoring_model(essay_text, criteria, preference="auto"):
 
     if preference in ("local", "llama"):
         return {**local, "reason": "You chose Llama 3.2, which runs on our server, so the essay stayed there."}
-    if preference == "gemma":
-        return {"provider": "ollama", "model": GEMMA_SCORING_MODEL, "preference": preference,
-                "reason": "You chose Gemma 2, which runs on our server, so the essay stayed there."}
+    if preference in ("qwen", "gemma"):
+        name = MODEL_LABELS.get(SECOND_SCORING_MODEL, SECOND_SCORING_MODEL).replace(" (Ollama)", "")
+        return {"provider": "ollama", "model": SECOND_SCORING_MODEL, "preference": preference,
+                "reason": f"You chose {name}, which runs on our server, so the essay stayed there."}
     if preference == "deepseek":
         if _cloud_available():
             return {**cloud, "reason": "You chose DeepSeek."}
@@ -1465,7 +1474,7 @@ def ai_correct_ocr_text(raw_text, provider="deepseek"):
         response = requests.post(
             f"{ollama_url}/api/chat",
             json={
-                "model": "gemma2:2b",
+                "model": SECOND_SCORING_MODEL,
                 "messages": [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
