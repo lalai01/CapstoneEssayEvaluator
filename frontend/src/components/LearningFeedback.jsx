@@ -130,16 +130,6 @@ export default function LearningFeedback() {
     );
   }
 
-  if (!isTeacher) {
-    return (
-      <div className="glass-card rounded-2xl shadow-xl p-12 text-center">
-        <div className="text-6xl mb-4">👩‍🏫</div>
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">Teachers only</h2>
-        <p className="text-gray-600">The Learning Hub lists the overrides you submitted as a teacher.</p>
-      </div>
-    );
-  }
-
   if (loading) {
     return (
       <div className="glass-card rounded-2xl shadow-xl p-12 bg-white/90 backdrop-blur-md">
@@ -157,8 +147,16 @@ export default function LearningFeedback() {
             {visible.length}/{overrides.length} overrides
           </span>
         </div>
-        <p className="text-sm text-gray-600 mb-4">
-          Essays where you overrode the AI. Only you can see your overrides; your remarks feed back into future evaluations.
+        <p className="text-sm text-gray-600 mb-2">
+          Essays where you overrode the AI. Only you can see your overrides.
+        </p>
+        <p className={`text-xs mb-4 rounded-lg border px-3 py-2 ${isTeacher
+          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          : 'bg-sky-50 border-sky-200 text-sky-800'}`}
+        >
+          {isTeacher
+            ? '👩‍🏫 As a teacher, your overrides are approved and teach the AI: similar essays are scored with your corrections in mind.'
+            : 'ℹ️ These are for your own reference. Only a teacher’s override changes what the AI learns.'}
         </p>
 
         <EntryFilters
