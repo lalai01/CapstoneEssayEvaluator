@@ -72,7 +72,15 @@ export default function AiChoice({ runs, chosen, onChoose }) {
                       ⚠️ {run.scores?.evaluated_by?.reason || `${ai.name} didn’t respond, so rule-based scoring was used.`}
                     </p>
                   ) : (
-                    <div className="text-xs text-gray-500 mt-1">Finished in {seconds(run.ms)}</div>
+                    <>
+                      {/* Another AI stood in (e.g. Gemini when Groq is over its limit). */}
+                      {run.scores?.evaluated_by?.reason?.includes('was used instead') && (
+                        <p className="text-xs text-amber-700 mt-1">
+                          ↪ Answered by {run.scores.evaluated_by.label}: {run.scores.evaluated_by.reason.replace(/^You chose [^.]*\.\s*/, '')}
+                        </p>
+                      )}
+                      <div className="text-xs text-gray-500 mt-1">Finished in {seconds(run.ms)}</div>
+                    </>
                   )}
                 </div>
               )}

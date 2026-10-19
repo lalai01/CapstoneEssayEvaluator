@@ -85,6 +85,97 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=F
     }
 
 
+# ---------- Groq (Llama 3.3 70B on Groq's LPUs: answers in seconds) ----------
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def call_groq(system_prompt, user_prompt, model="llama-3.3-70b-versatile", json_mode=False, temperature=0.3):
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("GROQ_API_KEY isn't set on the server")
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": 2048,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    started = time.time()
+    response = requests.post(GROQ_URL, json=payload, timeout=60,
+                             headers={"Authorization": f"Bearer {api_key}"})
+    if response.status_code == 429:
+        raise RuntimeError("Groq's free-tier limit was reached; try again in a minute")
+    if response.status_code != 200:
+        raise RuntimeError(f"Groq error {response.status_code}: {_error_reason(response)}")
+    data = response.json()
+    usage = data.get("usage") or {}
+    return {
+        "text": data["choices"][0]["message"]["content"],
+        "model": model,
+        "provider": "groq",
+        "stats": _stats(started, usage.get("completion_tokens")),
+    }
+
+
+# ---------- Gemini (text; the same key and models as handwriting reading) ----------
+def call_gemini(system_prompt, user_prompt, model=None, json_mode=False, temperature=0.3):
+    import gemini_ocr
+    if not gemini_ocr.enabled():
+        raise ValueError("GEMINI_API_KEY isn't set on the server")
+    key = os.environ["GEMINI_API_KEY"].strip()
+    config = {"temperature": temperature, "maxOutputTokens": 2048}
+    if json_mode:
+        config["responseMimeType"] = "application/json"
+    body = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": config,
+    }
+    started = time.time()
+    errors = []
+    # The requested model first, then the others (one may be out of quota).
+    names = gemini_ocr._models()
+    if model:
+        names = [model] + [m for m in names if m != model]
+    for name in names:
+        response = requests.post(gemini_ocr.API_URL.format(model=name), json=body, timeout=90,
+                                 headers={"x-goog-api-key": key})
+        if response.status_code != 200:
+            errors.append(f"{name}: {_error_reason(response)[:120]}")
+            continue
+        data = response.json()
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts)
+        if not text.strip():
+            errors.append(f"{name}: empty reply")
+            continue
+        return {
+            "text": text,
+            "model": name,
+            "provider": "gemini",
+            "stats": _stats(started, (data.get("usageMetadata") or {}).get("candidatesTokenCount")),
+        }
+    raise RuntimeError("Gemini failed: " + "; ".join(errors))
+
+
+# Cloud AIs share one call signature, so scoring and feedback can use any.
+CLOUD_PROVIDERS = ("deepseek", "groq", "gemini")
+
+
+def call_cloud(provider, system_prompt, user_prompt, model=None, json_mode=False, temperature=0.3):
+    if provider == "deepseek":
+        return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat", json_mode, temperature)
+    if provider == "groq":
+        return call_groq(system_prompt, user_prompt, model or "llama-3.3-70b-versatile", json_mode, temperature)
+    if provider == "gemini":
+        return call_gemini(system_prompt, user_prompt, model, json_mode, temperature)
+    raise ValueError(f"Unknown cloud AI: {provider}")
+
+
 # ---------- Ollama (Gemma / Llama) ----------
 # In JSON mode a small model that loses the format often emits only
 # whitespace until the token limit. Stop after this many blank chunks.
@@ -259,8 +350,8 @@ def call_llamacpp(system_prompt, user_prompt, model=None, json_mode=False):
 def test_prompt(ai_provider, system_prompt, user_prompt, model=None, json_mode=False, json_schema=None):
     provider = ai_provider.lower()
 
-    if provider == "deepseek":
-        return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat", json_mode)
+    if provider in CLOUD_PROVIDERS:
+        return call_cloud(provider, system_prompt, user_prompt, model, json_mode)
     elif provider in ("qwen", "gemma"):   # the second local AI ("gemma" is its older name)
         default = os.environ.get("SECOND_LOCAL_MODEL", "qwen2.5:1.5b")
         return call_ollama(system_prompt, user_prompt, model or default, json_mode, json_schema)

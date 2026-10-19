@@ -49,7 +49,7 @@ export function agreementLabel(similarity) {
 }
 
 // Criteria where one AI is at least a full rubric level away from the
-// average of the others, e.g. "Qwen 2.5 rates Grammar 1.0 point higher".
+// average of the others, e.g. "Groq rates Grammar 1.0 point higher".
 export function notableDifferences(criteria, raters, limit = 4) {
   if (raters.length < 2) return [];
   const out = [];

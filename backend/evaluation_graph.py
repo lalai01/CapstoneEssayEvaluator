@@ -115,8 +115,9 @@ def feedback_node(state: EvaluationState) -> dict:
     # The AI that scored the essay also writes its feedback. In the three-AI
     # comparison the local models skip this second call (30-90 s each on the
     # server's CPU): their per-criterion comments are already their own words.
+    # Cloud AIs (DeepSeek, Groq, Gemini) answer in seconds, so they write it.
     by = state["scores"].get("evaluated_by") or {}
-    if state.get("strict_model") and by.get("provider") != "deepseek":
+    if state.get("strict_model") and by.get("provider") not in ("deepseek", "groq", "gemini"):
         return {"feedback": rule_feedback}
     enhanced = enhance_feedback_with_ai(
         state["essay_text"], state["scores"], analysis, rule_feedback,
