@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import requests
@@ -85,36 +86,85 @@ def call_deepseek(system_prompt, user_prompt, model="deepseek-chat", json_mode=F
     }
 
 
-# ---------- Groq (Llama 3.3 70B on Groq's LPUs: answers in seconds) ----------
+# ---------- Groq (open models on Groq's LPUs: answers in seconds) ----------
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+# Groq retires models over time. If the configured one is gone, the best
+# available chat model from this list is used instead (first match wins).
+GROQ_PREFERRED = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b",
+                  "qwen/", "llama-3.1-8b-instant", "llama", "openai/gpt-oss"]
+NOT_CHAT = re.compile(r"whisper|tts|orpheus|guard|safeguard|embed|allam", re.I)
+_groq_replacement = {}   # retired model -> the model used instead
 
 
-def call_groq(system_prompt, user_prompt, model="llama-3.3-70b-versatile", json_mode=False, temperature=0.3):
+def _groq_pick_model(api_key, retired):
+    """The best chat model Groq offers now, in place of a retired one."""
+    if retired in _groq_replacement:
+        return _groq_replacement[retired]
+    r = requests.get(GROQ_MODELS_URL, headers={"Authorization": f"Bearer {api_key}"}, timeout=20)
+    r.raise_for_status()
+    available = [m["id"] for m in r.json().get("data", []) if not NOT_CHAT.search(m["id"])]
+    for wanted in GROQ_PREFERRED:
+        for model in available:
+            if model == wanted or (wanted.endswith(("/", "llama", "gpt-oss")) and model.startswith(wanted)):
+                print(f"[groq] {retired} isn't available; using {model}")
+                _groq_replacement[retired] = model
+                return model
+    raise RuntimeError(f"Groq has no chat model available (it offers: {', '.join(available) or 'none'})")
+
+
+def _groq_extras(model):
+    """Reasoning models think before answering: keep that short so the reply
+    is fast and fits the token limit, and don't return the thinking."""
+    if "gpt-oss" in model:
+        return {"reasoning_effort": "low", "include_reasoning": False}
+    if "qwen3" in model or "deepseek-r1" in model:
+        return {"reasoning_format": "hidden"}
+    return {}
+
+
+def call_groq(system_prompt, user_prompt, model=DEFAULT_GROQ_MODEL, json_mode=False, temperature=0.3):
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise ValueError("GROQ_API_KEY isn't set on the server")
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": temperature,
-        "max_tokens": 2048,
-    }
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+    model = _groq_replacement.get(model, model)
     started = time.time()
-    response = requests.post(GROQ_URL, json=payload, timeout=60,
+
+    def send(model, extras):
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": 4096,   # room for a reasoning model's short thinking plus the JSON
+            **extras,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        return requests.post(GROQ_URL, json=payload, timeout=60,
                              headers={"Authorization": f"Bearer {api_key}"})
+
+    extras = _groq_extras(model)
+    response = send(model, extras)
+    if response.status_code == 404 and "model" in _error_reason(response).lower():
+        model = _groq_pick_model(api_key, model)   # retired: switch to an available model
+        extras = _groq_extras(model)
+        response = send(model, extras)
+    if response.status_code == 400 and extras:
+        response = send(model, {})                 # a setting this model doesn't accept
     if response.status_code == 429:
         raise RuntimeError("Groq's free-tier limit was reached; try again in a minute")
     if response.status_code != 200:
         raise RuntimeError(f"Groq error {response.status_code}: {_error_reason(response)}")
     data = response.json()
     usage = data.get("usage") or {}
+    text = data["choices"][0]["message"].get("content") or ""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()   # thinking left in the text
     return {
-        "text": data["choices"][0]["message"]["content"],
+        "text": text,
         "model": model,
         "provider": "groq",
         "stats": _stats(started, usage.get("completion_tokens")),
@@ -170,7 +220,7 @@ def call_cloud(provider, system_prompt, user_prompt, model=None, json_mode=False
     if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat", json_mode, temperature)
     if provider == "groq":
-        return call_groq(system_prompt, user_prompt, model or "llama-3.3-70b-versatile", json_mode, temperature)
+        return call_groq(system_prompt, user_prompt, model or DEFAULT_GROQ_MODEL, json_mode, temperature)
     if provider == "gemini":
         return call_gemini(system_prompt, user_prompt, model, json_mode, temperature)
     raise ValueError(f"Unknown cloud AI: {provider}")

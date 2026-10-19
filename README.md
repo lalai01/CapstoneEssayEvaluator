@@ -172,8 +172,8 @@ npm run dev                       # http://localhost:5173
 | `DEEPSEEK_API_KEY` | for DeepSeek | OCR correction and the Playground DeepSeek slot |
 | `OLLAMA_URL` | no | Default `http://ollama:11434` |
 | `SECOND_LOCAL_MODEL` | no | A second local AI (no longer shown on the Evaluate page; Groq replaced it). Default `qwen2.5:1.5b` (replaced Gemma 2 2B: faster on CPU, more reliable JSON). Pull it in Ollama first. |
-| `GROQ_API_KEY` | for the Groq AI | Free key from console.groq.com. The third AI on the Evaluate page is Llama 3.3 70B on Groq (answers in seconds). Without it, or when Groq is over its free-tier limit, Gemini answers instead and the card says so. Server only, never in the frontend or git. |
-| `GROQ_MODEL` | no | Default `llama-3.3-70b-versatile` (`llama-3.1-8b-instant` is faster, with higher free limits). |
+| `GROQ_API_KEY` | for the Groq AI | Free key from console.groq.com. The third AI on the Evaluate page is GPT-OSS 120B on Groq (answers in seconds). Without it, or when Groq is over its free-tier limit, Gemini answers instead and the card says so. Server only, never in the frontend or git. |
+| `GROQ_MODEL` | no | Default `openai/gpt-oss-120b` (`openai/gpt-oss-20b` is faster). If Groq retires the model, the backend switches to the best chat model Groq still offers. |
 | `LLAMACPP_URL` | no | Default `http://llamacpp:8080/v1` |
 | `LLAMACPP_MODEL` | no | Default `Phi-3.5-mini-instruct-Q4_K_M.gguf` |
 | `ADMIN_EMAILS` | no | Optional extra admin emails, comma-separated. Prefer the `admin_users` table so emails stay out of config files. |

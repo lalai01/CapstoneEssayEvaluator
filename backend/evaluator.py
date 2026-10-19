@@ -406,6 +406,8 @@ MODEL_LABELS = {
     "deepseek-chat": "DeepSeek Chat",
     "llama-3.3-70b-versatile": "Groq · Llama 3.3 70B",
     "llama-3.1-8b-instant": "Groq · Llama 3.1 8B",
+    "openai/gpt-oss-120b": "Groq · GPT-OSS 120B",
+    "openai/gpt-oss-20b": "Groq · GPT-OSS 20B",
 }
 
 
@@ -414,6 +416,8 @@ def model_label(model):
         return MODEL_LABELS[model]
     if str(model).startswith("gemini"):
         return f"Gemini ({model})"
+    if provider_of(str(model)) == "groq":
+        return f"Groq · {str(model).split('/')[-1]}"
     return model
 
 
@@ -443,9 +447,9 @@ LOCAL_SCORING_MODEL = "llama3.2:3b"
 # SECOND_LOCAL_MODEL (and `ollama pull` it) to try another, e.g. qwen2.5:3b.
 SECOND_SCORING_MODEL = os.environ.get("SECOND_LOCAL_MODEL", "qwen2.5:1.5b")
 CLOUD_SCORING_MODEL = "deepseek-chat"
-# The third AI: Llama 3.3 70B on Groq (free tier, answers in seconds). When
+# The third AI: GPT-OSS 120B on Groq (free tier, answers in seconds). When
 # Groq fails or is over its limit, Gemini answers instead and the card says so.
-GROQ_SCORING_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_SCORING_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 CLOUD_PROVIDERS = ("deepseek", "groq", "gemini")
 
 
@@ -495,7 +499,7 @@ def choose_scoring_model(essay_text, criteria, preference="auto"):
                 "reason": f"You chose {name}, which runs on our server, so the essay stayed there."}
     if preference == "groq":
         return {"provider": "groq", "model": GROQ_SCORING_MODEL, "preference": preference,
-                "reason": "You chose Groq (Llama 3.3 70B in the cloud)."}
+                "reason": "You chose Groq (a large open model in the cloud)."}
     if preference == "deepseek":
         if _cloud_available():
             return {**cloud, "reason": "You chose DeepSeek."}
@@ -666,9 +670,11 @@ RULES:
     try:
         if provider in CLOUD_PROVIDERS:
             from ai_models import call_cloud
-            content = call_cloud(
+            reply = call_cloud(
                 provider, system_msg, user_msg, model=model, json_mode=True, temperature=0.0
-            )["text"].strip()
+            )
+            content = reply["text"].strip()
+            model = reply.get("model") or model   # the model that answered (Groq may switch a retired one)
         else:
             # The shared Ollama client keeps the model loaded between essays
             # (no reload each time), forces JSON, caps the answer length and
@@ -1114,8 +1120,10 @@ At most 5 grammar_issues, only real errors ([] if none)."""
         try:
             if attempt["provider"] in CLOUD_PROVIDERS:
                 from ai_models import call_cloud
-                content = call_cloud(attempt["provider"], system_msg, user_msg, model=attempt["model"],
-                                     json_mode=True, temperature=0.0)["text"]
+                reply = call_cloud(attempt["provider"], system_msg, user_msg, model=attempt["model"],
+                                   json_mode=True, temperature=0.0)
+                content = reply["text"]
+                attempt = {**attempt, "model": reply.get("model") or attempt["model"]}
             else:
                 from ai_models import call_ollama
                 content = call_ollama(system_msg, user_msg, model=attempt["model"],
