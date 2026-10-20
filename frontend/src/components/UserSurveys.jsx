@@ -10,7 +10,7 @@ import { readDraft, writeDraft } from '../lib/draft';
 const draftKey = (surveyId) => `survey-answers:${surveyId}`;
 
 export default function UserSurveys() {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const [surveys, setSurveys] = useState([]);              // surveys with questions
   const [selectedSurvey, setSelectedSurvey] = useState(null);
   const [questions, setQuestions] = useState([]);
@@ -27,12 +27,13 @@ export default function UserSurveys() {
     if (user) {
       loadAvailableSurveys();
     }
-  }, [user]);
+  }, [user, isAdmin]);
 
-  // Load active surveys and check which ones have questions
+  // Load surveys that have questions: active ones for everyone; admins also
+  // see inactive ones (marked) so they can preview them before opening them.
   const loadAvailableSurveys = async () => {
     try {
-      const allSurveys = await listSurveys(true);   // active only
+      const allSurveys = await listSurveys(!isAdmin);
 
       // For each survey, try to get its questions (limit 1 just to check existence)
       const surveysWithQuestions = await Promise.all(
@@ -164,15 +165,26 @@ export default function UserSurveys() {
       {!selectedSurvey && (
         <div className="space-y-3">
           {surveys.length === 0 ? (
-            <p className="text-gray-500">No surveys available at the moment.</p>
+            <p className="text-gray-500">
+              {isAdmin
+                ? 'No surveys with questions yet. Create or import one in Admin → Manage Surveys, then tick “Active” so respondents can see it.'
+                : 'No surveys available at the moment.'}
+            </p>
           ) : (
             surveys.map(s => (
               <div
                 key={s.id}
                 onClick={() => selectSurvey(s)}
-                className="border p-4 rounded-xl cursor-pointer hover:bg-gray-50 transition bg-white"
+                className={`border p-4 rounded-xl cursor-pointer hover:bg-gray-50 transition bg-white ${s.is_active ? '' : 'border-dashed border-amber-300'}`}
               >
-                <div className="font-semibold text-gray-800">{s.title}</div>
+                <div className="font-semibold text-gray-800 flex flex-wrap items-center gap-2">
+                  {s.title}
+                  {!s.is_active && (
+                    <span className="text-xs font-medium bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                      Inactive – only admins can see it (preview)
+                    </span>
+                  )}
+                </div>
                 {s.description && <div className="text-sm text-gray-600 mt-1">{s.description}</div>}
               </div>
             ))
@@ -188,6 +200,12 @@ export default function UserSurveys() {
           </button>
 
           <h3 className="text-xl font-semibold text-gray-800 mb-2">{selectedSurvey.title}</h3>
+          {!selectedSurvey.is_active && (
+            <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              👁 Preview: this survey is <strong>inactive</strong>, so respondents can’t see it and answers can’t be submitted.
+              Open it to respondents in Admin → Manage Surveys (Activate).
+            </p>
+          )}
           {selectedSurvey.description && <p className="text-gray-600 mb-4">{selectedSurvey.description}</p>}
 
           {/* No questions (shouldn't happen, but handle gracefully) */}
@@ -318,7 +336,8 @@ export default function UserSurveys() {
                 ) : (
                   <button
                     onClick={handleSubmit}
-                    disabled={submitting}
+                    disabled={submitting || !selectedSurvey.is_active}
+                    title={selectedSurvey.is_active ? undefined : 'Inactive survey: preview only'}
                     className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold shadow-md hover:bg-indigo-700 disabled:opacity-50 transition"
                   >
                     {submitting ? 'Submitting...' : 'Submit Answers'}

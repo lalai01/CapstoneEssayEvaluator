@@ -105,6 +105,19 @@ export default function AdminSurveys() {
     loadQuestions(s.id);
   };
 
+  // Opens a survey to respondents (or closes it) in one click.
+  const toggleActive = async (s) => {
+    try {
+      await updateSurvey(s.id, { is_active: !s.is_active });
+      toast.success(s.is_active
+        ? `“${s.title}” is closed: respondents no longer see it.`
+        : `“${s.title}” is open: respondents see it in the Surveys tab.`);
+      loadSurveys();
+    } catch (err) {
+      toast.error('Could not change the survey: ' + (err?.response?.data?.detail || err.message));
+    }
+  };
+
   const handleDeleteSurvey = async (id) => {
     if (confirm('Delete survey and all questions?')) {
       await deleteSurvey(id);
@@ -299,7 +312,15 @@ export default function AdminSurveys() {
                   {s.is_active ? '🟢 Active' : '⚪ Inactive'}
                 </span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 justify-end">
+                <button
+                  onClick={() => toggleActive(s)}
+                  className={`text-sm px-2 py-0.5 rounded-lg border ${s.is_active
+                    ? 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                    : 'border-green-300 bg-green-50 text-green-700 hover:bg-green-100 font-medium'}`}
+                >
+                  {s.is_active ? 'Deactivate' : '▶ Activate'}
+                </button>
                 <button onClick={() => handleEditSurvey(s)} className="text-blue-600 text-sm hover:underline">Edit</button>
                 <button onClick={() => handleEditSurvey(s)} className="text-gray-600 text-sm hover:underline">Questions</button>
                 <button onClick={() => duplicateSurvey(s)} className="text-gray-600 text-sm hover:underline">Duplicate</button>
@@ -345,7 +366,22 @@ export default function AdminSurveys() {
               }[k] || k}${n === 1 ? '' : 's'}`).join(', ')}.
               Check each tab; to change a question’s type use the type menu on its row.
               {importNote.warnings.map((w) => <div key={w} className="mt-1 text-amber-800">⚠️ {w}</div>)}
-              <div className="mt-2 font-semibold text-amber-800">💾 The survey is saved but inactive: tick “Active” and Update Survey when it’s ready.</div>
+              {isActive ? (
+                <div className="mt-2 font-semibold text-green-700">🟢 Active: respondents see it in the Surveys tab.</div>
+              ) : (
+                <div className="mt-2 font-semibold text-amber-800">
+                  💾 Saved but <u>inactive</u>: respondents can’t see it yet.{' '}
+                  <button
+                    onClick={async () => {
+                      await toggleActive({ id: selectedSurvey.id, title, is_active: false });
+                      setIsActive(true);
+                    }}
+                    className="ml-1 rounded-lg bg-green-600 px-3 py-1 text-white font-medium hover:bg-green-700"
+                  >
+                    ▶ Activate now
+                  </button>
+                </div>
+              )}
               {!importNote.attached && (
                 <button onClick={attachOriginal} className="mt-2 text-indigo-700 underline">📎 Also attach the original document to the first tab</button>
               )}

@@ -697,10 +697,13 @@ def create_survey(
 @app.get("/surveys")
 def list_surveys(
     active_only: bool = False,
-    user_client: Client = Depends(get_user_client)
+    user: dict = Depends(get_current_user),
 ):
-    query = user_client.table("surveys").select("*")
-    if active_only:
+    """Surveys for the signed-in user. Read by the server (row-level security
+    can hide rows the server wrote from a user's own token); respondents only
+    ever get active surveys, admins get all of them."""
+    query = _db().table("surveys").select("*")
+    if active_only or not is_admin(user):
         query = query.eq("is_active", True)
     result = query.order("created_at", desc=True).execute()
     return result.data
@@ -947,9 +950,15 @@ def delete_survey_file(path: str, user: dict = Depends(get_current_user)):
 @app.get("/surveys/{survey_id}/questions")
 def list_questions(
     survey_id: int,
-    user_client: Client = Depends(get_user_client)
+    user: dict = Depends(get_current_user),
 ):
-    result = user_client.table("survey_questions") \
+    """A survey's questions, in order. Respondents only for active surveys."""
+    db = _db()
+    if not is_admin(user):
+        active = db.table("surveys").select("id").eq("id", survey_id).eq("is_active", True).execute()
+        if not active.data:
+            raise HTTPException(404, "Survey not found or not open yet")
+    result = db.table("survey_questions") \
         .select("*") \
         .eq("survey_id", survey_id) \
         .order("order_number") \
@@ -986,7 +995,7 @@ def get_my_responses(
         return {"responses": [], "questions": []}
 
     question_ids = [a["question_id"] for a in answers.data]
-    questions = user_client.table("survey_questions") \
+    questions = _db().table("survey_questions") \
         .select("*") \
         .in_("id", question_ids) \
         .execute()
@@ -1050,9 +1059,9 @@ def submit_survey_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
-    survey = user_client.table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
+    survey = _db().table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
-        raise HTTPException(404, "Survey not found or inactive")
+        raise HTTPException(404, "This survey isn't open yet (it's inactive).")
     for question_id_str, answer in payload.answers.items():
         user_client.table("survey_responses").upsert({
             "survey_id": survey_id,
