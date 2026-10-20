@@ -794,6 +794,73 @@ def _survey_db_error(e):
     raise HTTPException(500, message[:300])
 
 
+def _survey_file_items(db, survey_id):
+    """The survey's attachment items and their storage paths."""
+    rows = db.table("survey_questions").select("id,options").eq("survey_id", survey_id).execute().data or []
+    return [(r["id"], r["options"][1]) for r in rows
+            if isinstance(r.get("options"), list) and len(r["options"]) > 1 and r["options"][0] == "::file"]
+
+
+@app.get("/surveys/{survey_id}/summary")
+def survey_summary(survey_id: int, user: dict = Depends(get_current_user)):
+    """What a survey holds, for the deletion dialog."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    db = _survey_admin_db()
+    try:
+        answers = db.table("survey_responses").select("user_id").eq("survey_id", survey_id).execute().data or []
+        questions = db.table("survey_questions").select("id").eq("survey_id", survey_id).execute().data or []
+        files = _survey_file_items(db, survey_id)
+    except Exception as e:
+        _survey_db_error(e)
+    return {"respondents": len({a["user_id"] for a in answers}), "answers": len(answers),
+            "questions": len(questions) - len(files), "files": len(files)}
+
+
+class SurveyDeletion(BaseModel):
+    survey: bool = False      # the whole survey: implies responses and files
+    responses: bool = False
+    files: bool = False
+
+
+@app.post("/surveys/{survey_id}/delete")
+def delete_survey_parts(survey_id: int, payload: SurveyDeletion, user: dict = Depends(get_current_user)):
+    """Delete what the admin ticked: responses only, attached files only, or
+    the whole survey (responses, questions, files, then the survey)."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    responses = payload.responses or payload.survey
+    files = payload.files or payload.survey
+    if not (responses or files):
+        raise HTTPException(400, "Choose what to delete.")
+    db = _survey_admin_db()
+    done = {}
+    try:
+        if files:
+            items = _survey_file_items(db, survey_id)
+            if items:
+                try:
+                    _survey_storage().remove([path for _, path in items])
+                except Exception as e:      # missing objects shouldn't block the rest
+                    print(f"⚠️ could not remove survey files: {e}")
+                if not payload.survey:
+                    for qid, _ in items:
+                        db.table("survey_questions").delete().eq("id", qid).execute()
+            done["files"] = len(items)
+        if responses:
+            removed = db.table("survey_responses").delete().eq("survey_id", survey_id).execute().data or []
+            done["answers"] = len(removed)
+        if payload.survey:
+            db.table("survey_questions").delete().eq("survey_id", survey_id).execute()
+            db.table("surveys").delete().eq("id", survey_id).execute()
+            done["survey"] = True
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
+    return {"status": "deleted", **done}
+
+
 class QuestionBulkItem(BaseModel):
     question: str
     question_type: str
