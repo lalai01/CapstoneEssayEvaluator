@@ -269,6 +269,18 @@ export const addQuestion = async (surveyId, question) => {
   return response.data;
 };
 
+// What a survey holds (respondents, answers, questions, files), for the deletion dialog.
+export const getSurveySummary = async (surveyId) => {
+  const response = await apiClient.get(`/surveys/${surveyId}/summary`);
+  return response.data;
+};
+
+// Deletes the chosen parts of a survey: { survey, responses, files } (admin).
+export const deleteSurveyParts = async (surveyId, parts) => {
+  const response = await apiClient.post(`/surveys/${surveyId}/delete`, parts);
+  return response.data;
+};
+
 // Reads a questionnaire file (.docx / PDF) into survey questions (admin). Nothing is saved.
 export const importQuestionnaireFile = async (file) => {
   const formData = new FormData();

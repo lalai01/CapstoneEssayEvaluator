@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
-  createSurvey, listSurveys, updateSurvey, deleteSurvey,
+  createSurvey, listSurveys, updateSurvey,
   addQuestionsBulk, listQuestions, importQuestionnaireFile, uploadSurveyFile, reorderQuestions,
   getSurveyResponses, apiClient,
 } from '../api';
 import toast from 'react-hot-toast';
 import SurveyResults from './SurveyResults';
 import SurveyEditor from './SurveyEditor';
+import SurveyDeleteDialog from './SurveyDeleteDialog';
 import { copyOf, finalQuestionnaire } from '../lib/surveyKit';
 
 export default function AdminSurveys() {
@@ -29,6 +30,9 @@ export default function AdminSurveys() {
   const [editingSurveyId, setEditingSurveyId] = useState(null);
 
   const [creatingTemplate, setCreatingTemplate] = useState(false);
+  // Deleting: surveys ticked in the list, and the surveys the dialog is open for.
+  const [checked, setChecked] = useState(() => new Set());
+  const [deleteTargets, setDeleteTargets] = useState(null);
   // Importing a questionnaire file: progress, the result summary, and the
   // file itself (offered as an attachment afterwards).
   const [importing, setImporting] = useState(false);
@@ -118,13 +122,13 @@ export default function AdminSurveys() {
     }
   };
 
-  const handleDeleteSurvey = async (id) => {
-    if (confirm('Delete survey and all questions?')) {
-      await deleteSurvey(id);
-      toast.success('Survey deleted');
-      loadSurveys();
-    }
-  };
+  const handleDeleteSurvey = (survey) => setDeleteTargets([survey]);
+
+  const toggleChecked = (id) => setChecked((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   // Reset everything and go back to list
   const resetSurveyForm = () => {
@@ -303,9 +307,39 @@ export default function AdminSurveys() {
       {view === 'list' && (
         <div className="space-y-3">
           {surveys.length === 0 && <p className="text-gray-500">No surveys yet.</p>}
+          {surveys.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <label className="flex items-center gap-2 text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={checked.size === surveys.length}
+                  ref={(el) => { if (el) el.indeterminate = checked.size > 0 && checked.size < surveys.length; }}
+                  onChange={(e) => setChecked(e.target.checked ? new Set(surveys.map((x) => x.id)) : new Set())}
+                />
+                Select all
+              </label>
+              {checked.size > 0 && (
+                <button
+                  onClick={() => setDeleteTargets(surveys.filter((x) => checked.has(x.id)))}
+                  className="rounded-lg border border-red-300 bg-red-50 px-3 py-1 font-medium text-red-700 hover:bg-red-100"
+                >
+                  🗑 Delete selected ({checked.size})
+                </button>
+              )}
+            </div>
+          )}
           {surveys.map(s => (
-            <div key={s.id} className="border p-4 rounded-xl flex justify-between items-center bg-white hover:bg-gray-50 transition">
-              <div>
+            <div key={s.id} className={`border p-4 rounded-xl flex justify-between items-center gap-3 transition ${
+              checked.has(s.id) ? 'bg-red-50/50 border-red-200' : 'bg-white hover:bg-gray-50'}`}>
+              <input
+                type="checkbox"
+                aria-label={`Select ${s.title}`}
+                checked={checked.has(s.id)}
+                onChange={() => toggleChecked(s.id)}
+                className="h-4 w-4 shrink-0 self-start mt-1"
+              />
+              <div className="flex-1 min-w-0">
                 <div className="font-semibold text-gray-800">{s.title}</div>
                 <p className="text-sm text-gray-500 mt-1">{s.description}</p>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${s.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
@@ -325,7 +359,7 @@ export default function AdminSurveys() {
                 <button onClick={() => handleEditSurvey(s)} className="text-gray-600 text-sm hover:underline">Questions</button>
                 <button onClick={() => duplicateSurvey(s)} className="text-gray-600 text-sm hover:underline">Duplicate</button>
                 <button onClick={() => { setSelectedSurvey(s); loadQuestions(s.id); loadResponses(s.id); setView('responses'); }} className="text-gray-600 text-sm hover:underline">Responses</button>
-                <button onClick={() => handleDeleteSurvey(s.id)} className="text-red-600 text-sm hover:underline">Delete</button>
+                <button onClick={() => handleDeleteSurvey(s)} className="text-red-600 text-sm hover:underline">Delete</button>
               </div>
             </div>
           ))}
@@ -440,6 +474,17 @@ export default function AdminSurveys() {
             </>
           )}
         </div>
+      )}
+      {deleteTargets && (
+        <SurveyDeleteDialog
+          surveys={deleteTargets}
+          onClose={() => setDeleteTargets(null)}
+          onDone={() => {
+            setDeleteTargets(null);
+            setChecked(new Set());
+            loadSurveys();
+          }}
+        />
       )}
     </div>
   );
