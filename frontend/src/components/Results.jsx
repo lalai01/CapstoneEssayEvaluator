@@ -15,6 +15,8 @@ import {
   colorForFraction,
   errorMessage,
   satisfactionStyle,
+  holisticDisplay,
+  isNum,
 } from '../lib/scoring';
 
 // Override buttons (Override Scores / Reject & Override). Set to false to
@@ -327,7 +329,8 @@ export default function Results({
     // Pre-fill the teacher's scores with the AI's so only changes need editing.
     const initial = {};
     if (evalType === 'holistic') {
-      initial.holistic_score = scores.holistic_score;
+      const key = isNum(scores.holistic_max) ? 'holistic_points' : 'holistic_score';
+      initial[key] = scores[key];
     } else {
       getCriteria(scores).forEach(({ key }) => { initial[key] = scores[key]; });
     }
@@ -341,7 +344,9 @@ export default function Results({
 
   const overrideFields = () => {
     if (evalType === 'holistic') {
-      return [{ key: 'holistic_score', label: 'Holistic Score', max_score: 5 }];
+      return isNum(scores.holistic_max)
+        ? [{ key: 'holistic_points', label: 'Holistic Score (points)', max_score: scores.holistic_max }]
+        : [{ key: 'holistic_score', label: 'Holistic Score', max_score: 5 }];
     }
     return getCriteria(scores);
   };
@@ -465,9 +470,14 @@ export default function Results({
         {evalType === 'holistic' ? (
           <div className="text-center mb-6">
             <div className="text-sm text-gray-600 mb-2">Holistic Score</div>
-            <div className={`text-6xl font-bold ${colorForFraction(fractionOf(scores.holistic_score, 5))}`}>
-              {scores.holistic_score}/5
+            <div className={`text-6xl font-bold ${colorForFraction(holisticDisplay(scores)?.fraction ?? null)}`}>
+              {holisticDisplay(scores)?.text}
             </div>
+            {isNum(scores.holistic_max) && (
+              <div className="text-sm text-gray-500 mt-1">
+                Level {scores.holistic_score} of 5 · out of the rubric’s {scores.holistic_max} points, the same total as analytic scoring
+              </div>
+            )}
             <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-700">
               {scores.level_description}
             </div>

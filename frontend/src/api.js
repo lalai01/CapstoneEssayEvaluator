@@ -269,6 +269,12 @@ export const addQuestion = async (surveyId, question) => {
   return response.data;
 };
 
+// Adds many questions in order (admin), e.g. the Final Questionnaire template.
+export const addQuestionsBulk = async (surveyId, questions) => {
+  const response = await apiClient.post(`/surveys/${surveyId}/questions/bulk`, { questions });
+  return response.data;
+};
+
 export const listQuestions = async (surveyId) => {
   const response = await apiClient.get(`/surveys/${surveyId}/questions`);
   return response.data;
