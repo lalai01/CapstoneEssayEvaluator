@@ -269,6 +269,17 @@ export const addQuestion = async (surveyId, question) => {
   return response.data;
 };
 
+// Reads a questionnaire file (.docx / PDF) into survey questions (admin). Nothing is saved.
+export const importQuestionnaireFile = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await apiClient.post('/surveys/import', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 240000,
+  });
+  return response.data;   // { title, questions, source, counts, warnings }
+};
+
 // Sets the question order (admin): moving questions and tabs.
 export const reorderQuestions = async (surveyId, ids) => {
   const response = await apiClient.put(`/surveys/${surveyId}/order`, { ids });

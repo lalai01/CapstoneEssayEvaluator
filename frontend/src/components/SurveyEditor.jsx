@@ -182,6 +182,18 @@ export default function SurveyEditor({ survey, questions, reload }) {
 
   const editForm = (q) => setForm({ id: q.id, text: q.question, kind: kindOf(q), options: optionsText(q), required: q.is_required });
 
+  // Quick type change from the row's menu. Options are kept where they still
+  // make sense; a type that needs options the question doesn't have opens the form.
+  const changeType = (q, kind) => {
+    const opts = optionsText(q);
+    if (['radio', 'checkbox', 'matrix'].includes(kind) && !opts) {
+      setForm({ id: q.id, text: q.question, kind, options: '', required: q.is_required });
+      toast(`Type the ${kind === 'matrix' ? 'AI models' : 'options'} for this question, then Save.`, { icon: '✏️' });
+      return;
+    }
+    run('Changing the type', () => updateQuestion(q.id, { ...storedShape(kind, opts), is_required: q.is_required }));
+  };
+
   return (
     <div className="space-y-4">
       {/* Tab bar */}
@@ -278,7 +290,19 @@ export default function SurveyEditor({ survey, questions, reload }) {
                     </div>
                   )}
                   <div className="flex flex-wrap gap-2 mt-1">
-                    <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">{kindLabel(it.q)}</span>
+                    {['subsection', 'file'].includes(it.kind) ? (
+                      <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">{kindLabel(it.q)}</span>
+                    ) : (
+                      <select
+                        value={QUESTION_TYPES.some((t) => t.value === it.kind) ? it.kind : it.q.question_type}
+                        onChange={(e) => changeType(it.q, e.target.value)}
+                        disabled={busy}
+                        aria-label="Question type"
+                        className="text-xs bg-gray-100 border-0 rounded-full px-2 py-0.5 pr-6 cursor-pointer hover:bg-gray-200"
+                      >
+                        {QUESTION_TYPES.filter((t) => t.value !== 'subsection').map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                      </select>
+                    )}
                     {it.q.is_required && !['subsection', 'file'].includes(it.kind) && <span className="text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full">Required</span>}
                     {optionsText(it.q) && it.kind !== 'subsection' && it.kind !== 'file' && <span className="text-xs text-gray-500">{optionsText(it.q)}</span>}
                   </div>
