@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { listSurveys, listQuestions, submitSurveyResponse, apiClient } from '../api';
 import toast from 'react-hot-toast';
-import SurveyQuestion from './SurveyQuestion';
-import { isAnswered, isDisplayOnly, kindOf, parseMatrix, tabsOf } from '../lib/surveyKit';
+import SurveyQuestion, { RatingTable } from './SurveyQuestion';
+import { displayRuns, isAnswered, isDisplayOnly, kindOf, parseMatrix, tabsOf } from '../lib/surveyKit';
 import { readDraft, writeDraft } from '../lib/draft';
 
 // Answers in progress are kept per survey, so a long questionnaire survives a refresh.
@@ -276,15 +276,23 @@ export default function UserSurveys() {
                   {tabs[current].section && (
                     <SurveyQuestion item={{ q: tabs[current].section, kind: 'section' }} value={undefined} onChange={() => {}} />
                   )}
-                  {tabs[current].items.map((item) => (
-                    <SurveyQuestion
-                      key={item.q.id}
-                      item={item}
-                      value={answers[item.q.id]}
-                      onChange={(v) => handleAnswerChange(item.q.id, v)}
-                      invalid={missingId === item.q.id}
+                  {displayRuns(tabs[current].items).map((run) => (run.table ? (
+                    <RatingTable
+                      key={run.items[0].q.id}
+                      items={run.items}
+                      answers={answers}
+                      onChange={handleAnswerChange}
+                      missingId={missingId}
                     />
-                  ))}
+                  ) : (
+                    <SurveyQuestion
+                      key={run.items[0].q.id}
+                      item={run.items[0]}
+                      value={answers[run.items[0].q.id]}
+                      onChange={(v) => handleAnswerChange(run.items[0].q.id, v)}
+                      invalid={missingId === run.items[0].q.id}
+                    />
+                  )))}
                 </>
               )}
 

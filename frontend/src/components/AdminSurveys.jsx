@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   createSurvey, listSurveys, updateSurvey, deleteSurvey,
-  addQuestionsBulk, listQuestions,
+  addQuestionsBulk, listQuestions, importQuestionnaireFile, uploadSurveyFile, reorderQuestions,
   getSurveyResponses, apiClient,
 } from '../api';
 import toast from 'react-hot-toast';
@@ -28,9 +28,13 @@ export default function AdminSurveys() {
   const [isActive, setIsActive] = useState(true);
   const [editingSurveyId, setEditingSurveyId] = useState(null);
 
-  // Question form
-
   const [creatingTemplate, setCreatingTemplate] = useState(false);
+  // Importing a questionnaire file: progress, the result summary, and the
+  // file itself (offered as an attachment afterwards).
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState(null);   // { file, counts, warnings, source, survey }
+  const [dragging, setDragging] = useState(false);
+  const importRef = useRef(null);
 
   // ---------- Data Loading ----------
   useEffect(() => { if (isAdmin) loadSurveys(); }, [isAdmin]);
@@ -150,6 +154,50 @@ export default function AdminSurveys() {
     }
   };
 
+  // Reads a questionnaire file (.docx / PDF) and creates an inactive survey from it,
+  // the same way rubric files are read; the admin then reviews it in the editor.
+  const importQuestionnaire = async (file) => {
+    if (!file) return;
+    if (!/\.(docx|pdf)$/i.test(file.name)) {
+      toast.error('Choose the questionnaire as a Word file (.docx) or a PDF.');
+      return;
+    }
+    setImporting(true);
+    try {
+      const r = await importQuestionnaireFile(file);
+      const res = await createSurvey({ title: r.title, description: `Imported from ${file.name}`, is_active: false });
+      await addQuestionsBulk(res.id, r.questions);
+      await loadSurveys();
+      handleEditSurvey({ id: res.id, title: r.title, description: `Imported from ${file.name}`, is_active: false });
+      setImportNote({ file, counts: r.counts, warnings: r.warnings || [], source: r.source, survey: res.id });
+      toast.success('Questionnaire read. Check it below, change any question type if needed, then make it active.');
+    } catch (err) {
+      toast.error('Import failed: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setImporting(false);
+      if (importRef.current) importRef.current.value = '';
+    }
+  };
+
+  // Optionally attach the original document to the first tab.
+  const attachOriginal = async () => {
+    const note = importNote;
+    try {
+      const up = await uploadSurveyFile(note.survey, note.file);
+      const { ids } = await addQuestionsBulk(note.survey, [{
+        question: up.name, question_type: 'text', options: ['::file', up.path, up.name, up.type], is_required: false,
+      }]);
+      const qs = (await listQuestions(note.survey)).sort((a, b) => a.order_number - b.order_number);
+      const rest = qs.map((q) => q.id).filter((id) => !ids.includes(id));
+      await reorderQuestions(note.survey, [rest[0], ...ids, ...rest.slice(1)].filter((id) => id !== undefined));
+      await loadQuestions(note.survey);
+      setImportNote({ ...note, attached: true });
+      toast.success('The original document is attached to the first tab.');
+    } catch (err) {
+      toast.error('Could not attach the file: ' + (err?.response?.data?.detail || err.message));
+    }
+  };
+
   // Creates the Final Questionnaire (inactive, so it can be reviewed first).
   const createFinalQuestionnaire = async () => {
     if (!confirm('Create the Final Questionnaire survey (about 55 items)? It starts inactive so you can review it first.')) return;
@@ -188,6 +236,15 @@ export default function AdminSurveys() {
           <h2 className="text-2xl font-bold text-indigo-700">📋 Admin Survey Builder</h2>
           <div className="flex flex-wrap gap-2">
             <button
+              onClick={() => importRef.current?.click()}
+              disabled={importing}
+              className="bg-indigo-600 text-white px-4 py-2 rounded-lg shadow hover:bg-indigo-700 transition disabled:opacity-50"
+            >
+              {importing ? '⏳ Reading questionnaire…' : '📄 Import questionnaire (Word/PDF)'}
+            </button>
+            <input ref={importRef} type="file" accept=".docx,.pdf" className="hidden"
+              onChange={(e) => importQuestionnaire(e.target.files?.[0])} />
+            <button
               onClick={createFinalQuestionnaire}
               disabled={creatingTemplate}
               className="bg-white border border-indigo-300 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-50 transition disabled:opacity-50"
@@ -196,11 +253,26 @@ export default function AdminSurveys() {
             </button>
             <button
               onClick={startNewSurvey}
-              className="bg-indigo-600 text-white px-4 py-2 rounded-lg shadow hover:bg-indigo-700 transition"
+              className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition"
             >
               + Create New Survey
             </button>
           </div>
+        </div>
+      )}
+
+      {view === 'list' && (
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false); }}
+          onDrop={(e) => { e.preventDefault(); setDragging(false); importQuestionnaire(e.dataTransfer?.files?.[0]); }}
+          className={`mb-6 rounded-xl border-2 border-dashed px-4 py-5 text-center text-sm transition ${
+            dragging ? 'border-indigo-500 bg-indigo-50' : 'border-indigo-200 bg-white'}`}
+        >
+          {importing ? '⏳ Reading the questionnaire… this can take up to a minute.' : (
+            <>📄 Drop a questionnaire (Word or PDF) here to turn it into a survey: parts become tabs, ☐ choices become
+              multiple choice, rating tables become 5–1 scales. You can change any question afterwards.</>
+          )}
         </div>
       )}
 
@@ -262,6 +334,23 @@ export default function AdminSurveys() {
               {editingSurveyId ? 'Update Survey' : 'Create Survey'}
             </button>
           </form>
+
+          {importNote && selectedSurvey?.id === importNote.survey && (
+            <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+              Read from <strong>{importNote.file.name}</strong>
+              {importNote.source !== 'layout' && <> (with {importNote.source === 'gemini' ? 'Gemini' : 'DeepSeek'})</>}:{' '}
+              {Object.entries(importNote.counts || {}).map(([k, n]) => `${n} ${{
+                matrix: 'per-AI rating', likert: 'agreement scale', radio: 'multiple choice', checkbox: 'checkbox',
+                essay: 'essay', text: 'short answer', number: 'number',
+              }[k] || k}${n === 1 ? '' : 's'}`).join(', ')}.
+              Check each tab; to change a question’s type use the type menu on its row.
+              {importNote.warnings.map((w) => <div key={w} className="mt-1 text-amber-800">⚠️ {w}</div>)}
+              <div className="mt-2 font-semibold text-amber-800">💾 The survey is saved but inactive: tick “Active” and Update Survey when it’s ready.</div>
+              {!importNote.attached && (
+                <button onClick={attachOriginal} className="mt-2 text-indigo-700 underline">📎 Also attach the original document to the first tab</button>
+              )}
+            </div>
+          )}
 
           {/* Tabs and questions – only after a survey exists */}
           {selectedSurvey && (

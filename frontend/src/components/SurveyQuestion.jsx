@@ -48,6 +48,82 @@ export function SurveyAttachment({ q, compact = false }) {
   );
 }
 
+// Wide enough to show rating tables the way the questionnaire document does.
+function useWide(query = '(min-width: 768px)') {
+  const [wide, setWide] = useState(() => typeof window !== 'undefined' && window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia?.(query);
+    if (!mq) return undefined;
+    const on = () => setWide(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return wide;
+}
+
+// A run of rating statements as one table, like the questionnaire document:
+// agreement scales -> Statement | 5 … 1; per-AI grids -> Statement | one
+// 5 … 1 group per AI model. Narrow screens get the card layout instead.
+export function RatingTable({ items, answers, onChange, missingId }) {
+  const wide = useWide();
+  const isMatrix = items[0].kind === 'matrix';
+  const models = isMatrix ? matrixItems(items[0].q) : [null];
+  if (!wide) {
+    return items.map((item) => (
+      <SurveyQuestion key={item.q.id} item={item} value={answers[item.q.id]}
+        onChange={(v) => onChange(item.q.id, v)} invalid={missingId === item.q.id} />
+    ));
+  }
+  const valueOf = (q, m) => (isMatrix ? parseMatrix(answers[q.id])[m] : answers[q.id]);
+  const set = (q, m, v) => onChange(q.id, isMatrix ? JSON.stringify({ ...parseMatrix(answers[q.id]), [m]: v }) : String(v));
+  const cell = 'border border-gray-200 px-1 py-1 text-center';
+  const textCell = 'border border-gray-200 py-1 px-3 text-left';   // statements read left-aligned, like the document
+  return (
+    <div className="overflow-x-auto bg-white rounded-xl border shadow-sm">
+      <table className="min-w-full text-sm border-collapse">
+        <thead className="bg-gray-50 text-gray-700">
+          <tr>
+            <th rowSpan={isMatrix ? 2 : 1} className={`${cell} w-10`}>No.</th>
+            <th rowSpan={isMatrix ? 2 : 1} className={`${textCell} min-w-[16rem]`}>Statement</th>
+            {isMatrix
+              ? models.map((m) => <th key={m} colSpan={5} className={`${cell} font-semibold`}>{m}</th>)
+              : LIKERT.map((l) => <th key={l.value} className={`${cell} w-12`} title={l.label}>{l.value}<div className="text-[10px] font-normal text-gray-500">{l.short}</div></th>)}
+          </tr>
+          {isMatrix && (
+            <tr>
+              {models.flatMap((m) => LIKERT.map((l) => (
+                <th key={`${m}-${l.value}`} className={`${cell} w-9 font-normal`} title={`${m}: ${l.label}`}>{l.value}</th>
+              )))}
+            </tr>
+          )}
+        </thead>
+        <tbody>
+          {items.map(({ q, number }) => (
+            <tr key={q.id} id={`q-${q.id}`} className={`scroll-mt-24 ${missingId === q.id ? 'bg-red-50' : ''}`}>
+              <td className={`${cell} text-gray-500`}>{number}</td>
+              <td className={`${textCell} text-gray-800`}>
+                {q.question}{q.is_required && <span className="text-red-500 ml-0.5">*</span>}
+              </td>
+              {models.flatMap((m) => LIKERT.map((l) => (
+                <td key={`${m}-${l.value}`} className={`${cell} ${m && l.value === 5 ? 'border-l-2 border-l-gray-300' : ''}`}>
+                  <input
+                    type="radio"
+                    name={`q_${q.id}_${m ?? ''}`}
+                    aria-label={`${q.question}${m ? ` – ${m}` : ''}: ${l.label}`}
+                    checked={Number(valueOf(q, m)) === l.value}
+                    onChange={() => set(q, m, l.value)}
+                    className="w-4 h-4 accent-indigo-600 cursor-pointer"
+                  />
+                </td>
+              )))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // One row of 5-4-3-2-1 agreement buttons.
 function ScaleButtons({ value, onChange, name }) {
   return (

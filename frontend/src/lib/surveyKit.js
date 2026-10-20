@@ -35,6 +35,25 @@ export const isDisplayOnly = (q) => ['section', 'subsection', 'file'].includes(k
 export const fileInfo = (q) => (kindOf(q) === 'file'
   ? { path: q.options[1], name: q.options[2] || 'Attachment', type: q.options[3] || '' } : null);
 
+// A tab's items for display: consecutive agreement-scale statements, or
+// consecutive per-AI grids rating the same AIs, form one table (as in the
+// questionnaire document); everything else stays a single item.
+export function displayRuns(items) {
+  const runs = [];
+  const sameTable = (run, item) => run?.table && run.items[0].kind === item.kind
+    && (item.kind === 'likert' || matrixItems(run.items[0].q).join('|') === matrixItems(item.q).join('|'));
+  for (const item of items) {
+    const last = runs[runs.length - 1];
+    if (['likert', 'matrix'].includes(item.kind)) {
+      if (sameTable(last, item)) last.items.push(item);
+      else runs.push({ table: true, items: [item] });
+    } else {
+      runs.push({ table: false, items: [item] });
+    }
+  }
+  return runs;
+}
+
 // The survey split into tabs: one per section (items before the first
 // section form an untitled first tab). Each tab: { section, items }.
 export function tabsOf(questions) {

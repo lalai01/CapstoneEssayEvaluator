@@ -833,6 +833,25 @@ def add_questions_bulk(
     return {"count": len(rows), "ids": [r["id"] for r in (result.data or [])]}
 
 
+@app.post("/surveys/import")
+def import_survey_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Read a questionnaire (.docx or PDF) into survey questions. Nothing is
+    saved: the admin creates the survey from the result and edits it."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    data = file.file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(413, "The file is too large (max 15 MB).")
+    from questionnaire_import import import_questionnaire
+    try:
+        return import_questionnaire(data, file.filename or "questionnaire.docx")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        print(f"❌ questionnaire import failed: {e}")
+        raise HTTPException(500, "The questionnaire couldn't be read. Check that it's a valid .docx or PDF.")
+
+
 class QuestionOrder(BaseModel):
     ids: List[int]
 
