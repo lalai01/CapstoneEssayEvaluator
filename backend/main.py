@@ -773,6 +773,46 @@ def add_question(
 
     return {"id": result.data[0]["id"]}
 
+class QuestionBulkItem(BaseModel):
+    question: str
+    question_type: str
+    options: Optional[List[str]] = None
+    is_required: bool = True
+
+
+class QuestionBulk(BaseModel):
+    questions: List[QuestionBulkItem]
+
+
+@app.post("/surveys/{survey_id}/questions/bulk")
+def add_questions_bulk(
+    survey_id: int,
+    payload: QuestionBulk,
+    user: dict = Depends(get_current_user),
+    user_client: Client = Depends(get_user_client)
+):
+    """Add many questions at once, in order (e.g. a questionnaire template)."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    if not payload.questions or len(payload.questions) > 300:
+        raise HTTPException(400, "Send 1 to 300 questions")
+    existing = user_client.table("survey_questions") \
+        .select("order_number") \
+        .eq("survey_id", survey_id) \
+        .order("order_number", desc=True) \
+        .limit(1) \
+        .execute()
+    start = existing.data[0]["order_number"] if existing.data else 0
+    rows = [{**q.dict(), "survey_id": survey_id, "order_number": start + i + 1}
+            for i, q in enumerate(payload.questions)]
+    try:
+        client = supabase_admin or user_client
+        client.table("survey_questions").insert(rows).execute()
+    except Exception:
+        user_client.table("survey_questions").insert(rows).execute()
+    return {"count": len(rows)}
+
+
 @app.get("/surveys/{survey_id}/questions")
 def list_questions(
     survey_id: int,
@@ -829,9 +869,11 @@ def get_my_responses(
             "question": q.get("question", ""),
             "question_type": q.get("question_type", "text"),
             "options": q.get("options"),
+            "order_number": q.get("order_number", 0),
             "answer": a["answer"],
             "created_at": a["created_at"]
         })
+    detailed.sort(key=lambda d: d["order_number"] or 0)   # questionnaire order
 
     return {"responses": detailed}
 

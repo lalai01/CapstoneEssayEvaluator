@@ -22,6 +22,7 @@ import {
   isNum,
   satisfactionStyle,
   entryApprovedBy,
+  holisticDisplay,
 } from '../lib/scoring';
 
 // ---------- Safe value renderer ----------
@@ -43,8 +44,8 @@ function entryScoreView(entry) {
 
 function getDisplayScore(entry) {
   if (entry.eval_type === 'holistic') {
-    const hs = entry.holistic_score;
-    return { text: isNum(hs) ? `${hs}/5` : '—', fraction: fractionOf(hs, 5) };
+    const h = holisticDisplay({ ...entry, ...(entryScores(entry) || {}) });
+    return { text: h ? h.text : '—', fraction: h ? h.fraction : null };
   }
   const { values, criteria } = entryScoreView(entry);
   const f = averageFraction(values, criteria);
@@ -293,8 +294,8 @@ export default function KnowledgeBase() {
             {selectedEntry.eval_type === 'holistic' ? (
               <div className="bg-gray-50 p-4 rounded-xl text-center">
                 <h4 className="font-semibold text-indigo-600 mb-3">Holistic Score</h4>
-                <div className={`text-6xl font-bold ${colorForFraction(fractionOf(selectedEntry.holistic_score, 5))}`}>
-                  {isNum(selectedEntry.holistic_score) ? `${selectedEntry.holistic_score}/5` : '—'}
+                <div className={`text-6xl font-bold ${colorForFraction(getDisplayScore(selectedEntry).fraction)}`}>
+                  {getDisplayScore(selectedEntry).text}
                 </div>
                 <div className="mt-2 p-3 bg-white rounded-lg text-gray-700 border border-gray-200">
                   {selectedEntry.level_description || 'No description available.'}

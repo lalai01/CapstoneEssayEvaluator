@@ -15,6 +15,7 @@ import {
   fractionOf,
   gradeFromFraction,
   isNum,
+  holisticDisplay,
 } from './scoring';
 import { buildAnnotations, segmentText, ANNOTATION_TYPES } from './annotate';
 
@@ -403,9 +404,10 @@ export function generateEvaluationReport(options) {
   doc.roundedRect(PAGE.margin, boxTop, w.contentWidth, 64, 6, 6, 'FD');
 
   if (evalType === 'holistic') {
-    const f = fractionOf(scores.holistic_score, 5);
+    const h = holisticDisplay(scores);
+    const f = h ? h.fraction : null;
     w.setFont('bold', 26, gradeColor(f));
-    doc.text(`${scores.holistic_score ?? '-'} / 5`, PAGE.margin + 18, boxTop + 40);
+    doc.text(h ? h.text.replace('/', ' / ') : '-', PAGE.margin + 18, boxTop + 40);
     w.setFont('normal', 10, COLORS.text);
     const desc = doc.splitTextToSize(clean(scores.level_description), w.contentWidth - 150);
     doc.text(desc.slice(0, 3), PAGE.margin + 130, boxTop + 24);

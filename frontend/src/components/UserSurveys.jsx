@@ -2,6 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { listSurveys, listQuestions, submitSurveyResponse, apiClient } from '../api';
 import toast from 'react-hot-toast';
+import SurveyQuestion from './SurveyQuestion';
+import { isAnswered, isHeading, kindOf, parseMatrix, structure } from '../lib/surveyKit';
+import { readDraft, writeDraft } from '../lib/draft';
+
+// Answers in progress are kept per survey, so a long questionnaire survives a refresh.
+const draftKey = (surveyId) => `survey-answers:${surveyId}`;
 
 export default function UserSurveys() {
   const { user } = useAuth();
@@ -14,6 +20,7 @@ export default function UserSurveys() {
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [myResponses, setMyResponses] = useState([]);
   const [viewMode, setViewMode] = useState('list');        // 'list', 'answer', 'view-my-responses', 'no-questions'
+  const [missingId, setMissingId] = useState(null);         // first unanswered required question
 
   useEffect(() => {
     if (user) {
@@ -47,7 +54,8 @@ export default function UserSurveys() {
   const selectSurvey = async (survey) => {
     setSelectedSurvey(survey);
     setSubmitted(false);
-    setAnswers({});
+    setAnswers(readDraft(draftKey(survey.id), {}));
+    setMissingId(null);
     setAlreadySubmitted(false);
     try {
       // Double-check if the user already submitted
@@ -76,31 +84,37 @@ export default function UserSurveys() {
   };
 
   const handleAnswerChange = (questionId, value) => {
-    setAnswers(prev => ({ ...prev, [questionId]: value }));
+    setAnswers(prev => {
+      const next = { ...prev, [questionId]: value };
+      if (selectedSurvey) writeDraft(draftKey(selectedSurvey.id), next);
+      return next;
+    });
+    if (missingId === questionId) setMissingId(null);
   };
 
-  const handleCheckboxChange = (questionId, option, checked) => {
-    setAnswers(prev => {
-      const current = prev[questionId] ? prev[questionId].split(',').filter(Boolean) : [];
-      if (checked) return { ...prev, [questionId]: [...current, option].join(',') };
-      else return { ...prev, [questionId]: current.filter(o => o !== option).join(',') };
-    });
-  };
+  const answerable = questions.filter((q) => !isHeading(q));
+  const requiredCount = answerable.filter((q) => q.is_required).length;
+  const answeredCount = answerable.filter((q) => q.is_required && isAnswered(q, answers[q.id])).length;
 
   const handleSubmit = async () => {
     if (!selectedSurvey) return;
-    for (let q of questions) {
-      if (q.is_required) {
-        const answer = answers[q.id];
-        if (answer === undefined || answer === '' || (q.question_type === 'checkbox' && answer.split(',').filter(Boolean).length === 0)) {
-          toast.error(`Please answer: ${q.question}`);
-          return;
-        }
-      }
+    const missing = structure(questions).find(({ q }) => !isHeading(q) && q.is_required && !isAnswered(q, answers[q.id]));
+    if (missing) {
+      setMissingId(missing.q.id);
+      document.getElementById(`q-${missing.q.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast.error(kindOf(missing.q) === 'matrix'
+        ? 'Please rate every AI model for the highlighted statement.'
+        : `Please answer: ${missing.q.question}`);
+      return;
     }
     setSubmitting(true);
     try {
-      await submitSurveyResponse(selectedSurvey.id, answers);
+      // Headings aren't questions; only real answers are sent.
+      const toSend = Object.fromEntries(answerable
+        .filter((q) => isAnswered(q, answers[q.id]))
+        .map((q) => [q.id, String(answers[q.id])]));
+      await submitSurveyResponse(selectedSurvey.id, toSend);
+      writeDraft(draftKey(selectedSurvey.id), null);
       toast.success('Survey submitted! Thank you.');
       setSubmitted(true);
       setAlreadySubmitted(true);
@@ -177,7 +191,13 @@ export default function UserSurveys() {
                 {myResponses.map((item, idx) => (
                   <div key={idx} className="bg-white border rounded-lg p-4">
                     <p className="font-medium text-gray-800">{item.question}</p>
-                    {item.question_type === 'rating' ? (
+                    {kindOf(item) === 'matrix' ? (
+                      <ul className="mt-1 text-sm text-gray-700">
+                        {Object.entries(parseMatrix(item.answer)).map(([m, v]) => <li key={m}>{m}: <strong>{v}</strong> / 5</li>)}
+                      </ul>
+                    ) : item.question_type === 'rating' && kindOf(item) === 'likert' ? (
+                      <p className="text-gray-700 mt-1"><strong>{item.answer}</strong> / 5</p>
+                    ) : item.question_type === 'rating' ? (
                       <div className="text-yellow-500 text-xl mt-1">
                         {'⭐'.repeat(parseInt(item.answer))}
                       </div>
@@ -200,82 +220,25 @@ export default function UserSurveys() {
           {/* Answer form */}
           {viewMode === 'answer' && (
             <div className="space-y-5">
-              {questions.sort((a, b) => a.order_number - b.order_number).map(q => (
-                <div key={q.id} className="bg-white border rounded-xl p-4 shadow-sm">
-                  <label className="font-medium text-gray-800 flex items-start gap-1">
-                    <span className="text-gray-400 mr-1">{q.order_number}.</span>
-                    {q.question}
-                    {q.is_required && <span className="text-red-500 ml-1">*</span>}
-                  </label>
-
-                  {q.question_type === 'text' && (
-                    <input
-                      type="text"
-                      value={answers[q.id] || ''}
-                      onChange={e => handleAnswerChange(q.id, e.target.value)}
-                      placeholder="Your answer"
-                      className="w-full border rounded-lg p-2 mt-2"
-                    />
-                  )}
-                  {q.question_type === 'essay' && (
-                    <textarea
-                      value={answers[q.id] || ''}
-                      onChange={e => handleAnswerChange(q.id, e.target.value)}
-                      placeholder="Write your response..."
-                      rows="4"
-                      className="w-full border rounded-lg p-2 mt-2 resize-y"
-                    />
-                  )}
-                  {q.question_type === 'radio' && q.options && (
-                    <div className="mt-2 space-y-2">
-                      {q.options.map(opt => (
-                        <label key={opt} className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="radio"
-                            name={`q_${q.id}`}
-                            value={opt}
-                            checked={answers[q.id] === opt}
-                            onChange={() => handleAnswerChange(q.id, opt)}
-                            className="w-4 h-4 text-indigo-600"
-                          />
-                          <span>{opt}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  {q.question_type === 'checkbox' && q.options && (
-                    <div className="mt-2 space-y-2">
-                      {q.options.map(opt => (
-                        <label key={opt} className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            value={opt}
-                            checked={answers[q.id]?.split(',').includes(opt) || false}
-                            onChange={e => handleCheckboxChange(q.id, opt, e.target.checked)}
-                            className="w-4 h-4 text-indigo-600"
-                          />
-                          <span>{opt}</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  {q.question_type === 'rating' && (
-                    <div className="mt-2 flex gap-1">
-                      {[1, 2, 3, 4, 5].map(star => (
-                        <button
-                          key={star}
-                          type="button"
-                          onClick={() => handleAnswerChange(q.id, star.toString())}
-                          className={`text-2xl ${
-                            parseInt(answers[q.id] || 0) >= star ? 'text-yellow-500' : 'text-gray-300'
-                          }`}
-                        >
-                          ★
-                        </button>
-                      ))}
-                    </div>
-                  )}
+              {requiredCount > 0 && (
+                <div className="sticky top-16 z-10 bg-white/95 backdrop-blur rounded-xl border p-3 shadow-sm">
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>{answeredCount} of {requiredCount} required answered</span>
+                    <span>Saved as a draft on this device</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+                    <div className="h-full bg-indigo-600 transition-all" style={{ width: `${(answeredCount / requiredCount) * 100}%` }} />
+                  </div>
                 </div>
+              )}
+              {structure(questions).map((item) => (
+                <SurveyQuestion
+                  key={item.q.id}
+                  item={item}
+                  value={answers[item.q.id]}
+                  onChange={(v) => handleAnswerChange(item.q.id, v)}
+                  invalid={missingId === item.q.id}
+                />
               ))}
               <button
                 onClick={handleSubmit}

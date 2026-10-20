@@ -7,6 +7,9 @@ from evaluator import (
     analyze_essay_content,
     calculate_analytic_scores,
     holistic_from_analytic,
+    holistic_points,
+    holistic_total,
+    normalize_rubric,
     ai_holistic_score,
     holistic_feedback_text,
     generate_rule_based_analytic_feedback,
@@ -51,7 +54,7 @@ def score_node(state: EvaluationState) -> dict:
         # One quick overall judgement; only if every model fails do we fall
         # back to deriving the score from the slower analytic scoring.
         scores = ai_holistic_score(state["essay_text"], state.get("ai_model") or "auto",
-                                   strict=bool(state.get("strict_model")))
+                                   strict=bool(state.get("strict_model")), rubric=state.get("rubric"))
         if scores is None:
             analytic = calculate_analytic_scores(
                 state["essay_text"],
@@ -62,8 +65,14 @@ def score_node(state: EvaluationState) -> dict:
             )
             score = holistic_from_analytic(analytic, state.get("rubric"))
             by = analytic.get("evaluated_by") or {}
+            total = holistic_total(state.get("rubric"))
+            earned = sum(v for k, v in analytic.items()
+                         if k in normalize_rubric(state.get("rubric")) and isinstance(v, (int, float)))
             scores = {
                 "holistic_score": score,
+                # Derived from the analytic scores: their sum, kept inside the level's band.
+                "holistic_points": holistic_points(score, total, earned),
+                "holistic_max": total,
                 "level_description": HOLISTIC_RUBRIC[score],
                 "grammar_issues": analytic.get("grammar_issues") or [],
                 "evaluated_by": {**by, "method": "derived", "reason": (
@@ -103,6 +112,8 @@ def feedback_node(state: EvaluationState) -> dict:
             state["scores"]["holistic_score"],
             analysis,
             state.get("rag_context") or "",
+            points=state["scores"].get("holistic_points"),
+            total=state["scores"].get("holistic_max"),
         )
     else:
         rule_feedback = generate_rule_based_analytic_feedback(

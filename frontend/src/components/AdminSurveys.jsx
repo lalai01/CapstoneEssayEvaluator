@@ -2,18 +2,41 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   createSurvey, listSurveys, updateSurvey, deleteSurvey,
-  addQuestion, listQuestions, updateQuestion, deleteQuestion,
-  getSurveyResponses, apiClient, testPrompt
+  addQuestion, addQuestionsBulk, listQuestions, updateQuestion, deleteQuestion,
+  getSurveyResponses, apiClient,
 } from '../api';
 import toast from 'react-hot-toast';
+import SurveyResults from './SurveyResults';
+import { finalQuestionnaire, headingText, isHeading, kindOf } from '../lib/surveyKit';
 
+// Editor kinds. The last five are stored on the existing question types with
+// a marker in options[0] (see lib/surveyKit.js), so no database change is needed.
 const QUESTION_TYPES = [
   { value: 'text', label: 'Short Text' },
   { value: 'essay', label: 'Essay (Long Text)' },
   { value: 'radio', label: 'Radio Button' },
   { value: 'checkbox', label: 'Checkbox' },
   { value: 'rating', label: 'Rating (1‑5 stars)' },
+  { value: 'likert', label: 'Agreement scale (5 SA … 1 SD)' },
+  { value: 'matrix', label: 'Agreement scale per AI model (grid)' },
+  { value: 'number', label: 'Number (e.g. age)' },
+  { value: 'section', label: 'Section heading' },
+  { value: 'subsection', label: 'Sub-section heading (groups items, e.g. a construct)' },
 ];
+
+// Editor kind + options text -> stored question_type and options.
+function storedShape(kind, optionsText) {
+  const list = optionsText.split(',').map((x) => x.trim()).filter(Boolean);
+  switch (kind) {
+    case 'radio': case 'checkbox': return { question_type: kind, options: list };
+    case 'rating': return { question_type: 'rating', options: ['1', '2', '3', '4', '5'] };
+    case 'likert': return { question_type: 'rating', options: ['::likert'] };
+    case 'matrix': return { question_type: 'rating', options: ['::matrix', ...list] };
+    case 'number': return { question_type: 'text', options: ['::number'] };
+    case 'section': case 'subsection': return { question_type: 'text', options: [`::${kind}`, optionsText.trim()] };
+    default: return { question_type: kind, options: null };
+  }
+}
 
 export default function AdminSurveys() {
   const { isAdmin } = useAuth();
@@ -41,9 +64,7 @@ export default function AdminSurveys() {
   const [qOptions, setQOptions] = useState('');
   const [qRequired, setQRequired] = useState(true);
 
-  // AI Conclusion state
-  const [conclusion, setConclusion] = useState('');
-  const [conclusionLoading, setConclusionLoading] = useState(false);
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
 
   // ---------- Data Loading ----------
   useEffect(() => { if (isAdmin) loadSurveys(); }, [isAdmin]);
@@ -136,7 +157,6 @@ export default function AdminSurveys() {
     setUserNames({});
     setShowQuestionForm(false);
     resetQuestionForm();
-    setConclusion('');
   };
 
   // Start a fresh new survey
@@ -154,18 +174,12 @@ export default function AdminSurveys() {
   // ---------- Question CRUD ----------
   const handleQuestionSubmit = async (e) => {
     e.preventDefault();
-    let options = null;
-    if (qType === 'radio' || qType === 'checkbox') {
-      options = qOptions.split(',').map(s => s.trim()).filter(Boolean);
-    } else if (qType === 'rating') {
-      options = ['1','2','3','4','5'];
-    }
+    const shape = storedShape(qType, qOptions);
     const qData = {
       survey_id: selectedSurvey.id,
       question: qText,
-      question_type: qType,
-      options: options,
-      is_required: qRequired,
+      ...shape,
+      is_required: ['section', 'subsection'].includes(qType) ? false : qRequired,
       order_number: 0
     };
     try {
@@ -183,9 +197,12 @@ export default function AdminSurveys() {
 
   const handleEditQuestion = (q) => {
     setEditingQuestion(q);
+    const kind = kindOf(q);
     setQText(q.question);
-    setQType(q.question_type);
-    setQOptions(q.options?.join(', ') || '');
+    setQType(QUESTION_TYPES.some((t) => t.value === kind) ? kind : q.question_type);
+    setQOptions(isHeading(q) ? headingText(q)
+      : kind === 'matrix' ? q.options.slice(1).join(', ')
+        : (q.options || []).filter((o) => !String(o).startsWith('::')).join(', '));
     setQRequired(q.is_required);
     setShowQuestionForm(true);
   };
@@ -207,87 +224,21 @@ export default function AdminSurveys() {
     setShowQuestionForm(false);
   };
 
-  // ---------- Tally & Summary Helpers ----------
-  const getQuestionSummary = (questionId, questionType, options) => {
-    const answersForQuestion = responses
-      .filter(r => r.question_id === questionId)
-      .map(r => r.answer);
-    const total = answersForQuestion.length;
-    if (total === 0) return null;
-
-    if (questionType === 'rating') {
-      const numeric = answersForQuestion.map(Number).filter(n => !isNaN(n));
-      const avg = numeric.reduce((a, b) => a + b, 0) / numeric.length;
-      const dist = {};
-      numeric.forEach(v => dist[v] = (dist[v] || 0) + 1);
-      return { type: 'rating', total, avg: avg.toFixed(1), distribution: dist };
-    }
-
-    if (questionType === 'radio' || questionType === 'text' || questionType === 'essay') {
-      const counts = {};
-      answersForQuestion.forEach(ans => counts[ans] = (counts[ans] || 0) + 1);
-      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-      return { type: 'choice', total, counts: sorted };
-    }
-
-    if (questionType === 'checkbox') {
-      const optionCounts = {};
-      answersForQuestion.forEach(ans => {
-        ans.split(',').map(s => s.trim()).forEach(opt => {
-          if (opt) optionCounts[opt] = (optionCounts[opt] || 0) + 1;
-        });
-      });
-      const sorted = Object.entries(optionCounts).sort((a, b) => b[1] - a[1]);
-      return { type: 'checkbox', total, counts: sorted };
-    }
-
-    return null;
-  };
-
-  // ---------- AI Conclusion ----------
-  const generateConclusion = async () => {
-    if (responses.length === 0) {
-      toast.error('No responses to generate a conclusion from.');
-      return;
-    }
-    setConclusionLoading(true);
+  // Creates the Final Questionnaire (inactive, so it can be reviewed first).
+  const createFinalQuestionnaire = async () => {
+    if (!confirm('Create the Final Questionnaire survey (about 55 items)? It starts inactive so you can review it first.')) return;
+    setCreatingTemplate(true);
     try {
-      let summary = `Survey: ${selectedSurvey.title}\n`;
-      if (selectedSurvey.description) summary += `Description: ${selectedSurvey.description}\n`;
-      summary += `Total respondents: ${new Set(responses.map(r => r.user_id)).size}\n\n`;
-
-      questions.forEach(q => {
-        const qSummary = getQuestionSummary(q.id, q.question_type, q.options);
-        summary += `Question: "${q.question}"\n`;
-        if (qSummary) {
-          summary += `Response count: ${qSummary.total}\n`;
-          if (qSummary.type === 'rating') {
-            summary += `Average rating: ${qSummary.avg}/5\n`;
-            summary += 'Distribution:\n';
-            for (let star = 5; star >= 1; star--) {
-              const count = qSummary.distribution[star] || 0;
-              summary += `  ${star}★: ${count} (${((count / qSummary.total) * 100).toFixed(0)}%)\n`;
-            }
-          } else if (qSummary.type === 'choice' || qSummary.type === 'checkbox') {
-            summary += 'Choices:\n';
-            qSummary.counts.forEach(([val, cnt]) => {
-              summary += `  ${val}: ${cnt} (${((cnt / qSummary.total) * 100).toFixed(0)}%)\n`;
-            });
-          }
-        }
-        summary += '\n';
-      });
-
-      const systemPrompt = "You are a professional data analyst. Generate a concise, insightful conclusion from the survey data. Use formal, friendly language.";
-      const userPrompt = `Analyze the following survey results and write a conclusion:\n\n${summary}`;
-
-      const response = await testPrompt('groq', systemPrompt, userPrompt);
-      setConclusion(response.result?.text || 'Could not generate conclusion.');
+      const t = finalQuestionnaire();
+      const res = await createSurvey({ title: t.title, description: t.description, is_active: false });
+      await addQuestionsBulk(res.id, t.questions);
+      toast.success('Final Questionnaire created. Review it, then tick “Active” to open it to respondents.');
+      await loadSurveys();
+      handleEditSurvey({ id: res.id, title: t.title, description: t.description, is_active: false });
     } catch (err) {
-      toast.error('Failed to generate conclusion');
-      console.error(err);
+      toast.error('Could not create the questionnaire: ' + (err?.response?.data?.detail || err.message));
     } finally {
-      setConclusionLoading(false);
+      setCreatingTemplate(false);
     }
   };
 
@@ -309,12 +260,21 @@ export default function AdminSurveys() {
       {view === 'list' && (
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-indigo-700">📋 Admin Survey Builder</h2>
-          <button
-            onClick={startNewSurvey}
-            className="bg-indigo-600 text-white px-4 py-2 rounded-lg shadow hover:bg-indigo-700 transition"
-          >
-            + Create New Survey
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={createFinalQuestionnaire}
+              disabled={creatingTemplate}
+              className="bg-white border border-indigo-300 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-50 transition disabled:opacity-50"
+            >
+              {creatingTemplate ? 'Creating…' : '📋 Create Final Questionnaire'}
+            </button>
+            <button
+              onClick={startNewSurvey}
+              className="bg-indigo-600 text-white px-4 py-2 rounded-lg shadow hover:bg-indigo-700 transition"
+            >
+              + Create New Survey
+            </button>
+          </div>
         </div>
       )}
 
@@ -403,6 +363,19 @@ export default function AdminSurveys() {
                         <input type="text" value={qOptions} onChange={e => setQOptions(e.target.value)} placeholder="e.g., Excellent, Good, Average, Poor" className="w-full border rounded-lg p-2" />
                       </div>
                     )}
+                    {qType === 'matrix' && (
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Items to rate <span className="text-gray-400 font-normal">(comma separated, e.g. the AI models)</span></label>
+                        <input type="text" value={qOptions} onChange={e => setQOptions(e.target.value)} placeholder="e.g., DeepSeek, Qwen 2.5 (local), GPT-OSS 120B" className="w-full border rounded-lg p-2" />
+                      </div>
+                    )}
+                    {(qType === 'section' || qType === 'subsection') && (
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Text under the heading <span className="text-gray-400 font-normal">(optional)</span></label>
+                        <textarea value={qOptions} onChange={e => setQOptions(e.target.value)} rows="3" className="w-full border rounded-lg p-2" />
+                      </div>
+                    )}
+                    {qType === 'likert' && <div className="bg-indigo-50 p-2 rounded-lg text-sm">Answered 5 Strongly Agree … 1 Strongly Disagree. Items under the same sub-section are analysed together (mean, SD, Cronbach’s α).</div>}
                     {qType === 'rating' && <div className="bg-yellow-50 p-2 rounded-lg text-sm">⭐ Rating uses 1‑5 stars.</div>}
                     {qType === 'essay' && <div className="bg-blue-50 p-2 rounded-lg text-sm">📝 Essay allows free‑form text.</div>}
                     <div className="flex items-center gap-6">
@@ -426,9 +399,11 @@ export default function AdminSurveys() {
                     <div>
                       <div className="font-medium text-gray-800">{q.order_number}. {q.question}</div>
                       <div className="flex gap-2 mt-1">
-                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">{QUESTION_TYPES.find(t=>t.value===q.question_type)?.label}</span>
-                        {q.is_required && <span className="text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full">Required</span>}
-                        {q.options && <span className="text-xs text-gray-500">Options: {Array.isArray(q.options)?q.options.join(', '):q.options}</span>}
+                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">{QUESTION_TYPES.find(t=>t.value===kindOf(q))?.label || q.question_type}</span>
+                        {q.is_required && !isHeading(q) && <span className="text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full">Required</span>}
+                        {Array.isArray(q.options) && !isHeading(q) && q.options.some((o) => !String(o).startsWith('::')) && (
+                          <span className="text-xs text-gray-500">Options: {q.options.filter((o) => !String(o).startsWith('::')).join(', ')}</span>
+                        )}
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -447,80 +422,18 @@ export default function AdminSurveys() {
       {view === 'responses' && selectedSurvey && (
         <div>
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xl font-semibold text-gray-800">📊 Responses for: {selectedSurvey.title}</h3>
-            <button onClick={() => loadResponses(selectedSurvey.id)} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1 rounded-lg text-sm flex items-center gap-1">🔄 Refresh</button>
+            <h3 className="text-xl font-semibold text-gray-800">📊 Results: {selectedSurvey.title}</h3>
           </div>
-          <p className="text-sm text-gray-500 mb-2">Total submissions: {new Set(responses.map(r => r.user_id)).size}</p>
 
-          {responses.length === 0 ? (
-            <p className="text-gray-500">No responses yet.</p>
-          ) : (
+          <SurveyResults
+            survey={selectedSurvey}
+            questions={questions}
+            responses={responses}
+            userNames={userNames}
+            onRefresh={() => loadResponses(selectedSurvey.id)}
+          />
+          {responses.length > 0 && (
             <>
-              {/* Graphs */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                {questions.map(q => {
-                  const summary = getQuestionSummary(q.id, q.question_type, q.options);
-                  if (!summary) return null;
-                  return (
-                    <div key={q.id} className="bg-white border rounded-xl p-4 shadow-sm">
-                      <h4 className="font-medium text-gray-800 mb-2 text-sm">{q.question}</h4>
-                      <p className="text-xs text-gray-500 mb-2">{summary.total} response{summary.total!==1?'s':''}</p>
-                      {summary.type==='rating' && (
-                        <div>
-                          <div className="text-3xl font-bold text-indigo-600 mb-2">{summary.avg} / 5</div>
-                          {[5,4,3,2,1].map(star => {
-                            const count = summary.distribution[star] || 0;
-                            const pct = ((count/summary.total)*100).toFixed(0);
-                            return (
-                              <div key={star} className="flex items-center gap-2 text-xs mb-1">
-                                <span className="w-8 text-right">{'⭐'.repeat(star)}</span>
-                                <div className="flex-1 h-2 bg-gray-200 rounded-full"><div className="bg-yellow-400 h-2 rounded-full" style={{width:`${pct}%`}}/></div>
-                                <span className="w-6 text-gray-600">{count}</span>
-                                <span className="w-8 text-gray-500">{pct}%</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {(summary.type==='choice'||summary.type==='checkbox') && (
-                        <div className="space-y-1">
-                          {summary.counts.map(([val,count]) => {
-                            const pct = ((count/summary.total)*100).toFixed(0);
-                            return (
-                              <div key={val} className="flex items-center gap-2 text-xs">
-                                <span className="w-32 truncate text-gray-700">{val}</span>
-                                <div className="flex-1 h-2 bg-gray-200 rounded-full"><div className="bg-indigo-400 h-2 rounded-full" style={{width:`${pct}%`}}/></div>
-                                <span className="w-6 text-gray-600">{count}</span>
-                                <span className="w-8 text-gray-500">{pct}%</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* AI Conclusion */}
-              <div className="flex justify-end mb-4">
-                <button
-                  onClick={generateConclusion}
-                  disabled={conclusionLoading}
-                  className="bg-purple-600 text-white px-4 py-2 rounded-lg shadow hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                >
-                  {conclusionLoading ? <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span> : <span>🤖</span>}
-                  {conclusionLoading ? 'Generating...' : 'Generate AI Conclusion'}
-                </button>
-              </div>
-
-              {conclusion && (
-                <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 mb-4">
-                  <h4 className="font-semibold text-purple-800 mb-2">📘 AI‑Generated Conclusion</h4>
-                  <p className="text-sm text-gray-700 whitespace-pre-wrap">{conclusion}</p>
-                </div>
-              )}
-
               {/* Raw table */}
               <details className="mt-4">
                 <summary className="cursor-pointer font-medium text-gray-700 hover:text-indigo-600">📝 View Individual Responses</summary>

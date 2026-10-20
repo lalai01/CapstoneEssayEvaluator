@@ -65,6 +65,21 @@ export function labelFromKey(key) {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// A holistic result in the rubric's points (e.g. 15/20, same total as the
+// analytic scores) with its 1-5 level; older results only have the 1-5 level.
+export function holisticDisplay(scores) {
+  if (!scores || !isNum(scores.holistic_score)) return null;
+  const level = scores.holistic_score;
+  if (isNum(scores.holistic_points) && isNum(scores.holistic_max) && scores.holistic_max > 1) {
+    return {
+      value: scores.holistic_points, max: scores.holistic_max, level,
+      text: `${scores.holistic_points}/${scores.holistic_max}`,
+      fraction: fractionOf(scores.holistic_points, scores.holistic_max),
+    };
+  }
+  return { value: level, max: 5, level, text: `${level}/5`, fraction: fractionOf(level, 5) };
+}
+
 export function getCriteria(scores) {
   const meta = scores?.criteria_meta;
   if (Array.isArray(meta) && meta.length > 0) return meta;

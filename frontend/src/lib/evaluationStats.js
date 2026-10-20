@@ -1,7 +1,7 @@
 // Statistics over the three AI results of one evaluation (Evaluate page and
 // Compare with My Scores). The maths lives in aiComparison.js.
 import { EVALUATION_AIS } from './evaluationAis';
-import { averageFraction, getCriteria, gradeFromFraction, isNum, weightedFraction } from './scoring';
+import { getCriteria, gradeFromFraction, holisticDisplay, isNum, averageFraction, weightedFraction } from './scoring';
 
 export const HOLISTIC_CRITERION = { key: 'holistic_score', label: 'Overall (holistic)', max_score: 5, weight: 1 };
 
@@ -19,16 +19,19 @@ export function evaluationRaters(aiRuns) {
   const ruleBased = done.filter((ai) => isRuleBased(ai.run.scores)).map((ai) => ai.name);
   const first = raters[0]?.scores || done[0]?.run.scores || null;
   const holistic = isNum(first?.holistic_score);
-  const criteria = !first ? [] : holistic ? [HOLISTIC_CRITERION] : getCriteria(first);
+  // Holistic results in rubric points (e.g. out of 20) compare on that scale.
+  const holisticCriterion = isNum(first?.holistic_max)
+    ? { key: 'holistic_points', label: 'Overall (holistic)', max_score: first.holistic_max, weight: 1 }
+    : HOLISTIC_CRITERION;
+  const criteria = !first ? [] : holistic ? [holisticCriterion] : getCriteria(first);
   return { raters, ruleBased, criteria, holistic };
 }
 
 // Overall result of one AI, as shown on its card: "3/5" or "78%".
 export function overallResult(scores) {
   if (!scores) return null;
-  if (isNum(scores.holistic_score)) {
-    return { text: `${scores.holistic_score}/5`, grade: gradeFromFraction((scores.holistic_score - 1) / 4) };
-  }
+  const h = holisticDisplay(scores);
+  if (h) return { text: h.text, grade: gradeFromFraction(h.fraction) };
   const criteria = getCriteria(scores);
   const f = weightedFraction(scores, criteria) ?? averageFraction(scores, criteria);
   if (f === null) return null;

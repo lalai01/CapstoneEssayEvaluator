@@ -1094,19 +1094,49 @@ HOLISTIC_PLAIN = {
 }
 
 
-def ai_holistic_score(essay_text, preference="auto", strict=False):
+def holistic_total(rubric=None):
+    """The rubric's total points: holistic scores use the same total as the
+    analytic scores (e.g. 5 criteria x 4 = 20), not a separate 1-5."""
+    return sum(c["max_score"] for c in normalize_rubric(rubric).values())
+
+
+def holistic_band(level, total):
+    """Points that a holistic level 1-5 covers out of `total`: on 20 points,
+    level 1 = 1-4, 2 = 5-8, 3 = 9-12, 4 = 13-16, 5 = 17-20."""
+    low = (level - 1) * total // 5 + 1
+    return low, max(low, level * total // 5)
+
+
+def holistic_points(level, total, points=None):
+    """The score in rubric points: the AI's own points when they fall within
+    its level's band, otherwise the top of the band (clamped)."""
+    low, high = holistic_band(level, total)
+    try:
+        return min(high, max(low, int(round(float(points)))))
+    except (TypeError, ValueError):
+        return high
+
+
+def ai_holistic_score(essay_text, preference="auto", strict=False, rubric=None):
     """
     Genuine holistic scoring: ONE short model call that reads the essay as a
-    whole and returns a single 1-5 score for overall coherence, organization,
-    style and content, plus brief feedback. Far fewer output tokens than the
-    analytic call, and no second call to rewrite feedback.
+    whole and returns a single overall level (1-5) for coherence, organization,
+    style and content, plus the same judgement in the rubric's points (out of
+    the rubric total, so it matches analytic scoring), and brief feedback.
+    Far fewer output tokens than the analytic call, and no second call to
+    rewrite feedback.
 
     Returns a scores dict, or None if every model failed.
     """
-    choice = choose_scoring_model(essay_text, normalize_rubric(None), preference)
+    criteria = normalize_rubric(rubric)
+    total = holistic_total(rubric)
+    choice = choose_scoring_model(essay_text, criteria, preference)
     attempts = _scoring_attempts(choice, strict)
 
-    levels = "\n".join(f"{k}: {v}" for k, v in sorted(HOLISTIC_PLAIN.items(), reverse=True))
+    levels = "\n".join(
+        f"{k} ({'-'.join(map(str, holistic_band(k, total)))} of {total} points): {v}"
+        for k, v in sorted(HOLISTIC_PLAIN.items(), reverse=True))
+    rubric_names = ", ".join(f"{c['label']} ({c['max_score']})" for c in criteria.values())
     system_msg = (
         "You are an experienced essay examiner doing HOLISTIC scoring: you judge the essay "
         "as a whole and give ONE overall score. You reply with a single JSON object only."
@@ -1114,9 +1144,13 @@ def ai_holistic_score(essay_text, preference="auto", strict=False):
 
     for i, attempt in enumerate(attempts):
         limit = CLOUD_ESSAY_CHARS if attempt["provider"] in CLOUD_PROVIDERS else LOCAL_ESSAY_CHARS
-        user_msg = f"""Read the whole essay and give ONE holistic score from 1 to 5 that reflects
+        user_msg = f"""Read the whole essay and give ONE holistic level from 1 to 5 that reflects
 its overall coherence, organization, style and content together. Do not score
 criteria separately.
+
+The rubric used for this class is worth {total} points in total ({rubric_names}).
+Also give your overall judgement as "points" out of {total}, inside the range of
+the level you chose.
 
 Scale:
 {levels}
@@ -1128,6 +1162,7 @@ Essay:
 
 Reply with JSON only:
 {{"holistic_score": <1-5>,
+  "points": <1-{total}, within the chosen level's range>,
   "summary": "<2-3 sentences on overall coherence, organization, style and content>",
   "strengths": ["<short>", "<short>"],
   "improvements": ["<short, concrete>", "<short, concrete>"],
@@ -1160,6 +1195,8 @@ At most 5 grammar_issues, only real errors ([] if none)."""
                        f"so {model_label(attempt['model'])} was used instead.")
         return {
             "holistic_score": score,
+            "holistic_points": holistic_points(score, total, parsed.get("points")),
+            "holistic_max": total,
             "level_description": HOLISTIC_RUBRIC[score],
             "holistic_feedback": {
                 "summary": str(parsed.get("summary") or "").strip(),
@@ -1264,7 +1301,9 @@ def holistic_feedback_text(scores, rag_context=""):
     parts = []
     if rag_context:
         parts += ["[RAG_INSIGHTS_START]", rag_context, "[RAG_INSIGHTS_END]"]
-    parts.append(f"Holistic score: {scores['holistic_score']}/5. {HOLISTIC_PLAIN[scores['holistic_score']]}")
+    points = (f"{scores['holistic_points']}/{scores['holistic_max']} points (level {scores['holistic_score']} of 5)"
+              if scores.get("holistic_max") else f"{scores['holistic_score']}/5")
+    parts.append(f"Holistic score: {points}. {HOLISTIC_PLAIN[scores['holistic_score']]}")
     if fb.get("summary"):
         parts += ["", fb["summary"]]
     if fb.get("strengths"):
@@ -1424,14 +1463,15 @@ def generate_rule_based_analytic_feedback(essay_text, scores, analysis, rag_cont
     return "\n".join(feedback)
 
 
-def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, rag_context=""):
+def generate_rule_based_holistic_feedback(essay_text, holistic_score, analysis, rag_context="", points=None, total=None):
     feedback = []
     if rag_context:
         feedback.append("[RAG_INSIGHTS_START]")
         feedback.append(rag_context)
         feedback.append("[RAG_INSIGHTS_END]")
 
-    feedback.append(f"🌟 Holistic Score: {holistic_score}/5")
+    feedback.append(f"🌟 Holistic Score: {points}/{total} points (level {holistic_score} of 5)" if total
+                    else f"🌟 Holistic Score: {holistic_score}/5")
     feedback.append(HOLISTIC_RUBRIC[holistic_score])
     feedback.append("")
 
