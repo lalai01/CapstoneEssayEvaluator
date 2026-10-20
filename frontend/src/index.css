@@ -41,3 +41,13 @@
 .animate-loading-bar {
   animation: loading-bar 1.4s ease-in-out infinite;
 }
+/* Survey report printing: only the report is printed (Print / Save as PDF). */
+@media print {
+  body * { visibility: hidden; }
+  .survey-report, .survey-report * { visibility: visible; }
+  .survey-report { position: absolute; left: 0; top: 0; width: 100%; padding: 0 12px; }
+  .survey-report .no-print { display: none !important; }
+  .survey-report section { break-inside: avoid; box-shadow: none; }
+  .survey-report tr { break-inside: avoid; }
+  body { background: #fff !important; }
+}

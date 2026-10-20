@@ -88,6 +88,7 @@ class EvaluationRequest(BaseModel):
     # to another model.
     ai_model: Literal["auto", "deepseek", "local", "llama", "qwen", "gemma", "groq"] = "auto"
     strict_model: bool = False
+    title: Optional[str] = None   # the essay's title, for the admin's evaluation activity
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -1660,7 +1661,123 @@ def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
             feedback=result.get("feedback") or "Invalid input",
         )
     scores = {**result["scores"], "rubric": rubric_info}
+    if user:
+        # Admins see every evaluation (and whether it was later saved or
+        # overridden); logged in the background so it never slows the result.
+        threading.Thread(target=_log_evaluation_run, args=(req, user, scores, use_rag), daemon=True).start()
     return EvaluationResponse(scores=scores, feedback=result["feedback"])
+
+
+EVALUATION_RUNS_SQL_HINT = "Create the evaluation_runs table in Supabase (SQL in the README, “Evaluation activity”)."
+_evaluation_log_warned = False
+
+
+def _log_evaluation_run(req, user, scores, use_rag):
+    """One row per AI run in evaluation_runs; failures never affect evaluating."""
+    global _evaluation_log_warned
+    import evaluation_log
+    try:
+        text, pct = evaluation_log.overall(scores)
+        by = scores.get("evaluated_by") or {}
+        _db().table("evaluation_runs").insert({
+            "user_id": user["id"],
+            "user_email": (user.get("email") or "").lower() or None,
+            "user_role": role_of(user),
+            "title": (req.title or "").strip()[:300] or None,
+            "essay": req.text,
+            "essay_hash": evaluation_log.essay_hash(req.text),
+            "eval_type": req.evaluation_type,
+            "ai_choice": req.ai_model,
+            "ai_label": by.get("label"),
+            "provider": by.get("provider"),
+            "overall": text,
+            "overall_pct": pct,
+            "rubric_title": (scores.get("rubric") or {}).get("title"),
+            "used_rag": bool(use_rag),
+            "scores": scores,
+        }).execute()
+    except Exception as e:
+        if not _evaluation_log_warned:
+            _evaluation_log_warned = True
+            print(f"⚠️ evaluation_runs not written ({e}). {EVALUATION_RUNS_SQL_HINT}")
+
+
+def _people(user_ids):
+    """{user_id: {email, name, role}} for the given users, as far as known."""
+    people = {}
+    ids = [u for u in user_ids if u]
+    if not ids:
+        return people
+    try:
+        rows = supabase.rpc("get_user_profiles", {"user_ids": ids}).execute().data or []
+        for p in rows:
+            email = (p.get("email") or "").lower() or None
+            role = None
+            if email:
+                role = "admin" if is_admin({"email": email}) else "teacher" if is_teacher({"email": email}) else "student"
+            people[p.get("id")] = {"email": email, "name": p.get("full_name"), "role": role}
+    except Exception as e:
+        print(f"⚠️ get_user_profiles failed: {e}")
+    return people
+
+
+@app.get("/admin/activity")
+def admin_activity(days: int = 180, user: dict = Depends(get_current_user)):
+    """Every evaluated essay with its status (draft, saved, approved,
+    overridden, rejected), plus all overrides and Knowledge Base saves."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    import evaluation_log
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 3650)))).isoformat()
+    db = _survey_admin_db()
+    runs, table_ready = [], True
+    try:
+        runs = db.table("evaluation_runs") \
+            .select("id,created_at,user_id,user_email,user_role,title,essay,essay_hash,eval_type,ai_choice,"
+                    "ai_label,provider,overall,overall_pct,rubric_title,used_rag") \
+            .gte("created_at", since).order("created_at", desc=True).limit(3000).execute().data or []
+    except Exception as e:
+        table_ready = False
+        print(f"⚠️ evaluation_runs unavailable: {e}")
+    try:
+        kb = db.table("knowledge_base").select("*").gte("created_at", since) \
+            .order("created_at", desc=True).limit(2000).execute().data or []
+        overrides = db.table("learning_feedback").select("*").gte("created_at", since) \
+            .order("created_at", desc=True).limit(2000).execute().data or []
+    except Exception as e:
+        _survey_db_error(e)
+    people = _people({r.get("user_id") for r in kb + overrides} - {r.get("user_id") for r in runs})
+    for r in runs:
+        people.setdefault(r.get("user_id"), {"email": r.get("user_email"), "role": r.get("user_role")})
+    return {**evaluation_log.build_activity(runs, kb, overrides, people),
+            "table_ready": table_ready, "setup_hint": None if table_ready else EVALUATION_RUNS_SQL_HINT, "days": days}
+
+
+@app.get("/admin/activity/essay")
+def admin_activity_essay(user_id: str, essay_hash: str, user: dict = Depends(get_current_user)):
+    """One essay in full: its text, every AI run with scores and feedback, and
+    the saves and overrides made on it."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    import evaluation_log
+    db = _survey_admin_db()
+    runs = []
+    try:
+        runs = db.table("evaluation_runs").select("*").eq("user_id", user_id).eq("essay_hash", essay_hash) \
+            .order("created_at").execute().data or []
+    except Exception:
+        pass
+    try:
+        kb = [r for r in (db.table("knowledge_base").select("*").eq("user_id", user_id).execute().data or [])
+              if evaluation_log.essay_hash(r.get("essay")) == essay_hash]
+        overrides = [r for r in (db.table("learning_feedback").select("*").eq("user_id", user_id).execute().data or [])
+                     if evaluation_log.essay_hash(r.get("original_essay")) == essay_hash]
+    except Exception as e:
+        _survey_db_error(e)
+    essay = (runs[0]["essay"] if runs else None) or (kb[0].get("essay") if kb else None) \
+        or (overrides[0].get("original_essay") if overrides else "")
+    return {"essay": essay, "runs": runs, "kb": kb, "overrides": overrides}
 
 
 @app.post("/evaluate", response_model=EvaluationResponse)

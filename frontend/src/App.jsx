@@ -10,6 +10,7 @@ import RateUs from './components/RateUs';
 import AdminSurveys from './components/AdminSurveys';
 import UserSurveys from './components/UserSurveys';
 import AdminUsers from './components/AdminUsers';
+import EvaluationActivity from './components/EvaluationActivity';
 import RubricManager from './components/RubricManager';
 import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
@@ -38,6 +39,7 @@ const PAGES = [
   { id: 'learning', path: '/learning-hub', label: 'Learning Hub', icon: 'learning', access: 'user', group: 'workspace', description: 'Your overrides, remarks and score changes' },
   { id: 'rubrics', path: '/my-rubrics', label: 'My Rubrics', icon: 'rubrics', access: 'user', group: 'workspace', description: 'Create rubrics and choose your default' },
   { id: 'admins', path: '/admin', label: 'Admin Dashboard', icon: 'dashboard', access: 'admin', group: 'admin', description: 'Teachers, admins and the activity log' },
+  { id: 'activity', path: '/evaluation-activity', label: 'Evaluation Activity', icon: 'activity', access: 'admin', group: 'admin', description: 'Essays evaluated: drafts, saves, overrides, rejections' },
   { id: 'school-rubric', path: '/school-rubric', label: 'School Rubric', icon: 'school', access: 'admin', group: 'admin', description: 'Default rubric for every teacher' },
   { id: 'admin', path: '/manage-surveys', label: 'Manage Surveys', icon: 'list', access: 'admin', group: 'admin', description: 'Create surveys and read responses' },
   { id: 'ocr-labeler', path: '/ocr-labeler', label: 'OCR Labeler', icon: 'tag', access: 'admin', group: 'admin', description: 'Correct OCR samples for training' },
@@ -267,6 +269,7 @@ function App() {
           {currentTab === 'school-rubric' && <RubricManager scope="school" key="school" />}
           {currentTab === 'ocr-labeler' && <OcrLabeler />}
           {currentTab === 'admins' && <AdminUsers />}
+          {currentTab === 'activity' && <EvaluationActivity />}
         </div>
       </div>
 
