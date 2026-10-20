@@ -6,6 +6,8 @@
 //   ::matrix                  one 1-5 rating per item in options[1..]
 //                             (e.g. per AI model); answer = JSON {item: score}
 //   ::number                  numeric short answer (e.g. age)
+//   ::file                    attachment, no answer: options = ['::file', path, name, type]
+// Each section is shown as a tab (page) of the survey.
 import { EVALUATION_AIS } from './evaluationAis';
 
 export const LIKERT = [
@@ -28,6 +30,21 @@ export function kindOf(q) {
 }
 
 export const isHeading = (q) => ['section', 'subsection'].includes(kindOf(q));
+// Items with nothing to answer: headings and attachments.
+export const isDisplayOnly = (q) => ['section', 'subsection', 'file'].includes(kindOf(q));
+export const fileInfo = (q) => (kindOf(q) === 'file'
+  ? { path: q.options[1], name: q.options[2] || 'Attachment', type: q.options[3] || '' } : null);
+
+// The survey split into tabs: one per section (items before the first
+// section form an untitled first tab). Each tab: { section, items }.
+export function tabsOf(questions) {
+  const tabs = [];
+  for (const item of structure(questions)) {
+    if (item.kind === 'section' || !tabs.length) tabs.push({ section: item.kind === 'section' ? item.q : null, items: [] });
+    if (item.kind !== 'section') tabs[tabs.length - 1].items.push(item);
+  }
+  return tabs.filter((t) => t.section || t.items.length);
+}
 export const headingText = (q) => (isHeading(q) ? q.options?.[1] || '' : '');
 export const matrixItems = (q) => (kindOf(q) === 'matrix' ? q.options.slice(1) : []);
 
@@ -39,6 +56,47 @@ export function parseMatrix(answer) {
     return {};
   }
 }
+
+// Editor kinds. Those after 'rating' are stored on the existing question types
+// with a marker in options[0], so no database change is needed.
+export const QUESTION_TYPES = [
+  { value: 'text', label: 'Short Text' },
+  { value: 'essay', label: 'Essay (Long Text)' },
+  { value: 'radio', label: 'Multiple choice (one answer)' },
+  { value: 'checkbox', label: 'Checkboxes (any number)' },
+  { value: 'rating', label: 'Rating (1‑5 stars)' },
+  { value: 'likert', label: 'Agreement scale (5 SA … 1 SD)' },
+  { value: 'matrix', label: 'Agreement scale per AI model (grid)' },
+  { value: 'number', label: 'Number (e.g. age)' },
+  { value: 'subsection', label: 'Sub-heading (groups items, e.g. a construct)' },
+];
+export const kindLabel = (q) => (kindOf(q) === 'file' ? 'Attachment'
+  : kindOf(q) === 'section' ? 'Tab' : QUESTION_TYPES.find((t) => t.value === kindOf(q))?.label || q.question_type);
+
+// Editor kind + options text -> stored question_type and options.
+export function storedShape(kind, optionsText = '') {
+  const list = optionsText.split(',').map((x) => x.trim()).filter(Boolean);
+  switch (kind) {
+    case 'radio': case 'checkbox': return { question_type: kind, options: list };
+    case 'rating': return { question_type: 'rating', options: ['1', '2', '3', '4', '5'] };
+    case 'likert': return { question_type: 'rating', options: ['::likert'] };
+    case 'matrix': return { question_type: 'rating', options: ['::matrix', ...list] };
+    case 'number': return { question_type: 'text', options: ['::number'] };
+    case 'section': case 'subsection': return { question_type: 'text', options: [`::${kind}`, optionsText.trim()] };
+    default: return { question_type: kind, options: null };
+  }
+}
+
+// The editor's options text for a stored question (reverse of storedShape).
+export function optionsText(q) {
+  const kind = kindOf(q);
+  if (isHeading(q)) return headingText(q);
+  if (kind === 'matrix') return matrixItems(q).join(', ');
+  return (q.options || []).filter((o) => !String(o).startsWith('::')).join(', ');
+}
+
+// A copy of a question for re-inserting (duplicating a tab or a survey).
+export const copyOf = (q) => ({ question: q.question, question_type: q.question_type, options: q.options, is_required: q.is_required });
 
 // Is this question answered (enough to submit)?
 export function isAnswered(q, value) {
@@ -61,6 +119,7 @@ export function structure(questions) {
       const kind = kindOf(q);
       if (kind === 'section') { section = q; subsection = null; n = 0; return { q, kind, section, subsection, number: null }; }
       if (kind === 'subsection') { subsection = q; n = 0; return { q, kind, section, subsection, number: null }; }
+      if (kind === 'file') return { q, kind, section, subsection, number: null };
       n += 1;
       return { q, kind, section, subsection, number: n };
     });
@@ -260,7 +319,7 @@ export function analyzeSurvey(questions, responses, userNames = {}) {
     if (!byUser.has(r.user_id)) byUser.set(r.user_id, { id: r.user_id, submitted: r.created_at, answers: {} });
     byUser.get(r.user_id).answers[r.question_id] = r.answer;
   }
-  const nameQ = items.find((it) => !isHeading(it.q) && isNameQuestion(it.q))?.q;
+  const nameQ = items.find((it) => !isDisplayOnly(it.q) && isNameQuestion(it.q))?.q;
   const respondents = [...byUser.values()].map((r, i) => ({
     ...r,
     code: `R${i + 1}`,
@@ -284,7 +343,7 @@ export function analyzeSurvey(questions, responses, userNames = {}) {
 
   for (const item of items) {
     const { q, kind } = item;
-    if (isHeading(q)) continue;
+    if (isDisplayOnly(q)) continue;
     if (isConsent(q)) {
       consent = { q, agreed: answersTo(q).filter((a) => (a || '').trim()).length, n: respondents.length };
     } else if (kind === 'matrix') {
@@ -358,7 +417,7 @@ export function surveyCsv(analysis) {
   const cols = [];
   for (const item of analysis.items) {
     const { q, kind } = item;
-    if (isHeading(q)) continue;
+    if (isDisplayOnly(q)) continue;
     const code = questionCode(item);
     if (kind === 'matrix') {
       matrixItems(q).forEach((m) => cols.push({ head: `${code} [${m}]`, get: (r) => parseMatrix(r.answers[q.id])[m] ?? '', text: q.question }));

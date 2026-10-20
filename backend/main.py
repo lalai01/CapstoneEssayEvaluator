@@ -1,5 +1,6 @@
 import os
 import re
+import uuid
 import tempfile
 import threading
 import time
@@ -753,25 +754,42 @@ def add_question(
 
     data = question.dict()
     data["survey_id"] = survey_id
-
-    existing = user_client.table("survey_questions") \
-        .select("order_number") \
-        .eq("survey_id", survey_id) \
-        .order("order_number", desc=True) \
-        .limit(1) \
-        .execute()
-    max_order = existing.data[0]["order_number"] if existing.data else 0
-    data["order_number"] = max_order + 1
-
+    db = _survey_admin_db()
     try:
-        if supabase_admin:
-            result = supabase_admin.table("survey_questions").insert(data).execute()
-        else:
-            result = user_client.table("survey_questions").insert(data).execute()
-    except Exception:
-        result = user_client.table("survey_questions").insert(data).execute()
-
+        existing = db.table("survey_questions") \
+            .select("order_number") \
+            .eq("survey_id", survey_id) \
+            .order("order_number", desc=True) \
+            .limit(1) \
+            .execute()
+        max_order = existing.data[0]["order_number"] if existing.data else 0
+        data["order_number"] = max_order + 1
+        result = db.table("survey_questions").insert(data).execute()
+    except Exception as e:
+        _survey_db_error(e)
     return {"id": result.data[0]["id"]}
+
+# Survey questions and files are written with the service key: the tables'
+# row-level security doesn't let a user's own token change them. Errors are
+# explained instead of surfacing as a bare "violates row-level security".
+SURVEY_KEY_HELP = ("Set SUPABASE_SERVICE_KEY on the server to the service_role key "
+                   "(Supabase → Project Settings → API) and restart the backend.")
+
+
+def _survey_admin_db():
+    if not supabase_admin:
+        raise HTTPException(500, "Survey changes can't be saved: SUPABASE_SERVICE_KEY isn't set. " + SURVEY_KEY_HELP)
+    return supabase_admin
+
+
+def _survey_db_error(e):
+    message = str(getattr(e, "message", None) or e)
+    print(f"❌ survey write failed: {message}")
+    if "42501" in message or "row-level security" in message:
+        raise HTTPException(500, "The database refused the change (row-level security), so the server's "
+                                 "SUPABASE_SERVICE_KEY is not the service_role key. " + SURVEY_KEY_HELP)
+    raise HTTPException(500, message[:300])
+
 
 class QuestionBulkItem(BaseModel):
     question: str
@@ -796,21 +814,115 @@ def add_questions_bulk(
         raise HTTPException(403, "Admin only")
     if not payload.questions or len(payload.questions) > 300:
         raise HTTPException(400, "Send 1 to 300 questions")
-    existing = user_client.table("survey_questions") \
-        .select("order_number") \
-        .eq("survey_id", survey_id) \
-        .order("order_number", desc=True) \
-        .limit(1) \
-        .execute()
-    start = existing.data[0]["order_number"] if existing.data else 0
-    rows = [{**q.dict(), "survey_id": survey_id, "order_number": start + i + 1}
-            for i, q in enumerate(payload.questions)]
+    db = _survey_admin_db()
     try:
-        client = supabase_admin or user_client
-        client.table("survey_questions").insert(rows).execute()
-    except Exception:
-        user_client.table("survey_questions").insert(rows).execute()
-    return {"count": len(rows)}
+        existing = db.table("survey_questions") \
+            .select("order_number") \
+            .eq("survey_id", survey_id) \
+            .order("order_number", desc=True) \
+            .limit(1) \
+            .execute()
+        start = existing.data[0]["order_number"] if existing.data else 0
+        rows = [{**q.dict(), "survey_id": survey_id, "order_number": start + i + 1}
+                for i, q in enumerate(payload.questions)]
+        result = db.table("survey_questions").insert(rows).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
+    return {"count": len(rows), "ids": [r["id"] for r in (result.data or [])]}
+
+
+class QuestionOrder(BaseModel):
+    ids: List[int]
+
+
+@app.put("/surveys/{survey_id}/order")
+def reorder_questions(survey_id: int, payload: QuestionOrder, user: dict = Depends(get_current_user)):
+    """Set the questions' order (and so their tab) to the given id sequence."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    db = _survey_admin_db()
+    try:
+        for position, qid in enumerate(payload.ids, start=1):
+            db.table("survey_questions").update({"order_number": position}) \
+                .eq("id", qid).eq("survey_id", survey_id).execute()
+    except Exception as e:
+        _survey_db_error(e)
+    return {"status": "reordered", "count": len(payload.ids)}
+
+
+# ---------- Survey attachments (Supabase Storage, private bucket) ----------
+SURVEY_BUCKET = "survey-files"
+SURVEY_FILE_TYPES = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt",
+                     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ppt", ".pptx"}
+SURVEY_FILE_LIMIT = 20 * 1024 * 1024
+_survey_bucket_ready = False
+
+
+def _survey_storage():
+    global _survey_bucket_ready
+    db = _survey_admin_db()
+    if not _survey_bucket_ready:
+        try:
+            db.storage.create_bucket(SURVEY_BUCKET, options={"public": False})
+        except Exception as e:
+            if "exist" not in str(e).lower() and "duplicate" not in str(e).lower():
+                print(f"⚠️ could not create bucket {SURVEY_BUCKET}: {e}")
+        _survey_bucket_ready = True
+    return db.storage.from_(SURVEY_BUCKET)
+
+
+@app.post("/surveys/{survey_id}/files")
+def upload_survey_file(survey_id: int, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Admin attaches a file (e.g. an essay to review) to a survey."""
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    name = os.path.basename(file.filename or "file")
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in SURVEY_FILE_TYPES:
+        raise HTTPException(400, f"Files of type {ext or '(none)'} can't be attached. Use PDF, Word, Excel, PowerPoint, CSV, text or an image.")
+    data = file.file.read()
+    if len(data) > SURVEY_FILE_LIMIT:
+        raise HTTPException(413, "Files can be at most 20 MB.")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[-80:]
+    path = f"survey-{survey_id}/{uuid.uuid4().hex[:12]}-{safe}"
+    try:
+        _survey_storage().upload(path, data, {"content-type": file.content_type or "application/octet-stream"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
+    return {"path": path, "name": name, "type": file.content_type or "", "size": len(data)}
+
+
+@app.get("/survey-files/url")
+def survey_file_url(path: str, user: dict = Depends(get_current_user)):
+    """A one-hour link to view or download a survey attachment (signed-in users)."""
+    if not re.fullmatch(r"survey-\d+/[A-Za-z0-9._-]+", path or ""):
+        raise HTTPException(400, "Invalid file path")
+    try:
+        signed = _survey_storage().create_signed_url(path, 3600)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
+    return {"url": signed.get("signedURL") or signed.get("signedUrl")}
+
+
+@app.delete("/survey-files")
+def delete_survey_file(path: str, user: dict = Depends(get_current_user)):
+    if not is_admin(user):
+        raise HTTPException(403, "Admin only")
+    if not re.fullmatch(r"survey-\d+/[A-Za-z0-9._-]+", path or ""):
+        raise HTTPException(400, "Invalid file path")
+    try:
+        _survey_storage().remove([path])
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
+    return {"status": "deleted"}
 
 
 @app.get("/surveys/{survey_id}/questions")
@@ -888,12 +1000,11 @@ def update_question(
         raise HTTPException(403, "Admin only")
     data = {k: v for k, v in question.dict().items() if v is not None}
     try:
-        if supabase_admin:
-            supabase_admin.table("survey_questions").update(data).eq("id", id).execute()
-        else:
-            user_client.table("survey_questions").update(data).eq("id", id).execute()
-    except Exception:
-        user_client.table("survey_questions").update(data).eq("id", id).execute()
+        _survey_admin_db().table("survey_questions").update(data).eq("id", id).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
     return {"status": "updated"}
 
 @app.delete("/questions/{id}")
@@ -905,12 +1016,11 @@ def delete_question(
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
     try:
-        if supabase_admin:
-            supabase_admin.table("survey_questions").delete().eq("id", id).execute()
-        else:
-            user_client.table("survey_questions").delete().eq("id", id).execute()
-    except Exception:
-        user_client.table("survey_questions").delete().eq("id", id).execute()
+        _survey_admin_db().table("survey_questions").delete().eq("id", id).execute()
+    except HTTPException:
+        raise
+    except Exception as e:
+        _survey_db_error(e)
     return {"status": "deleted"}
 
 #region User Survey Responses

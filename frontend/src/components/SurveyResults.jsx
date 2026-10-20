@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import { testPrompt } from '../api';
 import { AgreementBar, AgreementLegend, Donut, GroupedBars, MeanBars } from './SurveyCharts';
 import {
-  SERIES, alphaLabel, analyzeSurvey, downloadText, isHeading, kindOf, matrixItems, parseMatrix, questionCode, surveyCsv,
+  SERIES, alphaLabel, analyzeSurvey, downloadText, isDisplayOnly, kindOf, matrixItems, parseMatrix, questionCode, surveyCsv,
 } from '../lib/surveyKit';
 
 const f2 = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v.toFixed(2) : '—');
@@ -289,7 +289,7 @@ export default function SurveyResults({ survey, questions, responses, userNames,
               <button onClick={() => setOpenId(null)} className="text-sm text-indigo-700 underline">Close</button>
             </div>
             <div className="space-y-1 text-sm max-h-96 overflow-y-auto">
-              {A.items.filter((it) => !isHeading(it.q)).map((it) => {
+              {A.items.filter((it) => !isDisplayOnly(it.q)).map((it) => {
                 const a = open.answers[it.q.id];
                 return (
                   <div key={it.q.id} className="grid grid-cols-[4rem_1fr] gap-2 border-b border-indigo-100 py-1">

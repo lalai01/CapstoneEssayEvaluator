@@ -269,6 +269,33 @@ export const addQuestion = async (surveyId, question) => {
   return response.data;
 };
 
+// Sets the question order (admin): moving questions and tabs.
+export const reorderQuestions = async (surveyId, ids) => {
+  const response = await apiClient.put(`/surveys/${surveyId}/order`, { ids });
+  return response.data;
+};
+
+// Survey attachments (admin uploads; respondents get a one-hour link).
+export const uploadSurveyFile = async (surveyId, file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await apiClient.post(`/surveys/${surveyId}/files`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  });
+  return response.data;   // { path, name, type, size }
+};
+
+export const surveyFileUrl = async (path) => {
+  const response = await apiClient.get('/survey-files/url', { params: { path } });
+  return response.data.url;
+};
+
+export const deleteSurveyFile = async (path) => {
+  const response = await apiClient.delete('/survey-files', { params: { path } });
+  return response.data;
+};
+
 // Adds many questions in order (admin), e.g. the Final Questionnaire template.
 export const addQuestionsBulk = async (surveyId, questions) => {
   const response = await apiClient.post(`/surveys/${surveyId}/questions/bulk`, { questions });
