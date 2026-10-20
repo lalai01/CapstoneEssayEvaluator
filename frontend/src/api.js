@@ -112,19 +112,19 @@ export const deleteSavedEssay = async (id) => {
 // strict: only that AI scores (no fallback to another model), used when the
 // three AIs evaluate side by side. The local models share the server's CPU,
 // so allow up to 5 minutes.
-export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false) => {
+export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null) => {
   const response = await apiClient.post(
     '/evaluate',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title },
     { timeout: 300000 }
   );
   return response.data;
 };
 
-export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false) => {
+export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null) => {
   const response = await apiClient.post(
     '/evaluate-rag',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title },
     { timeout: 300000 }
   );
   return response.data;
@@ -266,6 +266,18 @@ export const submitSurveyResponse = async (surveyId, answers) => {
 // ---------- Survey Questions ----------
 export const addQuestion = async (surveyId, question) => {
   const response = await apiClient.post(`/surveys/${surveyId}/questions`, question);
+  return response.data;
+};
+
+// Admin: every evaluated essay with its status, all overrides and Knowledge Base saves.
+export const getEvaluationActivity = async (days = 180) => {
+  const response = await apiClient.get('/admin/activity', { params: { days }, timeout: 120000 });
+  return response.data;
+};
+
+// Admin: one essay in full (text, every AI run, its saves and overrides).
+export const getEvaluationEssay = async (userId, essayHash) => {
+  const response = await apiClient.get('/admin/activity/essay', { params: { user_id: userId, essay_hash: essayHash } });
   return response.data;
 };
 

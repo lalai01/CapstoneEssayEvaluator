@@ -236,6 +236,7 @@ The repository secret `FIREBASE_SERVICE_ACCOUNT_CAPSTONEESSAYEVALUATOR` must exi
 | `learning_feedback` | Teacher overrides: `title`, `ai_model`, `original_essay`, `original_scores` (jsonb), `teacher_scores` (jsonb), `teacher_feedback` (the teacher's remarks), `suggested_changes` (suggestions for the student), `satisfaction` |
 | `rubrics` | `title`, `description`, `criteria` (jsonb, see below), `is_active`, `is_system` (school-wide vs personal), `user_id` (owner) |
 | `saved_essays` | Playground drafts |
+| `evaluation_runs` | Every AI evaluation by a signed-in user (admin Evaluation Activity: drafts, saves, overrides) |
 | `ratings`, `comments`, `comment_reactions` | Rate Us |
 | `surveys`, `survey_questions`, `survey_responses` | Surveys |
 | `ocr_training_data` | OCR samples and human corrections |
@@ -298,6 +299,39 @@ alter table admin_users enable row level security;
 -- Add the first admin(s); after that, use the Admins tab in the app.
 insert into admin_users (email, added_by) values ('you@example.com', 'setup')
 on conflict (email) do nothing;
+
+-- Surveys: allow every question type the survey editor uses (required for the
+-- Final Questionnaire and survey import). `not valid` skips re-checking old rows.
+alter table survey_questions drop constraint if exists survey_questions_question_type_check;
+alter table survey_questions add constraint survey_questions_question_type_check
+  check (question_type in ('text', 'essay', 'radio', 'checkbox', 'rating')) not valid;
+
+-- Evaluation activity (required for Admin → Evaluation Activity): one row per
+-- AI run by a signed-in user, so admins see every essay evaluated and whether
+-- it was saved, approved, overridden or rejected, or left as a draft.
+-- RLS on with no policies: only the backend's service-role key can read or write it.
+create table if not exists evaluation_runs (
+  id           bigserial primary key,
+  created_at   timestamptz not null default now(),
+  user_id      uuid,
+  user_email   text,
+  user_role    text,          -- admin | teacher | student, at the time of the run
+  title        text,
+  essay        text,
+  essay_hash   text,          -- fingerprint of the essay: groups runs, matches saves/overrides
+  eval_type    text,          -- analytic | holistic
+  ai_choice    text,          -- deepseek | local | groq
+  ai_label     text,          -- the model that answered, e.g. "Groq · GPT-OSS 120B"
+  provider     text,
+  overall      text,          -- e.g. "78%" or "16/20"
+  overall_pct  numeric,
+  rubric_title text,
+  used_rag     boolean not null default false,
+  scores       jsonb
+);
+create index if not exists evaluation_runs_user_essay on evaluation_runs (user_id, essay_hash);
+create index if not exists evaluation_runs_created on evaluation_runs (created_at desc);
+alter table evaluation_runs enable row level security;
 ```
 
 If every admin is ever removed, add one back with the `insert` above.

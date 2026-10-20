@@ -129,7 +129,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     const runOne = async (ai) => {
       const started = performance.now();
       try {
-        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true);
+        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true, title.trim());
         if (typeof result.feedback === 'string' && result.feedback.startsWith('⚠️ Invalid Input')) {
           throw new Error(result.feedback.replace('⚠️ Invalid Input:', '').trim());
         }

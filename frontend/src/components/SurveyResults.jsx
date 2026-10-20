@@ -57,14 +57,83 @@ function describe(survey, A) {
   return lines.join('\n');
 }
 
+const SECTIONS = [
+  ['overview', 'Overview'], ['profile', 'Respondent profile'], ['models', 'Ratings per AI model'],
+  ['likert', 'Agreement scales (e.g. UTAUT)'], ['compare', 'Compare respondents'], ['open', 'Open-ended answers'],
+];
+
 export default function SurveyResults({ survey, questions, responses, userNames, onRefresh }) {
-  const A = useMemo(() => analyzeSurvey(questions, responses, userNames), [questions, responses, userNames]);
+  // Custom report: which sections to show, and respondents filtered by their
+  // profile answers (e.g. only one department). Everything below is computed
+  // for the filtered respondents only.
+  const [filters, setFilters] = useState({});          // question id -> chosen answer
+  const [include, setInclude] = useState(() => Object.fromEntries(SECTIONS.map(([k]) => [k, true])));
+  const [customizing, setCustomizing] = useState(false);
+  const all = useMemo(() => analyzeSurvey(questions, responses, userNames), [questions, responses, userNames]);
+  const filtered = useMemo(() => {
+    const active = Object.entries(filters).filter(([, v]) => v);
+    if (!active.length) return responses;
+    const keep = new Set(all.respondents
+      .filter((r) => active.every(([qid, v]) => (r.answers[qid] || '').split(',').map((x) => x.trim().toLowerCase()).includes(v.toLowerCase())))
+      .map((r) => r.id));
+    return responses.filter((r) => keep.has(r.user_id));
+  }, [filters, responses, all]);
+  const A = useMemo(() => analyzeSurvey(questions, filtered, userNames), [questions, filtered, userNames]);
   const [openId, setOpenId] = useState(null);
   const [conclusion, setConclusion] = useState('');
   const [concluding, setConcluding] = useState(false);
 
-  if (!A.respondents.length) {
+  if (!all.respondents.length) {
     return <p className="text-gray-500">No responses yet. Results appear here automatically once people submit the survey.</p>;
+  }
+  const filterLabel = Object.entries(filters).filter(([, v]) => v)
+    .map(([qid, v]) => `${all.profile.find((p) => String(p.q.id) === String(qid))?.q.question}: ${v}`).join(' · ');
+  const filterable = all.profile.filter((p) => p.type !== 'number' && p.counts.length > 1);
+  const customPanel = (
+    <div className="no-print rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-4">
+      <div>
+        <h4 className="text-sm font-semibold text-gray-800">Sections to include</h4>
+        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+          {SECTIONS.map(([key, label]) => (
+            <label key={key} className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={include[key]} onChange={(e) => setInclude({ ...include, [key]: e.target.checked })} className="h-4 w-4" />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+      {filterable.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-800">Only respondents who answered…</h4>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {filterable.map((p) => (
+              <label key={p.q.id} className="block text-sm">
+                <span className="text-gray-700">{p.q.question}</span>
+                <select value={filters[p.q.id] || ''} onChange={(e) => setFilters({ ...filters, [p.q.id]: e.target.value })}
+                  className="mt-1 w-full rounded-lg border bg-white p-2">
+                  <option value="">Anyone</option>
+                  {p.counts.filter((c) => c.value > 0).map((c) => <option key={c.label} value={c.label}>{c.label} ({c.value})</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-gray-700">{A.respondents.length} of {all.respondents.length} respondents in this report.</span>
+        {filterLabel && <button onClick={() => setFilters({})} className="rounded-lg border bg-white px-3 py-1 hover:bg-gray-50">✕ Clear filters</button>}
+        <span className="flex-1" />
+        <button onClick={() => window.print()} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-white hover:bg-indigo-700">🖨 Print / Save as PDF</button>
+      </div>
+    </div>
+  );
+  if (!A.respondents.length) {
+    return (
+      <div className="space-y-4">
+        {customPanel}
+        <p className="text-gray-500">No respondents match these filters.</p>
+      </div>
+    );
   }
 
   const last = A.respondents.reduce((a, r) => (new Date(r.submitted) > new Date(a) ? r.submitted : a), A.respondents[0].submitted);
@@ -95,17 +164,32 @@ export default function SurveyResults({ survey, questions, responses, userNames,
   const open = A.perRespondent.find((r) => r.id === openId);
 
   return (
-    <div className="space-y-6">
+    <div className="survey-report space-y-6">
+      <div className="hidden print:block">
+        <h2 className="text-xl font-bold">{survey.title}</h2>
+        <p className="text-sm text-gray-600">
+          Survey report · {A.respondents.length} respondent{A.respondents.length === 1 ? '' : 's'}
+          {filterLabel ? ` · ${filterLabel}` : ''} · generated {new Date().toLocaleDateString()}
+        </p>
+      </div>
+      {filterLabel && (
+        <p className="no-print rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
+          Filtered report: {filterLabel} ({A.respondents.length} of {all.respondents.length} respondents).
+        </p>
+      )}
       {/* ---------- Overview ---------- */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {include.overview && <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Tile label="Respondents" value={A.respondents.length} />
         {A.consent && <Tile label="Gave consent" value={`${A.consent.agreed}/${A.consent.n}`} />}
         <Tile label="Latest response" value={new Date(last).toLocaleDateString()} />
         {A.models.length > 0 && (
           <Tile label="Highest-rated AI" value={ranked[0]} note={`mean ${f2(A.modelOverall[ranked[0]].mean)} · ${A.modelOverall[ranked[0]].interpretation}`} />
         )}
-      </div>
-      <div className="flex flex-wrap gap-2">
+      </div>}
+      <div className="no-print flex flex-wrap gap-2">
+        <button onClick={() => setCustomizing(!customizing)} className={`px-3 py-1.5 rounded-lg text-sm border ${customizing ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-700 border-indigo-300 hover:bg-indigo-50'}`}>
+          🧾 {customizing ? 'Hide report options' : 'Customize report'}
+        </button>
         <button onClick={onRefresh} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-sm">🔄 Refresh</button>
         <button onClick={exportCsv} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-sm">⬇ Responses (CSV for Excel/SPSS)</button>
         <button onClick={exportCodebook} className="bg-white border hover:bg-gray-50 text-gray-700 px-3 py-1.5 rounded-lg text-sm">⬇ Codebook (CSV)</button>
@@ -113,6 +197,7 @@ export default function SurveyResults({ survey, questions, responses, userNames,
           {concluding ? 'Writing…' : '🤖 AI interpretation of the results'}
         </button>
       </div>
+      {customizing && customPanel}
       {conclusion && (
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
           <h4 className="font-semibold text-purple-800 mb-2">📘 AI-written interpretation <span className="font-normal text-xs text-purple-700">(check every statement against the tables below before using it)</span></h4>
@@ -121,7 +206,7 @@ export default function SurveyResults({ survey, questions, responses, userNames,
       )}
 
       {/* ---------- Profile ---------- */}
-      {A.profile.length > 0 && (
+      {include.profile && A.profile.length > 0 && (
         <Card title="Respondent profile">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {A.profile.map((p) => (
@@ -146,7 +231,7 @@ export default function SurveyResults({ survey, questions, responses, userNames,
       )}
 
       {/* ---------- AI models (matrix questions) ---------- */}
-      {A.matrixGroups.length > 0 && (
+      {include.models && A.matrixGroups.length > 0 && (
         <Card title={A.matrixGroups[0].part || 'Ratings per AI model'}
           subtitle="Mean of 1–5 ratings. SD = standard deviation across respondents; α = Cronbach's alpha (internal consistency).">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
@@ -209,7 +294,7 @@ export default function SurveyResults({ survey, questions, responses, userNames,
       )}
 
       {/* ---------- Likert constructs (e.g. UTAUT) ---------- */}
-      {parts.map((part) => {
+      {include.likert && parts.map((part) => {
         const groups = A.likertGroups.filter((g) => g.part === part);
         return (
           <Card key={part || 'ratings'} title={part || 'Ratings'}
@@ -258,7 +343,7 @@ export default function SurveyResults({ survey, questions, responses, userNames,
       })}
 
       {/* ---------- Compare respondents ---------- */}
-      <Card title="Compare respondents" subtitle="Each respondent's average per construct and per AI model (1–5; darker = higher). Click a row to see all of that person's answers.">
+      {include.compare && <Card title="Compare respondents" subtitle="Each respondent's average per construct and per AI model (1–5; darker = higher). Click a row to see all of that person's answers.">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
@@ -308,10 +393,10 @@ export default function SurveyResults({ survey, questions, responses, userNames,
             </div>
           </div>
         )}
-      </Card>
+      </Card>}
 
       {/* ---------- Open-ended ---------- */}
-      {A.openEnded.length > 0 && (
+      {include.open && A.openEnded.length > 0 && (
         <Card title="Open-ended answers">
           <div className="space-y-5">
             {A.openEnded.map((o) => (
