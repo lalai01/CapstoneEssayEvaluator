@@ -1,5 +1,52 @@
-import React from 'react';
-import { LIKERT, headingText, matrixItems, parseMatrix } from '../lib/surveyKit';
+import React, { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
+import { surveyFileUrl } from '../api';
+import { LIKERT, fileInfo, headingText, matrixItems, parseMatrix } from '../lib/surveyKit';
+
+const FILE_ICONS = { pdf: '📕', doc: '📘', docx: '📘', xls: '📗', xlsx: '📗', csv: '📗', ppt: '📙', pptx: '📙', txt: '📄' };
+
+// An attached file: images are previewed; anything else opens in a new tab.
+// Links are private and fetched when needed (valid for one hour).
+export function SurveyAttachment({ q, compact = false }) {
+  const { path, name, type } = fileInfo(q);
+  const isImage = type.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(name);
+  const [preview, setPreview] = useState(null);
+  const [opening, setOpening] = useState(false);
+
+  useEffect(() => {
+    if (!isImage || compact) return undefined;
+    let alive = true;
+    surveyFileUrl(path).then((url) => { if (alive) setPreview(url); }).catch(() => {});
+    return () => { alive = false; };
+  }, [path, isImage, compact]);
+
+  const open = async () => {
+    setOpening(true);
+    try {
+      window.open(await surveyFileUrl(path), '_blank', 'noopener');
+    } catch {
+      toast.error('Could not open the file. Please try again.');
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const ext = name.split('.').pop().toLowerCase();
+  return (
+    <div className={compact ? '' : 'bg-white border rounded-xl p-4 shadow-sm'}>
+      {q.question && q.question !== name && !compact && <p className="font-medium text-gray-800 mb-2">{q.question}</p>}
+      {preview && <img src={preview} alt={name} className="mb-2 max-h-96 rounded-lg border object-contain" />}
+      <div className="flex items-center gap-3">
+        <span className="text-2xl" aria-hidden="true">{isImage ? '🖼️' : FILE_ICONS[ext] || '📎'}</span>
+        <span className="text-sm text-gray-800 break-all">{name}</span>
+        <button type="button" onClick={open} disabled={opening}
+          className="ml-auto shrink-0 text-sm bg-indigo-50 text-indigo-700 border border-indigo-200 px-3 py-1 rounded-lg hover:bg-indigo-100 disabled:opacity-50">
+          {opening ? 'Opening…' : 'Open'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // One row of 5-4-3-2-1 agreement buttons.
 function ScaleButtons({ value, onChange, name }) {
@@ -48,6 +95,8 @@ export default function SurveyQuestion({ item, value, onChange, invalid }) {
       </div>
     );
   }
+
+  if (kind === 'file') return <SurveyAttachment q={q} />;
 
   const wrap = `scroll-mt-24 bg-white border rounded-xl p-4 shadow-sm ${invalid ? 'border-red-400 ring-2 ring-red-200' : ''}`;
   const label = (

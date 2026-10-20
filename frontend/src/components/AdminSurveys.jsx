@@ -2,41 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import {
   createSurvey, listSurveys, updateSurvey, deleteSurvey,
-  addQuestion, addQuestionsBulk, listQuestions, updateQuestion, deleteQuestion,
+  addQuestionsBulk, listQuestions,
   getSurveyResponses, apiClient,
 } from '../api';
 import toast from 'react-hot-toast';
 import SurveyResults from './SurveyResults';
-import { finalQuestionnaire, headingText, isHeading, kindOf } from '../lib/surveyKit';
-
-// Editor kinds. The last five are stored on the existing question types with
-// a marker in options[0] (see lib/surveyKit.js), so no database change is needed.
-const QUESTION_TYPES = [
-  { value: 'text', label: 'Short Text' },
-  { value: 'essay', label: 'Essay (Long Text)' },
-  { value: 'radio', label: 'Radio Button' },
-  { value: 'checkbox', label: 'Checkbox' },
-  { value: 'rating', label: 'Rating (1‑5 stars)' },
-  { value: 'likert', label: 'Agreement scale (5 SA … 1 SD)' },
-  { value: 'matrix', label: 'Agreement scale per AI model (grid)' },
-  { value: 'number', label: 'Number (e.g. age)' },
-  { value: 'section', label: 'Section heading' },
-  { value: 'subsection', label: 'Sub-section heading (groups items, e.g. a construct)' },
-];
-
-// Editor kind + options text -> stored question_type and options.
-function storedShape(kind, optionsText) {
-  const list = optionsText.split(',').map((x) => x.trim()).filter(Boolean);
-  switch (kind) {
-    case 'radio': case 'checkbox': return { question_type: kind, options: list };
-    case 'rating': return { question_type: 'rating', options: ['1', '2', '3', '4', '5'] };
-    case 'likert': return { question_type: 'rating', options: ['::likert'] };
-    case 'matrix': return { question_type: 'rating', options: ['::matrix', ...list] };
-    case 'number': return { question_type: 'text', options: ['::number'] };
-    case 'section': case 'subsection': return { question_type: 'text', options: [`::${kind}`, optionsText.trim()] };
-    default: return { question_type: kind, options: null };
-  }
-}
+import SurveyEditor from './SurveyEditor';
+import { copyOf, finalQuestionnaire } from '../lib/surveyKit';
 
 export default function AdminSurveys() {
   const { isAdmin } = useAuth();
@@ -57,12 +29,6 @@ export default function AdminSurveys() {
   const [editingSurveyId, setEditingSurveyId] = useState(null);
 
   // Question form
-  const [showQuestionForm, setShowQuestionForm] = useState(false);
-  const [editingQuestion, setEditingQuestion] = useState(null);
-  const [qText, setQText] = useState('');
-  const [qType, setQType] = useState('text');
-  const [qOptions, setQOptions] = useState('');
-  const [qRequired, setQRequired] = useState(true);
 
   const [creatingTemplate, setCreatingTemplate] = useState(false);
 
@@ -155,8 +121,6 @@ export default function AdminSurveys() {
     setResponses([]);
     setQuestionsMap({});
     setUserNames({});
-    setShowQuestionForm(false);
-    resetQuestionForm();
   };
 
   // Start a fresh new survey
@@ -171,57 +135,19 @@ export default function AdminSurveys() {
     setView('edit');
   };
 
-  // ---------- Question CRUD ----------
-  const handleQuestionSubmit = async (e) => {
-    e.preventDefault();
-    const shape = storedShape(qType, qOptions);
-    const qData = {
-      survey_id: selectedSurvey.id,
-      question: qText,
-      ...shape,
-      is_required: ['section', 'subsection'].includes(qType) ? false : qRequired,
-      order_number: 0
-    };
+  // Another set: a copy of a survey with all its tabs, questions and files,
+  // inactive until it's reviewed. Responses are not copied.
+  const duplicateSurvey = async (s) => {
     try {
-      if (editingQuestion) {
-        await updateQuestion(editingQuestion.id, qData);
-        toast.success('Question updated');
-      } else {
-        await addQuestion(selectedSurvey.id, qData);
-        toast.success('Question added');
-      }
-      resetQuestionForm();
-      loadQuestions(selectedSurvey.id);
-    } catch (err) { toast.error('Failed'); }
-  };
-
-  const handleEditQuestion = (q) => {
-    setEditingQuestion(q);
-    const kind = kindOf(q);
-    setQText(q.question);
-    setQType(QUESTION_TYPES.some((t) => t.value === kind) ? kind : q.question_type);
-    setQOptions(isHeading(q) ? headingText(q)
-      : kind === 'matrix' ? q.options.slice(1).join(', ')
-        : (q.options || []).filter((o) => !String(o).startsWith('::')).join(', '));
-    setQRequired(q.is_required);
-    setShowQuestionForm(true);
-  };
-
-  const handleDeleteQuestion = async (id) => {
-    if (confirm('Delete question?')) {
-      await deleteQuestion(id);
-      toast.success('Question deleted');
-      loadQuestions(selectedSurvey.id);
+      const qs = (await listQuestions(s.id)).sort((a, b) => a.order_number - b.order_number);
+      const res = await createSurvey({ title: `${s.title} (copy)`, description: s.description, is_active: false });
+      if (qs.length) await addQuestionsBulk(res.id, qs.map(copyOf));
+      toast.success('Survey copied. Edit the copy, then tick “Active” when it is ready.');
+      await loadSurveys();
+      handleEditSurvey({ id: res.id, title: `${s.title} (copy)`, description: s.description, is_active: false });
+    } catch (err) {
+      toast.error('Could not copy the survey: ' + (err?.response?.data?.detail || err.message));
     }
-  };
-
-  const resetQuestionForm = () => {
-    setEditingQuestion(null);
-    setQText('');
-    setQType('text');
-    setQOptions('');
-    setQRequired(true);
-    setShowQuestionForm(false);
   };
 
   // Creates the Final Questionnaire (inactive, so it can be reviewed first).
@@ -303,7 +229,8 @@ export default function AdminSurveys() {
               </div>
               <div className="flex gap-2">
                 <button onClick={() => handleEditSurvey(s)} className="text-blue-600 text-sm hover:underline">Edit</button>
-                <button onClick={() => { setSelectedSurvey(s); loadQuestions(s.id); setView('edit'); }} className="text-gray-600 text-sm hover:underline">Questions</button>
+                <button onClick={() => handleEditSurvey(s)} className="text-gray-600 text-sm hover:underline">Questions</button>
+                <button onClick={() => duplicateSurvey(s)} className="text-gray-600 text-sm hover:underline">Duplicate</button>
                 <button onClick={() => { setSelectedSurvey(s); loadQuestions(s.id); loadResponses(s.id); setView('responses'); }} className="text-gray-600 text-sm hover:underline">Responses</button>
                 <button onClick={() => handleDeleteSurvey(s.id)} className="text-red-600 text-sm hover:underline">Delete</button>
               </div>
@@ -336,84 +263,9 @@ export default function AdminSurveys() {
             </button>
           </form>
 
-          {/* Questions section – only after a survey exists */}
+          {/* Tabs and questions – only after a survey exists */}
           {selectedSurvey && (
-            <div>
-              <button onClick={() => setShowQuestionForm(true)} className="bg-green-600 text-white px-3 py-1 rounded-lg mb-3">
-                + Add Question
-              </button>
-
-              {showQuestionForm && (
-                <div className="bg-white border-2 border-indigo-200 p-4 rounded-lg mb-4 shadow">
-                  <h4 className="font-medium text-gray-800 mb-3">{editingQuestion ? 'Edit Question' : 'New Question'}</h4>
-                  <form onSubmit={handleQuestionSubmit} className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Question Text</label>
-                      <input type="text" value={qText} onChange={e => setQText(e.target.value)} placeholder="e.g., How satisfied are you?" className="w-full border rounded-lg p-2" required />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Question Type</label>
-                      <select value={qType} onChange={e => setQType(e.target.value)} className="w-full border rounded-lg p-2">
-                        {QUESTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                      </select>
-                    </div>
-                    {(qType === 'radio' || qType === 'checkbox') && (
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Options <span className="text-gray-400 font-normal">(comma separated)</span></label>
-                        <input type="text" value={qOptions} onChange={e => setQOptions(e.target.value)} placeholder="e.g., Excellent, Good, Average, Poor" className="w-full border rounded-lg p-2" />
-                      </div>
-                    )}
-                    {qType === 'matrix' && (
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Items to rate <span className="text-gray-400 font-normal">(comma separated, e.g. the AI models)</span></label>
-                        <input type="text" value={qOptions} onChange={e => setQOptions(e.target.value)} placeholder="e.g., DeepSeek, Qwen 2.5 (local), GPT-OSS 120B" className="w-full border rounded-lg p-2" />
-                      </div>
-                    )}
-                    {(qType === 'section' || qType === 'subsection') && (
-                      <div>
-                        <label className="block text-sm font-medium mb-1">Text under the heading <span className="text-gray-400 font-normal">(optional)</span></label>
-                        <textarea value={qOptions} onChange={e => setQOptions(e.target.value)} rows="3" className="w-full border rounded-lg p-2" />
-                      </div>
-                    )}
-                    {qType === 'likert' && <div className="bg-indigo-50 p-2 rounded-lg text-sm">Answered 5 Strongly Agree … 1 Strongly Disagree. Items under the same sub-section are analysed together (mean, SD, Cronbach’s α).</div>}
-                    {qType === 'rating' && <div className="bg-yellow-50 p-2 rounded-lg text-sm">⭐ Rating uses 1‑5 stars.</div>}
-                    {qType === 'essay' && <div className="bg-blue-50 p-2 rounded-lg text-sm">📝 Essay allows free‑form text.</div>}
-                    <div className="flex items-center gap-6">
-                      <label className="flex items-center gap-2">
-                        <input type="checkbox" checked={qRequired} onChange={e => setQRequired(e.target.checked)} />
-                        <span className="text-sm">Required</span>
-                      </label>
-                    </div>
-                    <div className="flex gap-2">
-                      <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-lg">{editingQuestion ? 'Update' : 'Add'}</button>
-                      <button type="button" onClick={() => setShowQuestionForm(false)} className="bg-gray-300 px-4 py-2 rounded-lg">Cancel</button>
-                    </div>
-                  </form>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                {questions.length === 0 && !showQuestionForm && <p className="text-gray-500 text-sm">No questions yet.</p>}
-                {questions.sort((a, b) => a.order_number - b.order_number).map(q => (
-                  <div key={q.id} className="border p-3 rounded-lg flex justify-between items-center bg-white">
-                    <div>
-                      <div className="font-medium text-gray-800">{q.order_number}. {q.question}</div>
-                      <div className="flex gap-2 mt-1">
-                        <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">{QUESTION_TYPES.find(t=>t.value===kindOf(q))?.label || q.question_type}</span>
-                        {q.is_required && !isHeading(q) && <span className="text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full">Required</span>}
-                        {Array.isArray(q.options) && !isHeading(q) && q.options.some((o) => !String(o).startsWith('::')) && (
-                          <span className="text-xs text-gray-500">Options: {q.options.filter((o) => !String(o).startsWith('::')).join(', ')}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => handleEditQuestion(q)} className="text-blue-600 text-sm hover:underline">Edit</button>
-                      <button onClick={() => handleDeleteQuestion(q.id)} className="text-red-600 text-sm hover:underline">Delete</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <SurveyEditor survey={selectedSurvey} questions={questions} reload={() => loadQuestions(selectedSurvey.id)} />
           )}
         </div>
       )}

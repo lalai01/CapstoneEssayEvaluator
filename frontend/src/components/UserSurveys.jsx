@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { listSurveys, listQuestions, submitSurveyResponse, apiClient } from '../api';
 import toast from 'react-hot-toast';
 import SurveyQuestion from './SurveyQuestion';
-import { isAnswered, isHeading, kindOf, parseMatrix, structure } from '../lib/surveyKit';
+import { isAnswered, isDisplayOnly, kindOf, parseMatrix, tabsOf } from '../lib/surveyKit';
 import { readDraft, writeDraft } from '../lib/draft';
 
 // Answers in progress are kept per survey, so a long questionnaire survives a refresh.
@@ -21,6 +21,7 @@ export default function UserSurveys() {
   const [myResponses, setMyResponses] = useState([]);
   const [viewMode, setViewMode] = useState('list');        // 'list', 'answer', 'view-my-responses', 'no-questions'
   const [missingId, setMissingId] = useState(null);         // first unanswered required question
+  const [tab, setTab] = useState(0);                         // current tab (section) while answering
 
   useEffect(() => {
     if (user) {
@@ -56,6 +57,7 @@ export default function UserSurveys() {
     setSubmitted(false);
     setAnswers(readDraft(draftKey(survey.id), {}));
     setMissingId(null);
+    setTab(0);
     setAlreadySubmitted(false);
     try {
       // Double-check if the user already submitted
@@ -92,19 +94,34 @@ export default function UserSurveys() {
     if (missingId === questionId) setMissingId(null);
   };
 
-  const answerable = questions.filter((q) => !isHeading(q));
+  const answerable = questions.filter((q) => !isDisplayOnly(q));
   const requiredCount = answerable.filter((q) => q.is_required).length;
   const answeredCount = answerable.filter((q) => q.is_required && isAnswered(q, answers[q.id])).length;
+  const tabs = tabsOf(questions);
+  const current = Math.min(tab, Math.max(0, tabs.length - 1));
+  const missingIn = (t) => t.items.find(({ q }) => !isDisplayOnly(q) && q.is_required && !isAnswered(q, answers[q.id]));
+
+  const goToTab = (i) => {
+    setTab(i);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Show the first unanswered required question: switch to its tab, scroll to it.
+  const showMissing = (item) => {
+    const at = tabs.findIndex((t) => t.items.includes(item));
+    setTab(at);
+    setMissingId(item.q.id);
+    setTimeout(() => document.getElementById(`q-${item.q.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+    toast.error(kindOf(item.q) === 'matrix'
+      ? 'Please rate every AI model for the highlighted statement.'
+      : `Please answer: ${item.q.question}`);
+  };
 
   const handleSubmit = async () => {
     if (!selectedSurvey) return;
-    const missing = structure(questions).find(({ q }) => !isHeading(q) && q.is_required && !isAnswered(q, answers[q.id]));
+    const missing = tabs.map(missingIn).find(Boolean);
     if (missing) {
-      setMissingId(missing.q.id);
-      document.getElementById(`q-${missing.q.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      toast.error(kindOf(missing.q) === 'matrix'
-        ? 'Please rate every AI model for the highlighted statement.'
-        : `Please answer: ${missing.q.question}`);
+      showMissing(missing);
       return;
     }
     setSubmitting(true);
@@ -231,22 +248,75 @@ export default function UserSurveys() {
                   </div>
                 </div>
               )}
-              {structure(questions).map((item) => (
-                <SurveyQuestion
-                  key={item.q.id}
-                  item={item}
-                  value={answers[item.q.id]}
-                  onChange={(v) => handleAnswerChange(item.q.id, v)}
-                  invalid={missingId === item.q.id}
-                />
-              ))}
-              <button
-                onClick={handleSubmit}
-                disabled={submitting}
-                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold shadow-md hover:bg-indigo-700 disabled:opacity-50 transition"
-              >
-                {submitting ? 'Submitting...' : 'Submit Answers'}
-              </button>
+              {tabs.length > 1 && (
+                <div role="tablist" aria-label="Survey sections" className="flex gap-1 overflow-x-auto pb-1">
+                  {tabs.map((t, i) => {
+                    const done = !missingIn(t);
+                    return (
+                      <button
+                        key={t.section?.id ?? 'intro'}
+                        type="button"
+                        role="tab"
+                        aria-selected={i === current}
+                        onClick={() => goToTab(i)}
+                        className={`shrink-0 rounded-lg px-3 py-2 text-sm border transition ${
+                          i === current ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-gray-200 text-gray-700 hover:border-indigo-300'
+                        }`}
+                      >
+                        <span className={`mr-1 ${done ? '' : 'opacity-40'}`}>{done ? '✓' : `${i + 1}.`}</span>
+                        {(t.section?.question || 'Start').replace(/^Part\s+[IVX]+\.\s*/i, (m) => m.trim() + ' ')}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {tabs[current] && (
+                <>
+                  {tabs[current].section && (
+                    <SurveyQuestion item={{ q: tabs[current].section, kind: 'section' }} value={undefined} onChange={() => {}} />
+                  )}
+                  {tabs[current].items.map((item) => (
+                    <SurveyQuestion
+                      key={item.q.id}
+                      item={item}
+                      value={answers[item.q.id]}
+                      onChange={(v) => handleAnswerChange(item.q.id, v)}
+                      invalid={missingId === item.q.id}
+                    />
+                  ))}
+                </>
+              )}
+
+              <div className="flex gap-3">
+                {current > 0 && (
+                  <button type="button" onClick={() => goToTab(current - 1)}
+                    className="flex-1 bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 transition">
+                    ← Back
+                  </button>
+                )}
+                {current < tabs.length - 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const missing = missingIn(tabs[current]);
+                      if (missing) showMissing(missing);
+                      else goToTab(current + 1);
+                    }}
+                    className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold shadow-md hover:bg-indigo-700 transition"
+                  >
+                    Next →
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSubmit}
+                    disabled={submitting}
+                    className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold shadow-md hover:bg-indigo-700 disabled:opacity-50 transition"
+                  >
+                    {submitting ? 'Submitting...' : 'Submit Answers'}
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
