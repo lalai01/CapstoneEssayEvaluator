@@ -22,6 +22,10 @@ function notEssayFrom(err) {
   return null;
 }
 
+// Several files can be chosen at once (e.g. the front and back of a handwritten
+// essay, or one photo per page). They are read one after another in file-name
+// order, which for phone photos is the order they were taken, and each one is
+// handed to onExtracted({ text, confidence, method, name }) as its own part.
 export default function FileUpload({ onExtracted }) {
   const [uploading, setUploading] = useState(false);
   const [fileName, setFileName] = useState('');
@@ -44,90 +48,83 @@ export default function FileUpload({ onExtracted }) {
   }, []);
 
   const handleFileChange = (e) => {
-    const file = e.target.files?.[0];
+    const files = [...(e.target.files || [])];
     e.target.value = ''; // allow choosing the same file again
-    if (file) processFile(file);
+    if (files.length) processFiles(files);
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
     setDragging(false);
-    const file = e.dataTransfer?.files?.[0];
-    if (file && !uploading) processFile(file);
+    const files = [...(e.dataTransfer?.files || [])];
+    if (files.length && !uploading) processFiles(files);
   };
 
-  const processFile = async (file) => {
-    setFileName(file.name);
+  const processFiles = async (files) => {
+    const ordered = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    const many = ordered.length > 1;
     setUploading(true);
-    setProgress('Uploading file...');
-
-    try {
-      let result;
+    let read = 0;
+    for (const [i, file] of ordered.entries()) {
+      const step = many ? `Page ${i + 1} of ${ordered.length}: ` : '';
+      setFileName(many ? `${file.name} (${i + 1} of ${ordered.length})` : file.name);
       try {
-        result = await uploadFile(await shrinkImage(file));
+        const result = await readFile(file, (text) => setProgress(step + text));
+        onExtracted({ ...result, name: file.name });
+        read += 1;
       } catch (err) {
-        throw notEssayFrom(err) || err;
-      }
-
-      // If it's a PDF job, poll for completion
-      if (result.job_id) {
-        setProgress('Processing PDF pages...');
-        const POLL_MS = 1500;
-        let attempts = 0;
-        const maxAttempts = Math.ceil((5 * 60 * 1000) / POLL_MS); // up to 5 minutes
-        while (attempts < maxAttempts) {
-          await new Promise(r => setTimeout(r, POLL_MS));
-          const status = await pollOcrStatus(result.job_id);
-
-          if (status.status === 'completed') {
-            const text = (status.text || '').trim();
-            if (!text) {
-              throw new Error('PDF OCR finished but returned no text.');
-            }
-            onExtracted({
-              text: status.text,
-              confidence: status.confidence ?? 0,
-              method: `PDF OCR (${status.engine || 'auto'})`,
-              low_confidence: !!status.low_confidence,
-            });
-            toast.success('PDF text extracted');
-            break;
-          } else if (status.status === 'failed') {
-            if (status.code === 'not_essay') throw new NotEssayError(status.error, '');
-            throw new Error(status.error || 'OCR failed');
-          } else {
-            const seconds = Math.round(((attempts + 1) * POLL_MS) / 1000);
-            setProgress(
-              status.current_engine
-                ? `${status.current_engine} done · ${seconds}s`
-                : `Reading PDF… ${seconds}s`
-            );
-          }
-          attempts++;
+        if (err instanceof NotEssayError && !many) {
+          setNotEssay({ message: err.message, reason: err.reason });
+        } else if (err instanceof NotEssayError) {
+          toast.error(`${file.name}: this page doesn't look like an essay, so it was skipped.`);
+        } else {
+          toast.error(`${many ? `${file.name}: ` : ''}Upload failed: ${errorMessage(err)}`);
         }
-        if (attempts >= maxAttempts) {
-          throw new Error('OCR timed out');
-        }
-      } else {
-        // Image or quick response
-        onExtracted({
-          text: result.text,
-          confidence: result.confidence,
-          method: result.method,
-        });
-        toast.success('Text extracted');
       }
-    } catch (err) {
-      if (err instanceof NotEssayError) {
-        setNotEssay({ message: err.message, reason: err.reason });
-      } else {
-        toast.error('Upload failed: ' + errorMessage(err));
-      }
-    } finally {
-      setUploading(false);
-      setProgress('');
-      setFileName('');
     }
+    if (read) toast.success(many ? `${read} of ${ordered.length} pages read. Check each part below.` : 'Text extracted');
+    setUploading(false);
+    setProgress('');
+    setFileName('');
+  };
+
+  // Reads one file; returns { text, confidence, method, low_confidence }.
+  const readFile = async (file, report) => {
+    report('Uploading file...');
+    let result;
+    try {
+      result = await uploadFile(await shrinkImage(file));
+    } catch (err) {
+      throw notEssayFrom(err) || err;
+    }
+    if (!result.job_id) {
+      return { text: result.text, confidence: result.confidence, method: result.method };
+    }
+
+    // A PDF is read in the background; poll until it's done.
+    report('Processing PDF pages...');
+    const POLL_MS = 1500;
+    const maxAttempts = Math.ceil((5 * 60 * 1000) / POLL_MS); // up to 5 minutes
+    for (let attempts = 0; attempts < maxAttempts; attempts++) {
+      await new Promise(r => setTimeout(r, POLL_MS));
+      const status = await pollOcrStatus(result.job_id);
+      if (status.status === 'completed') {
+        if (!(status.text || '').trim()) throw new Error('PDF OCR finished but returned no text.');
+        return {
+          text: status.text,
+          confidence: status.confidence ?? 0,
+          method: `PDF OCR (${status.engine || 'auto'})`,
+          low_confidence: !!status.low_confidence,
+        };
+      }
+      if (status.status === 'failed') {
+        if (status.code === 'not_essay') throw new NotEssayError(status.error, '');
+        throw new Error(status.error || 'OCR failed');
+      }
+      const seconds = Math.round(((attempts + 1) * POLL_MS) / 1000);
+      report(status.current_engine ? `${status.current_engine} done · ${seconds}s` : `Reading PDF… ${seconds}s`);
+    }
+    throw new Error('OCR timed out');
   };
 
   return (
@@ -143,6 +140,7 @@ export default function FileUpload({ onExtracted }) {
         type="file"
         accept=".png,.jpg,.jpeg,.bmp,.tiff,.pdf,.docx"
         onChange={handleFileChange}
+        multiple
         disabled={uploading}
         className="hidden"
         id="file-upload-input"
@@ -155,9 +153,12 @@ export default function FileUpload({ onExtracted }) {
             : 'bg-blue-600 text-white hover:bg-blue-700'
         }`}
       >
-        {uploading ? '⏳ Processing...' : '📂 Browse File'}
+        {uploading ? '⏳ Processing...' : '📂 Browse Files'}
       </label>
-      <p className="text-sm text-gray-600 mt-3">or drag and drop a file here</p>
+      <p className="text-sm text-gray-600 mt-3">or drag and drop files here</p>
+      <p className="text-xs text-gray-600 mt-1">
+        Essay on several pages (front and back, or more)? Select all the photos at once; each page becomes a part of the same essay.
+      </p>
       <p className="text-xs text-gray-600 mt-1">
         Supported: photos or scans (PNG, JPG, BMP, TIFF), PDF and Word (DOCX) of an English essay
       </p>

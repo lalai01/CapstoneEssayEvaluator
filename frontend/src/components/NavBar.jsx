@@ -12,6 +12,7 @@ const ICON_PATHS = {
   learning: 'M9 18h6M10 21h4M12 3a6 6 0 00-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0012 3z',
   rubrics: 'M4 17L17 4l3 3L7 20zM8 13l2 2M11 10l2 2M14 7l2 2',
   activity: 'M3 3v18h18M7 15l4-4 3 3 5-6',
+  report: 'M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6',
   dashboard: 'M16 20v-1a4 4 0 00-4-4H6a4 4 0 00-4 4v1M9 11a4 4 0 100-8 4 4 0 000 8zM22 20v-1a4 4 0 00-3-3.9M16 3.1a4 4 0 010 7.8',
   school: 'M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6',
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',

@@ -16,7 +16,7 @@ const STATUS = {
 const ROLE = { teacher: 'Teacher', admin: 'Admin', student: 'Student', unknown: '—' };
 const fmt = (at) => (at ? new Date(at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
-function StatusBadge({ status }) {
+export function StatusBadge({ status }) {
   const s = STATUS[status] || STATUS.draft;
   return <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium ${s.cls}`}>{s.icon} {s.label}</span>;
 }
@@ -31,7 +31,7 @@ function Who({ row }) {
 }
 
 // Scores of one AI run, criterion by criterion.
-function ScoreList({ scores }) {
+export function ScoreList({ scores }) {
   if (!scores) return null;
   if (typeof scores.holistic_score === 'number') {
     return <p className="text-sm">Holistic: <strong>{scores.holistic_points ?? scores.holistic_score}/{scores.holistic_max ?? 5}</strong> (level {scores.holistic_score} of 5)</p>;

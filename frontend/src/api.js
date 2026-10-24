@@ -281,6 +281,19 @@ export const getEvaluationEssay = async (userId, essayHash) => {
   return response.data;
 };
 
+// My Reports: the signed-in user's own evaluated essays, with their status.
+export const getMyReports = async () => {
+  const response = await apiClient.get('/my/reports', { timeout: 120000 });
+  return response.data;
+};
+
+// My Reports: one of the user's own essays in full (text, every AI run with
+// its scores and feedback, saves and overrides), to view or re-download.
+export const getMyReportEssay = async (essayHash) => {
+  const response = await apiClient.get('/my/reports/essay', { params: { essay_hash: essayHash } });
+  return response.data;
+};
+
 // What a survey holds (respondents, answers, questions, files), for the deletion dialog.
 export const getSurveySummary = async (surveyId) => {
   const response = await apiClient.get(`/surveys/${surveyId}/summary`);
