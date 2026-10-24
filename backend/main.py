@@ -1664,7 +1664,8 @@ def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
     if user:
         # Admins see every evaluation (and whether it was later saved or
         # overridden); logged in the background so it never slows the result.
-        threading.Thread(target=_log_evaluation_run, args=(req, user, scores, use_rag), daemon=True).start()
+        threading.Thread(target=_log_evaluation_run, args=(req, user, scores, use_rag, result["feedback"]),
+                         daemon=True).start()
     return EvaluationResponse(scores=scores, feedback=result["feedback"])
 
 
@@ -1672,8 +1673,10 @@ EVALUATION_RUNS_SQL_HINT = "Create the evaluation_runs table in Supabase (SQL in
 _evaluation_log_warned = False
 
 
-def _log_evaluation_run(req, user, scores, use_rag):
-    """One row per AI run in evaluation_runs; failures never affect evaluating."""
+def _log_evaluation_run(req, user, scores, use_rag, feedback=None):
+    """One row per AI run in evaluation_runs; failures never affect evaluating.
+    The written feedback is kept inside `scores` (as feedback_text), so My
+    Reports can rebuild the full report without another column."""
     global _evaluation_log_warned
     import evaluation_log
     try:
@@ -1694,7 +1697,7 @@ def _log_evaluation_run(req, user, scores, use_rag):
             "overall_pct": pct,
             "rubric_title": (scores.get("rubric") or {}).get("title"),
             "used_rag": bool(use_rag),
-            "scores": scores,
+            "scores": {**scores, "feedback_text": feedback} if feedback else scores,
         }).execute()
     except Exception as e:
         if not _evaluation_log_warned:
@@ -1760,6 +1763,46 @@ def admin_activity_essay(user_id: str, essay_hash: str, user: dict = Depends(get
     the saves and overrides made on it."""
     if not is_admin(user):
         raise HTTPException(403, "Admin only")
+    return _essay_detail(user_id, essay_hash)
+
+
+@app.get("/my/reports")
+def my_reports(days: int = 3650, user: dict = Depends(get_current_user)):
+    """The signed-in user's own evaluated essays (teachers and students alike),
+    with their status, for the My Reports page."""
+    import evaluation_log
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 3650)))).isoformat()
+    db = _survey_admin_db()
+    runs, table_ready = [], True
+    try:
+        runs = db.table("evaluation_runs") \
+            .select("id,created_at,user_id,title,essay,essay_hash,eval_type,ai_choice,ai_label,provider,"
+                    "overall,overall_pct,rubric_title,used_rag") \
+            .eq("user_id", user["id"]).gte("created_at", since) \
+            .order("created_at", desc=True).limit(1000).execute().data or []
+    except Exception as e:
+        table_ready = False
+        print(f"⚠️ evaluation_runs unavailable: {e}")
+    try:
+        kb = db.table("knowledge_base").select("*").eq("user_id", user["id"]).gte("created_at", since) \
+            .order("created_at", desc=True).limit(1000).execute().data or []
+        overrides = db.table("learning_feedback").select("*").eq("user_id", user["id"]).gte("created_at", since) \
+            .order("created_at", desc=True).limit(1000).execute().data or []
+    except Exception as e:
+        _survey_db_error(e)
+    me = {user["id"]: {"email": (user.get("email") or "").lower() or None, "role": role_of(user)}}
+    activity = evaluation_log.build_activity(runs, kb, overrides, me)
+    return {"essays": activity["essays"], "counts": activity["counts"], "table_ready": table_ready}
+
+
+@app.get("/my/reports/essay")
+def my_report_essay(essay_hash: str, user: dict = Depends(get_current_user)):
+    """One of the signed-in user's own essays in full, to view and re-download its report."""
+    return _essay_detail(user["id"], essay_hash)
+
+
+def _essay_detail(user_id, essay_hash):
     import evaluation_log
     db = _survey_admin_db()
     runs = []

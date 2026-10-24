@@ -8,6 +8,14 @@ import { errorMessage } from '../lib/scoring';
 import useDraft from '../lib/draft';
 import { EVALUATION_AIS } from '../lib/evaluationAis';
 
+// An essay is made of parts, evaluated together as one essay: typed or pasted
+// text, and the text read from each uploaded page (e.g. the front and back of
+// a handwritten essay). Parts can be edited, reordered and removed.
+const NO_PARTS = [];
+const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+const typedPart = () => ({ id: newId(), kind: 'typed', text: '' });
+const wordCount = (text) => text.split(/\s+/).filter(Boolean).length;
+
 export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChooseAi, setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
   const { user, loading: authLoading } = useAuth();
   const [rubrics, setRubrics] = useState([]);
@@ -17,29 +25,32 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   const [title, setTitle] = useDraft('title', '');
   const [titleError, setTitleError] = useState(false);
   const titleRef = useRef(null);
-  const [text, setText] = useDraft('text', '');
+  const [savedParts, setParts] = useDraft('parts', NO_PARTS);
   const [evalTypeLocal, setEvalTypeLocal] = useDraft('evalType', 'analytic');
-  const [extractedText, setExtractedText] = useDraft('extractedText', '');
-  const [ocrInfo, setOcrInfo] = useDraft('ocrInfo', null);
   const [useRag, setUseRag] = useDraft('useRag', true);
   const [confirmNew, setConfirmNew] = useState(false);
 
-  // Text read from an uploaded file replaces the typing box: it's what gets
-  // evaluated, and the box stays locked until the extracted text is removed.
-  const hasExtracted = extractedText.trim().length > 0;
-  const essayToEvaluate = () => (hasExtracted ? extractedText.trim() : text.trim());
-  const hasDraft = !!(title.trim() || text.trim() || hasExtracted);
+  // There is always at least one part to type into.
+  const [blankPart] = useState(typedPart);
+  const parts = savedParts.length ? savedParts : [blankPart];
+  const filled = parts.filter((p) => p.text.trim());
+  const essayToEvaluate = () => filled.map((p) => p.text.trim()).join('\n\n');
+  const essayWords = wordCount(essayToEvaluate());
+  const hasDraft = !!(title.trim() || filled.length);
 
-  const removeExtracted = () => {
-    setExtractedText('');
-    setOcrInfo(null);
+  const updatePart = (id, text) => setParts(parts.map((p) => (p.id === id ? { ...p, text } : p)));
+  const removePart = (id) => setParts(parts.filter((p) => p.id !== id));
+  const movePart = (index, step) => {
+    const next = [...parts];
+    [next[index], next[index + step]] = [next[index + step], next[index]];
+    setParts(next);
   };
+  const addTypedPart = () => setParts([...parts, typedPart()]);
 
   const startNewEssay = () => {
     setConfirmNew(false);
     setTitle('');
-    setText('');
-    removeExtracted();
+    setParts(NO_PARTS);
     setTitleError(false);
     onNewEssay?.();
     toast.success('Draft cleared. Start your new essay.');
@@ -61,24 +72,25 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   const schoolRubrics = rubrics.filter((r) => r.is_system && r.is_active);
   const defaultRubric = myRubrics.find((r) => r.is_active) || schoolRubrics[0];
 
-    const handleExtracted = (data) => {
-      const text = (data && typeof data.text === 'string') ? data.text : '';
-      const confidence = typeof data?.confidence === 'number' ? data.confidence : 0;
-      const method = data?.method || 'unknown';
-
-      if (!text.trim()) {
-        toast.error('OCR returned no text. Try a clearer image or PDF.');
-        return;
-      }
-
-      setExtractedText(text);
-      setOcrInfo({
-        confidence,
-        method,
-        lowConfidence: !!data.low_confidence,
-      });
-      toast.success(`OCR complete: ${confidence.toFixed(1)}% confidence`);
+  // Each uploaded file (or page) is added as a new part, after the others; an
+  // empty typing box is replaced. Several files arrive one after another, so
+  // the list is updated from its latest value.
+  const handleExtracted = (data) => {
+    const text = (data && typeof data.text === 'string') ? data.text : '';
+    if (!text.trim()) {
+      toast.error(`${data?.name ? `${data.name}: ` : ''}no text was found. Try a clearer image or PDF.`);
+      return;
+    }
+    const part = {
+      id: newId(),
+      kind: 'file',
+      name: data.name || 'Uploaded file',
+      text: text.trim(),
+      confidence: typeof data.confidence === 'number' ? data.confidence : null,
+      method: data.method || 'unknown',
     };
+    setParts((prev) => [...prev.filter((p) => p.text.trim() || p.kind === 'file'), part]);
+  };
 
   // Essays below SHORT_ESSAY_WORDS ask for confirmation; below MIN_WORDS the
   // server can't evaluate them at all.
@@ -89,7 +101,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   const handleEvaluate = async () => {
     const essay = essayToEvaluate();
     if (!essay) {
-      toast.error('Please enter essay text or extract text from a file.');
+      toast.error('Please type the essay or upload its pages.');
       return;
     }
     if (!title.trim()) {
@@ -99,7 +111,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
       toast.error('Please enter a title for your essay.');
       return;
     }
-    const words = essay.split(/\s+/).filter(Boolean).length;
+    const words = wordCount(essay);
     if (words < SHORT_ESSAY_WORDS) {
       setShortDialog({ words });
       return;
@@ -313,52 +325,72 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
         )}
 
         <div className="mb-5">
-          <label htmlFor="essay-text" className="block text-sm font-semibold text-gray-700 mb-2">Type or paste your essay</label>
-          {hasExtracted && (
-            <p className="mb-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
-              🔒 Locked: the text extracted from your file (below) will be evaluated. Remove it to type instead.
-            </p>
-          )}
-          <textarea
-            id="essay-text"
-            rows={10}
-            disabled={hasExtracted}
-            className="w-full border border-gray-200 rounded-xl p-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={hasExtracted
-              ? 'Using the text extracted from your file.'
-              : "Enter your essay here... (e.g., 'Education is the most powerful weapon...')"}
-          />
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <span className="block text-sm font-semibold text-gray-700">Essay</span>
+            {filled.length > 0 && (
+              <span className="text-xs text-gray-500" role="status">
+                {parts.length > 1 ? `${filled.length} of ${parts.length} parts · ` : ''}{essayWords} words · evaluated as one essay
+              </span>
+            )}
+          </div>
+          <p className="mb-3 text-xs text-gray-600">
+            Type, paste or upload the essay. If it continues on another page, or has several parts, add each one:
+            all parts are joined in this order and evaluated together as a single essay.
+          </p>
+
+          <ol className="space-y-3">
+            {parts.map((part, i) => (
+              <li key={part.id} className={`rounded-xl border p-3 ${part.kind === 'file' ? 'border-blue-200 bg-blue-50/60' : 'border-gray-200 bg-white/70'}`}>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0 text-sm">
+                    <label htmlFor={`essay-part-${part.id}`} className="font-semibold text-gray-800">
+                      {parts.length > 1 ? `Part ${i + 1}` : 'Your essay'}
+                    </label>
+                    <span className="ml-2 text-xs text-gray-600">
+                      {part.kind === 'file'
+                        ? `📷 ${part.name}${part.confidence != null ? ` · ${part.confidence.toFixed(0)}% confidence` : ''} · check for misread words`
+                        : '✍️ typed'}
+                    </span>
+                  </div>
+                  {parts.length > 1 && (
+                    <div className="flex shrink-0 gap-1">
+                      <button type="button" onClick={() => movePart(i, -1)} disabled={i === 0 || loading}
+                        className="rounded-md border bg-white px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                        aria-label={`Move part ${i + 1} up`}>↑</button>
+                      <button type="button" onClick={() => movePart(i, 1)} disabled={i === parts.length - 1 || loading}
+                        className="rounded-md border bg-white px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                        aria-label={`Move part ${i + 1} down`}>↓</button>
+                      <button type="button" onClick={() => removePart(part.id)} disabled={loading}
+                        className="rounded-md border border-red-200 bg-white px-2 py-0.5 text-xs text-red-600 hover:bg-red-50 disabled:opacity-40"
+                        aria-label={`Remove part ${i + 1}`}>✕ Remove</button>
+                    </div>
+                  )}
+                  {parts.length === 1 && part.kind === 'file' && (
+                    <button type="button" onClick={() => setParts(NO_PARTS)} disabled={loading}
+                      className="rounded-md border border-red-200 bg-white px-2 py-0.5 text-xs text-red-600 hover:bg-red-50">✕ Remove</button>
+                  )}
+                </div>
+                <textarea
+                  id={`essay-part-${part.id}`}
+                  rows={parts.length > 1 ? 7 : 10}
+                  className="w-full rounded-lg border border-gray-200 bg-white p-3 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500"
+                  value={part.text}
+                  onChange={(e) => updatePart(part.id, e.target.value)}
+                  placeholder={i === 0
+                    ? "Enter your essay here... (e.g., 'Education is the most powerful weapon...')"
+                    : 'Type or paste the next part of the essay...'}
+                />
+              </li>
+            ))}
+          </ol>
+
+          <button type="button" onClick={addTypedPart} disabled={loading}
+            className="mt-3 inline-flex items-center gap-1 rounded-lg border border-dashed border-blue-400 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50">
+            ＋ Add another part
+          </button>
         </div>
 
         <FileUpload onExtracted={handleExtracted} />
-
-        {hasExtracted && (
-          <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 p-4">
-            <div className="flex justify-between items-center mb-2 gap-3">
-              <h3 className="font-semibold text-blue-800">📄 Extracted Text (will be evaluated)</h3>
-              <button
-                type="button"
-                onClick={removeExtracted}
-                className="text-sm bg-white text-red-600 border border-red-200 px-3 py-1 rounded-lg hover:bg-red-50 transition shrink-0"
-              >
-                ✕ Remove
-              </button>
-            </div>
-            <p className="text-xs text-gray-600 mb-2">
-              Confidence: {ocrInfo?.confidence?.toFixed(1)}% | Method: {ocrInfo?.method}
-              {' · '}Check it and fix any misread words before evaluating.
-            </p>
-            <textarea
-              aria-label="Extracted essay text"
-              rows={10}
-              className="w-full text-sm bg-white p-3 rounded border border-blue-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              value={extractedText}
-              onChange={(e) => setExtractedText(e.target.value)}
-            />
-          </div>
-        )}
 
         <button
           onClick={handleEvaluate}
