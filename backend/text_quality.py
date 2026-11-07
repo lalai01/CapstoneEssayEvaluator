@@ -44,6 +44,19 @@ def english_quality(text):
             "distinct": len(set(tokens)) / len(tokens)}
 
 
+# Any language's words (Tagalog, Cebuano, Spanish... as well as English).
+ANY_WORD_RE = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?")
+
+
+def looks_like_writing(text):
+    """Paragraphs of real writing in any language: enough words, and not one
+    word looping. Essays in other languages are translated before evaluation."""
+    tokens = [t.lower() for t in ANY_WORD_RE.findall(text or "") if len(t) > 1]
+    if len(tokens) < MIN_WORDS:
+        return False
+    return looks_like_english_text(text) or len(set(tokens)) / len(tokens) >= MIN_DISTINCT_RATIO
+
+
 def looks_like_english_text(text):
     q = english_quality(text)
     return (q["words"] >= MIN_WORDS and q["ratio"] >= MIN_ENGLISH_RATIO

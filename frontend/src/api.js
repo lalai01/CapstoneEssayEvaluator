@@ -281,6 +281,13 @@ export const getEvaluationEssay = async (userId, essayHash) => {
   return response.data;
 };
 
+// English version of an essay that mixes in Tagalog, Bisaya or another
+// language: { translated, text, languages, error? }. English comes back unchanged.
+export const translateEssay = async (text) => {
+  const response = await apiClient.post('/translate', { text }, { timeout: 180000 });
+  return response.data;
+};
+
 // My Reports: the signed-in user's own evaluated essays, with their status.
 export const getMyReports = async () => {
   const response = await apiClient.get('/my/reports', { timeout: 120000 });

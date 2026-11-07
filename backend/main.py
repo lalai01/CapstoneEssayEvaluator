@@ -1415,9 +1415,9 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
             text = ocr_utils.extract_docx_text(contents)
         except Exception as e:
             raise HTTPException(500, f"Failed to read DOCX: {e}")
-        from text_quality import looks_like_english_text
-        if not looks_like_english_text(text):
-            _not_essay("The document doesn't contain English paragraphs.")
+        from text_quality import looks_like_writing
+        if not looks_like_writing(text):
+            _not_essay("The document doesn't contain written paragraphs.")
 
         try:
             supabase.table("ocr_training_data").insert({
@@ -1614,6 +1614,7 @@ GUEST_LIMITS = {
     # Each essay is evaluated by three AIs (three calls), so 15 = 5 essays.
     "evaluate": int(os.environ.get("GUEST_EVALS_PER_HOUR", "15")),
     "ocr": int(os.environ.get("GUEST_UPLOADS_PER_HOUR", "10")),
+    "translate": int(os.environ.get("GUEST_EVALS_PER_HOUR", "15")),
 }
 _guest_hits: Dict[str, List[float]] = {}
 _guest_lock = threading.Lock()
@@ -1630,7 +1631,7 @@ def _client_ip(request: Request) -> str:
 
 def _check_guest_quota(request: Request, kind: str):
     limit = GUEST_LIMITS[kind]
-    action = "run AI evaluations (3 per essay)" if kind == "evaluate" else "upload files"
+    action = {"evaluate": "run AI evaluations (3 per essay)", "translate": "translate essays"}.get(kind, "upload files")
     if limit <= 0:
         raise HTTPException(401, {"code": "sign_in_required",
                                   "message": f"Please sign in to {action}."})
@@ -1821,6 +1822,22 @@ def _essay_detail(user_id, essay_hash):
     essay = (runs[0]["essay"] if runs else None) or (kb[0].get("essay") if kb else None) \
         or (overrides[0].get("original_essay") if overrides else "")
     return {"essay": essay, "runs": runs, "kb": kb, "overrides": overrides}
+
+
+class TranslateRequest(BaseModel):
+    text: str
+
+
+@app.post("/translate")
+def translate_essay(req: TranslateRequest, request: Request, user: Optional[dict] = Depends(get_optional_user)):
+    """English version of an essay that mixes in Tagalog, Bisaya or another
+    language; an English essay comes back unchanged without calling an AI."""
+    import translate
+    if not req.text.strip():
+        raise HTTPException(422, "There is no essay text to translate.")
+    if user is None and translate.needs_translation(req.text):
+        _check_guest_quota(request, "translate")
+    return translate.translate_to_english(req.text)
 
 
 @app.post("/evaluate", response_model=EvaluationResponse)

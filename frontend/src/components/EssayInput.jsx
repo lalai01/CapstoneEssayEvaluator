@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { evaluateEssay, evaluateEssayWithRag, listRubrics } from '../api';
+import { evaluateEssay, evaluateEssayWithRag, listRubrics, translateEssay } from '../api';
 import FileUpload from './FileUpload';
 import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
@@ -51,6 +51,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     setConfirmNew(false);
     setTitle('');
     setParts(NO_PARTS);
+    setTranslation(null);
     setTitleError(false);
     onNewEssay?.();
     toast.success('Draft cleared. Start your new essay.');
@@ -96,11 +97,32 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   // server can't evaluate them at all.
   const MIN_WORDS = 20;
   const SHORT_ESSAY_WORDS = 150;
-  const [shortDialog, setShortDialog] = useState(null); // { words }
+  const [shortDialog, setShortDialog] = useState(null); // { words, essay }
+
+  // Essays that mix in Tagalog, Bisaya or another language are translated to
+  // English first, and the English version is evaluated. The server returns
+  // English essays unchanged without calling an AI. The last result is kept
+  // so evaluating the same text again doesn't translate it again.
+  const [translation, setTranslation] = useDraft('translation', null);  // { original, text, languages }
+  const [translating, setTranslating] = useState(false);
+  const lastTranslation = useRef(null);
+  const toEnglish = async (essay) => {
+    if (lastTranslation.current?.original === essay) return lastTranslation.current.result;
+    setTranslating(true);
+    try {
+      const result = await translateEssay(essay);
+      lastTranslation.current = { original: essay, result };
+      return result;
+    } catch (err) {
+      return { translated: false, text: essay, error: errorMessage(err) };
+    } finally {
+      setTranslating(false);
+    }
+  };
 
   const handleEvaluate = async () => {
-    const essay = essayToEvaluate();
-    if (!essay) {
+    const written = essayToEvaluate();
+    if (!written) {
       toast.error('Please type the essay or upload its pages.');
       return;
     }
@@ -111,9 +133,17 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
       toast.error('Please enter a title for your essay.');
       return;
     }
+    const result = await toEnglish(written);
+    if (result.error) toast.error(`${result.error} The essay is evaluated as written.`);
+    const essay = result.translated ? result.text : written;
+    setTranslation(result.translated ? { original: written, text: result.text, languages: result.languages || [] } : null);
+    if (result.translated) {
+      const from = (result.languages || []).filter((l) => l.toLowerCase() !== 'english').join(', ');
+      toast.success(`Translated to English${from ? ` from ${from}` : ''}. The English version is evaluated.`);
+    }
     const words = wordCount(essay);
     if (words < SHORT_ESSAY_WORDS) {
-      setShortDialog({ words });
+      setShortDialog({ words, essay });
       return;
     }
     await runEvaluation(essay);
@@ -335,7 +365,8 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
           </div>
           <p className="mb-3 text-xs text-gray-600">
             Type, paste or upload the essay. If it continues on another page, or has several parts, add each one:
-            all parts are joined in this order and evaluated together as a single essay.
+            all parts are joined in this order and evaluated together as a single essay. Parts written in Tagalog,
+            Bisaya or another language are translated to English automatically.
           </p>
 
           <ol className="space-y-3">
@@ -392,12 +423,33 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
 
         <FileUpload onExtracted={handleExtracted} />
 
+        {translation && translation.original === essayToEvaluate() && (
+          <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4" role="status">
+            <p className="text-sm font-semibold text-emerald-900">
+              🌐 Translated to English
+              {translation.languages.filter((l) => l.toLowerCase() !== 'english').length > 0 &&
+                ` from ${translation.languages.filter((l) => l.toLowerCase() !== 'english').join(', ')}`}
+            </p>
+            <p className="mt-1 text-xs text-emerald-900/80">
+              The essay mixes in another language, so the AI translated those parts and the English version below was
+              evaluated. Parts already in English were kept exactly as written. Grammar scores apply to the
+              translated text, so check the translated parts when you review the result.
+            </p>
+            <details className="mt-2 rounded-lg bg-white/80">
+              <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-emerald-800">Show the English translation</summary>
+              <p className="whitespace-pre-wrap px-3 pb-3 text-sm text-gray-800">{translation.text}</p>
+            </details>
+          </div>
+        )}
+
         <button
           onClick={handleEvaluate}
-          disabled={loading}
+          disabled={loading || translating}
           className="btn-primary w-full mt-6 bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 px-4 rounded-xl font-semibold shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition"
         >
-          {loading ? <div className="spinner mx-auto"></div> : (useRag ? '✨ Evaluate with RAG' : '✨ Evaluate Essay')}
+          {translating ? '🌐 Translating to English…'
+            : loading ? <div className="spinner mx-auto"></div>
+              : (useRag ? '✨ Evaluate with RAG' : '✨ Evaluate Essay')}
         </button>
       </div>
 
@@ -421,7 +473,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
         title={shortDialog && shortDialog.words < MIN_WORDS ? 'Essay too short to evaluate' : 'This essay is quite short'}
         confirmLabel={shortDialog && shortDialog.words >= MIN_WORDS ? 'Evaluate anyway' : undefined}
         cancelLabel={shortDialog && shortDialog.words < MIN_WORDS ? 'OK, keep writing' : 'Keep writing'}
-        onConfirm={() => runEvaluation(essayToEvaluate())}
+        onConfirm={() => runEvaluation(shortDialog.essay)}
         onCancel={() => setShortDialog(null)}
       >
         {shortDialog && shortDialog.words < MIN_WORDS ? (
