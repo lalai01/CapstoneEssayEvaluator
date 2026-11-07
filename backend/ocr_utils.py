@@ -140,7 +140,7 @@ def read_essay_image(image_bytes, check_page=True):
     plus "lines" (the page's written lines) when the reader provides them.
     """
     from PIL import Image
-    from text_quality import english_quality, looks_like_english_text
+    from text_quality import english_quality, looks_like_english_text, looks_like_writing
 
     not_text = lambda reason: {"text": "", "confidence": 0.0, "engine": "none",  # noqa: E731
                                "quality": 0.0, "is_text": False, "reason": reason}
@@ -160,14 +160,16 @@ def read_essay_image(image_bytes, check_page=True):
             # A page that passed the page check but that Gemini calls "no
             # text" still gets the local readers: a wrong "no" would reject
             # a real essay.
-            if is_text and looks_like_english_text(text):
+            # Gemini also reads Tagalog, Bisaya and other languages; those
+            # essays are translated to English before they are evaluated.
+            if is_text and looks_like_writing(text):
                 # Gemini gives no confidence score; lower it for each word it
                 # marked as unreadable so the UI flags pages worth checking.
                 conf = max(50.0, 95.0 - 5.0 * text.lower().count("[illegible]"))
                 return {"text": text, "confidence": conf, "engine": "gemini-vision",
                         "quality": english_quality(text)["ratio"], "is_text": True, "reason": "",
                         "lines": lines}
-            print("[OCR] gemini text doesn't read as English; trying the local readers")
+            print("[OCR] gemini found no paragraphs of writing; trying the local readers")
         except Exception as e:
             print(f"[OCR] gemini unavailable, using the local readers: {e}")
 

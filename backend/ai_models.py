@@ -175,12 +175,12 @@ def call_groq(system_prompt, user_prompt, model=DEFAULT_GROQ_MODEL, json_mode=Fa
 
 
 # ---------- Gemini (text; the same key and models as handwriting reading) ----------
-def call_gemini(system_prompt, user_prompt, model=None, json_mode=False, temperature=0.3):
+def call_gemini(system_prompt, user_prompt, model=None, json_mode=False, temperature=0.3, max_tokens=2048):
     import gemini_ocr
     if not gemini_ocr.enabled():
         raise ValueError("GEMINI_API_KEY isn't set on the server")
     key = os.environ["GEMINI_API_KEY"].strip()
-    config = {"temperature": temperature, "maxOutputTokens": 2048}
+    config = {"temperature": temperature, "maxOutputTokens": max_tokens}
     if json_mode:
         config["responseMimeType"] = "application/json"
     body = {
@@ -219,13 +219,16 @@ def call_gemini(system_prompt, user_prompt, model=None, json_mode=False, tempera
 CLOUD_PROVIDERS = ("deepseek", "groq", "gemini")
 
 
-def call_cloud(provider, system_prompt, user_prompt, model=None, json_mode=False, temperature=0.3):
+def call_cloud(provider, system_prompt, user_prompt, model=None, json_mode=False, temperature=0.3,
+               max_tokens=None):
+    """max_tokens only changes Gemini's limit (2048 by default); DeepSeek and
+    Groq already allow 4096 or more."""
     if provider == "deepseek":
         return call_deepseek(system_prompt, user_prompt, model or "deepseek-chat", json_mode, temperature)
     if provider == "groq":
         return call_groq(system_prompt, user_prompt, model or DEFAULT_GROQ_MODEL, json_mode, temperature)
     if provider == "gemini":
-        return call_gemini(system_prompt, user_prompt, model, json_mode, temperature)
+        return call_gemini(system_prompt, user_prompt, model, json_mode, temperature, max_tokens or 2048)
     raise ValueError(f"Unknown cloud AI: {provider}")
 
 

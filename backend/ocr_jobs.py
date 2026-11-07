@@ -59,9 +59,10 @@ def start_pdf_ocr_job(pdf_bytes):
                         confidences.append(conf)
 
             result = "\n\n".join(t for t in texts if t and t.strip())
-            from text_quality import looks_like_english_text
-            if not looks_like_english_text(result):
-                # Same rule as single images: no English paragraphs, no essay.
+            from text_quality import looks_like_writing
+            if not looks_like_writing(result):
+                # Same rule as single images: no paragraphs of writing, no essay.
+                # (Essays in Tagalog, Bisaya, etc. pass and are translated before evaluating.)
                 jobs[job_id]["code"] = "not_essay"
                 raise ValueError(
                     "This doesn't look like an essay. Please attach a clear photo, scan, PDF or "

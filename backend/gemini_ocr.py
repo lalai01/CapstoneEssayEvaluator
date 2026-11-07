@@ -27,7 +27,9 @@ TIMEOUT = 90
 MAX_SIDE = 2400   # larger photos are scaled down before sending
 
 PROMPT = """You are an exact transcription tool for student essays. Transcribe the
-handwritten or printed English text in this image.
+handwritten or printed text in this image. It is usually English, but may be
+written partly or wholly in Tagalog/Filipino, Cebuano/Bisaya or another
+language: transcribe every language as written and never translate.
 
 Rules:
 - Copy exactly what is written. Keep every spelling, grammar, capitalization
@@ -45,7 +47,7 @@ it appears on the paper (one entry per written line, a hyphen at a line end
 kept as written, crossed-out words left out). This is used to build a
 handwriting dataset, so line breaks must match the page.
 
-Set "is_text" to false only if the image contains no readable written English."""
+Set "is_text" to false only if the image contains no readable writing."""
 
 SCHEMA = {
     "type": "OBJECT",
