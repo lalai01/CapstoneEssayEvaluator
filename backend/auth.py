@@ -60,6 +60,11 @@ def _verify_with_supabase(token: str) -> dict:
         # Only app_metadata is trusted for roles: users can edit their own
         # user_metadata from the browser, so a role there means nothing.
         "role": (data.get("app_metadata") or {}).get("role"),
+        # Age group ("adult" / "minor") and, for a minor, the guardian consent
+        # a teacher or admin confirmed ({by, at}). Kept in app_metadata, which
+        # only the server can change.
+        "age_group": (data.get("app_metadata") or {}).get("age_group"),
+        "guardian_consent": (data.get("app_metadata") or {}).get("guardian_consent"),
         "email_confirmed": bool(data.get("email_confirmed_at") or data.get("confirmed_at")),
         "full_name": (data.get("user_metadata") or {}).get("full_name"),
         # Two-factor authentication: "aal2" once this session entered an

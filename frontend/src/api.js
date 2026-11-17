@@ -61,6 +61,25 @@ export const listRoleLog = async (limit = 100) => {
   return response.data;
 };
 
+// ---------- Students under 18 (RA 10173) ----------
+// The user says once whether they are under 18.
+export const declareAge = async (under18) => {
+  const response = await apiClient.post('/me/age', { under_18: under18 });
+  return response.data;
+};
+
+// Teachers and admins: student accounts under 18 and their guardian consent.
+export const listMinorAccounts = async () => {
+  const response = await apiClient.get('/staff/minors', { timeout: 60000 });
+  return response.data;
+};
+
+// action: 'confirm_consent' | 'withdraw_consent' | 'set_adult' | 'set_minor'
+export const updateMinorAccount = async (email, action, note = null) => {
+  const response = await apiClient.post('/staff/minors', { email, action, note });
+  return response.data;
+};
+
 // Admin: remove a user's authenticator (lost phone); they set up a new one.
 export const resetMfa = async (email) => {
   const response = await apiClient.post('/admin/reset-mfa', { email });

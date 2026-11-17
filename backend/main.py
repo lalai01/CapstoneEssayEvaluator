@@ -449,6 +449,27 @@ def _require_admin(user):
             raise HTTPException(403, MFA_REQUIRED)
         raise HTTPException(403, "Admin only")
 
+# ---------- Students under 18 (RA 10173) ----------
+# A user says once whether they are 18 or older (POST /me/age). A minor's
+# account can't evaluate, upload or answer surveys until a teacher or admin
+# confirms that the school has the parent's or guardian's consent; after that
+# everything they evaluate gets the minor's essay protections automatically.
+# Both values live in app_metadata, which only the server can change.
+GUARDIAN_PENDING = {"code": "guardian_consent_pending", "message": (
+    "Your account is for a student under 18. Before you can evaluate or upload essays, a teacher or "
+    "admin must confirm that the school has your parent's or guardian's consent (Data Privacy Act, "
+    "RA 10173). Please ask your teacher.")}
+
+
+def is_minor_account(user):
+    return bool(user) and user.get("age_group") == "minor"
+
+
+def _require_minor_consent(user):
+    if is_minor_account(user) and not user.get("guardian_consent"):
+        raise HTTPException(403, GUARDIAN_PENDING)
+
+
 def _require_service_key():
     if not supabase_admin:
         raise HTTPException(500, "SUPABASE_SERVICE_KEY is not set on the server; admin management needs it.")
@@ -470,7 +491,128 @@ def who_am_i(user: dict = Depends(get_current_user_any_aal)):
         "mfa_required": MFA_POLICY == "all" or (REQUIRE_STAFF_MFA and (_has_admin_role(user) or _has_teacher_role(user))),
         "mfa_enrolled": bool(user.get("mfa_enrolled")),
         "aal": user.get("aal"),
+        # Students say once whether they are 18 or older; teachers and admins aren't asked.
+        "age_group": user.get("age_group"),
+        "needs_age": not user.get("age_group") and not (_has_admin_role(user) or _has_teacher_role(user)),
+        "guardian_consent": bool(user.get("guardian_consent")),
+        "minor_pending": is_minor_account(user) and not user.get("guardian_consent"),
     }
+
+
+def _set_app_metadata(user_id, changes):
+    """Merge `changes` into a user's app_metadata (None removes a key)."""
+    r = _auth_admin_request("GET", f"/users/{user_id}")
+    if r.status_code != 200:
+        raise HTTPException(502, "Couldn't read the account from Supabase.")
+    meta = dict(r.json().get("app_metadata") or {})
+    for key, value in changes.items():
+        if value is None:
+            meta.pop(key, None)
+        else:
+            meta[key] = value
+    r = _auth_admin_request("PUT", f"/users/{user_id}", json={"app_metadata": meta})
+    if r.status_code not in (200, 201):
+        raise HTTPException(502, "Couldn't update the account in Supabase.")
+    import auth as auth_module
+    with auth_module._cache_lock:
+        auth_module._cache.clear()   # the next request sees the change
+    return meta
+
+
+class AgeDeclaration(BaseModel):
+    under_18: bool
+
+
+@app.post("/me/age")
+def declare_age(entry: AgeDeclaration, user: dict = Depends(get_current_user)):
+    """The user says whether they are under 18 (asked once, after signing in).
+    Only the fact is kept, not the birth date (proportionality). A minor can't
+    change it back to adult themselves: a teacher or admin does that."""
+    _require_service_key()
+    current = user.get("age_group")
+    wanted = "minor" if entry.under_18 else "adult"
+    if current == "minor" and wanted == "adult":
+        raise HTTPException(403, "Ask a teacher or admin to update your age group.")
+    if current != wanted:
+        _set_app_metadata(user["id"], {"age_group": wanted, "age_declared_at": _now_iso()})
+    return {"age_group": wanted, "minor_pending": wanted == "minor" and not user.get("guardian_consent")}
+
+
+def _find_auth_user(email):
+    email = (email or "").strip().lower()
+    for page in range(1, 51):
+        r = _auth_admin_request("GET", "/users", params={"page": page, "per_page": 1000})
+        if r.status_code != 200:
+            raise HTTPException(502, "Couldn't read the user list from Supabase.")
+        users = r.json().get("users") or []
+        found = next((u for u in users if (u.get("email") or "").lower() == email), None)
+        if found or len(users) < 1000:
+            return found
+    return None
+
+
+def _require_staff(user, action):
+    if not (is_teacher(user) or is_admin(user)):
+        if _staff_mfa_pending(user):
+            raise HTTPException(403, MFA_REQUIRED)
+        raise HTTPException(403, f"Only teachers and admins can {action}.")
+
+
+@app.get("/staff/minors")
+def list_minor_accounts(user: dict = Depends(get_current_user)):
+    """Student accounts under 18, with their guardian consent status."""
+    _require_staff(user, "see students under 18")
+    _require_service_key()
+    out = []
+    for page in range(1, 51):
+        r = _auth_admin_request("GET", "/users", params={"page": page, "per_page": 1000})
+        if r.status_code != 200:
+            raise HTTPException(502, "Couldn't read the user list from Supabase.")
+        users = r.json().get("users") or []
+        for u in users:
+            meta = u.get("app_metadata") or {}
+            if meta.get("age_group") == "minor":
+                out.append({
+                    "email": u.get("email"),
+                    "name": (u.get("user_metadata") or {}).get("full_name"),
+                    "created_at": u.get("created_at"),
+                    "declared_at": meta.get("age_declared_at"),
+                    "guardian_consent": meta.get("guardian_consent"),
+                })
+        if len(users) < 1000:
+            break
+    out.sort(key=lambda m: (bool(m["guardian_consent"]), m.get("declared_at") or ""))
+    return out
+
+
+class MinorAction(BaseModel):
+    email: str = Field(..., max_length=320)
+    action: Literal["confirm_consent", "withdraw_consent", "set_adult", "set_minor"]
+    note: Optional[str] = Field(None, max_length=300)   # e.g. "Consent form on file, Grade 7 - Rizal"
+
+
+@app.post("/staff/minors")
+def update_minor_account(entry: MinorAction, user: dict = Depends(get_current_user)):
+    """Confirm or withdraw the guardian consent of a student under 18, or
+    correct their age group (e.g. they turned 18). Every change is logged."""
+    _require_staff(user, "manage students under 18")
+    _require_service_key()
+    target = _find_auth_user(entry.email)
+    if not target:
+        raise HTTPException(404, f"No account uses {entry.email}.")
+    if entry.action == "confirm_consent":
+        changes = {"age_group": "minor", "guardian_consent": {
+            "by": user.get("email"), "at": _now_iso(), "note": (entry.note or "").strip() or None}}
+    elif entry.action == "withdraw_consent":
+        changes = {"guardian_consent": None}
+    elif entry.action == "set_adult":
+        changes = {"age_group": "adult", "guardian_consent": None}
+    else:
+        changes = {"age_group": "minor"}
+    _set_app_metadata(target["id"], changes)
+    _log_role_change("minor", entry.email.strip().lower(), entry.action.replace("_", " "),
+                     user.get("email"), {"note": entry.note} if entry.note else {})
+    return {"email": entry.email, "action": entry.action}
 
 def _auth_admin_request(method, path, **kw):
     """Supabase Auth admin API (service key), e.g. to reset two-factor auth."""
@@ -1241,6 +1383,7 @@ def submit_survey_response(
     user: dict = Depends(get_current_user),
     user_client: Client = Depends(get_user_client)
 ):
+    _require_minor_consent(user)
     survey = _db().table("surveys").select("id,is_active").eq("id", survey_id).eq("is_active", True).execute()
     if not survey.data:
         raise HTTPException(404, "This survey isn't open yet (it's inactive).")
@@ -1443,6 +1586,7 @@ def get_active_rubric_meta(rubric_id: Optional[int] = None,
 #region Saved Essays
 @app.post("/saved-essays")
 def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
+    _require_minor_consent(user)
     try:
         data = entry.dict()
         data["user_id"] = user["id"]
@@ -1516,6 +1660,8 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
     # Pages are kept as handwriting samples (OCR Labeler) only when a
     # signed-in user uploads them and the essay isn't a minor's: guests and
     # minors haven't consented to their handwriting being stored.
+    _require_minor_consent(user)
+    minor = minor or is_minor_account(user)
     keep_sample = user is not None and not minor and not local_only
     _check_quota(request, "ocr", user)
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -1830,10 +1976,13 @@ def _check_quota(request: Request, kind: str, user: Optional[dict]):
 LOCAL_AI_CHOICES = ("local", "llama", "qwen", "gemma")
 
 
-def _protect_minor(req: EvaluationRequest):
+def _protect_minor(req: EvaluationRequest, user: Optional[dict] = None):
     """A minor's essay: refuse it without guardian consent, remove the
     identifying details, and keep it off the cloud AIs if asked. Returns the
-    request to evaluate and what to record about it."""
+    request to evaluate and what to record about it. A minor's own account
+    always counts as a minor's essay, with the consent confirmed on the account."""
+    if is_minor_account(user):
+        req = req.model_copy(update={"minor": True, "guardian_consent": bool(user.get("guardian_consent"))})
     if not req.minor and not req.local_only:
         return req, None
     if req.minor and not req.guardian_consent:
@@ -1855,7 +2004,8 @@ def _protect_minor(req: EvaluationRequest):
 
 
 def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
-    req, privacy_info = _protect_minor(req)
+    _require_minor_consent(user)
+    req, privacy_info = _protect_minor(req, user)
     # Guests get the school-wide rubric (they have no rubrics of their own).
     criteria, rubric_info = resolve_rubric(user["id"] if user else None,
                                            req.rubric_id if user else None)
@@ -2121,6 +2271,7 @@ def translate_essay(req: TranslateRequest, request: Request, user: Optional[dict
     """English version of an essay that mixes in Tagalog, Bisaya or another
     language; an English essay comes back unchanged without calling an AI."""
     import translate
+    _require_minor_consent(user)
     if not req.text.strip():
         raise HTTPException(422, "There is no essay text to translate.")
     if translate.needs_translation(req.text):
@@ -2195,6 +2346,7 @@ def revise_essay_endpoint(req: RevisionRequest, user: dict = Depends(get_current
 #region Knowledge Base
 @app.post("/knowledge")
 def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
+    _require_minor_consent(user)
     try:
         data = entry.dict()
         data["user_id"] = user["id"]
@@ -2247,6 +2399,7 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
     override; only a teacher's override is marked approved (approved_by) and
     so feeds the AI's learning (RAG). Others are kept for the user only.
     """
+    _require_minor_consent(user)
     if not override.teacher_feedback.strip():
         raise HTTPException(422, "Remarks are required.")
 

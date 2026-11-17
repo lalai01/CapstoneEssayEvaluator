@@ -21,7 +21,7 @@ const typedPart = () => ({ id: newId(), kind: 'typed', text: '' });
 const wordCount = (text) => text.split(/\s+/).filter(Boolean).length;
 
 export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChooseAi, setScores, setFeedback, setLoading, setCurrentEssay, setEvalType, setEssayTitle, loading }) {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, minor: account } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   // Everything typed or chosen here is kept as a draft in this browser, so a
   // refresh or a visit to another page doesn't lose it.
@@ -38,7 +38,11 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   const [privacyNeeded, setPrivacyNeeded] = useState(false);
   // A minor's essay (RA 10173): guardian consent, personal details removed,
   // optionally kept on our server. Not a draft: the student's name is never stored.
-  const [minor, setMinor] = useState(NO_MINOR);
+  const [minorChoice, setMinor] = useState(NO_MINOR);
+  // A student under 18 using their own account: always a minor's essay, with
+  // the guardian consent a teacher confirmed on the account.
+  const accountMinor = !!account?.isMinor;
+  const minor = accountMinor ? { ...minorChoice, minor: true, guardianConsent: true } : minorChoice;
   const [consentNeeded, setConsentNeeded] = useState(false);
   const [redaction, setRedaction] = useState(null);   // { findings } of the last evaluation
 
@@ -135,6 +139,10 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   };
 
   const handleEvaluate = async () => {
+    if (account?.pending) {
+      toast.error('Your account is waiting for a teacher to confirm your parent’s or guardian’s consent.');
+      return;
+    }
     const written = essayToEvaluate();
     if (!written) {
       toast.error('Please type the essay or upload its pages.');
@@ -298,6 +306,17 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
           </div>
         )}
 
+        {account?.pending && (
+          <div className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+            <p className="font-semibold">🧒 Waiting for your parent’s or guardian’s consent</p>
+            <p className="mt-1">
+              You said you are under 18. Under the Data Privacy Act (RA 10173), a teacher or admin must confirm that
+              your school has your parent’s or guardian’s consent before you can evaluate or upload essays. Please ask
+              your teacher; this page unlocks once they confirm it.
+            </p>
+          </div>
+        )}
+
         {/* Title Input (Required) */}
         <div className="mb-5">
           <label htmlFor="essay-title" className="block text-sm font-semibold text-gray-700 mb-2">
@@ -330,6 +349,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
         </div>
 
         <MinorProtection
+          locked={accountMinor}
           value={minor}
           highlight={consentNeeded && minor.minor && !minor.guardianConsent}
           onChange={(v) => { setMinor(v); if (v.guardianConsent) setConsentNeeded(false); }}

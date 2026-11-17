@@ -6,7 +6,9 @@ import { NO_MINOR } from '../lib/redact';
 // photos, so they are read and handled accordingly.
 //   value: { minor, guardianConsent, localOnly, studentName }
 
-export default function MinorProtection({ value, onChange, highlight }) {
+// locked: the user's own account is a minor's (the box stays ticked and the
+// consent is the one a teacher confirmed on the account).
+export default function MinorProtection({ value, onChange, highlight, locked = false }) {
   const set = (patch) => onChange({ ...value, ...patch });
   return (
     <div className={`mb-5 rounded-xl border p-4 ${value.minor ? 'border-sky-300 bg-sky-50/70' : 'border-gray-200 bg-gray-50'}`}>
@@ -14,6 +16,7 @@ export default function MinorProtection({ value, onChange, highlight }) {
         <input
           type="checkbox"
           checked={value.minor}
+          disabled={locked}
           onChange={(e) => set(e.target.checked ? { minor: true } : { ...NO_MINOR })}
           className="mt-0.5 h-4 w-4"
         />
@@ -28,6 +31,12 @@ export default function MinorProtection({ value, onChange, highlight }) {
 
       {value.minor && (
         <div className="mt-3 space-y-3 border-t border-sky-200 pt-3 text-sm">
+          {locked ? (
+            <p className="rounded-lg bg-white/70 p-2 text-gray-800">
+              ✓ Your account is for a student under 18, and your teacher confirmed your parent’s or guardian’s
+              consent. These protections are always on for your essays.
+            </p>
+          ) : (
           <label className={`flex items-start gap-2 rounded-lg p-2 ${highlight ? 'bg-red-50 ring-2 ring-red-400' : ''}`}>
             <input
               id="guardian-consent"
@@ -41,6 +50,7 @@ export default function MinorProtection({ value, onChange, highlight }) {
               be evaluated with this system (for example, the consent form signed at enrollment).
             </span>
           </label>
+          )}
 
           <label className="block">
             <span className="text-gray-700">Student’s name to remove <span className="text-gray-400">(optional)</span></span>

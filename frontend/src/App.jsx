@@ -21,6 +21,8 @@ import HumanVsAi from './components/HumanVsAi';
 import PromptViewer from './components/PromptViewer';
 import NavBar from './components/NavBar';
 import { TwoFactorPage } from './components/TwoFactor';
+import AgeQuestion from './components/AgeQuestion';
+import MinorAccounts from './components/MinorAccounts';
 import { useAuth } from './context/AuthContext';
 import useLeaveWarning from './lib/useLeaveWarning';
 import useDraft from './lib/draft';
@@ -45,6 +47,7 @@ const writeSession = (key, value) => {
 //   user    - any signed-in user (students included)
 //   teacher - teachers (approvers)
 //   admin   - admins
+//   staff   - teachers and admins
 // `path` is the page's own URL, so it can be bookmarked, shared and reloaded.
 const PAGES = [
   { id: 'home', path: '/', label: 'Home', icon: 'home', access: 'public', group: 'main' },
@@ -60,6 +63,7 @@ const PAGES = [
   { id: 'activity', path: '/evaluation-activity', label: 'Evaluation Activity', icon: 'activity', access: 'admin', group: 'admin', description: 'Essays evaluated: drafts, saves, overrides, rejections' },
   { id: 'school-rubric', path: '/school-rubric', label: 'School Rubric', icon: 'school', access: 'admin', group: 'admin', description: 'Default rubric for every teacher' },
   { id: 'admin', path: '/manage-surveys', label: 'Manage Surveys', icon: 'list', access: 'admin', group: 'admin', description: 'Create surveys and read responses' },
+  { id: 'minors', path: '/student-consent', label: 'Student Consent', icon: 'school', access: 'staff', group: 'workspace', description: 'Students under 18: guardian consent' },
   { id: 'ocr-labeler', path: '/ocr-labeler', label: 'OCR Labeler', icon: 'tag', access: 'admin', group: 'admin', description: 'Correct OCR samples for training' },
 ];
 
@@ -151,7 +155,7 @@ function App() {
   // every address shows the verification page at /verify, and the page that
   // was asked for opens once it's done.
   const gate = mfa?.gate || null;
-  const verifying = gate === 'code' || gate === 'enroll';
+  const verifying = gate === 'code' || gate === 'enroll' || gate === 'age';
   useEffect(() => {
     const here = () => window.location.pathname + window.location.search + window.location.hash;
     if (verifying) {
@@ -180,7 +184,8 @@ function App() {
     access === 'public' ||
     (access === 'user' && !!user) ||
     (access === 'teacher' && isTeacher) ||
-    (access === 'admin' && isAdmin);
+    (access === 'admin' && isAdmin) ||
+    (access === 'staff' && (isTeacher || isAdmin));
   const pages = PAGES.filter((p) => canOpen(p.access));
   const activePage = PAGES.find((p) => p.id === activeTab);
   const allowed = pages.some((p) => p.id === activeTab);
@@ -230,7 +235,7 @@ function App() {
         <ThreeDBackground />
         <div className="relative z-10 flex min-h-screen items-center justify-center p-4">
           <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
-          <TwoFactorPage />
+          {gate === 'age' ? <AgeQuestion /> : <TwoFactorPage />}
         </div>
       </div>
     );
@@ -333,6 +338,7 @@ function App() {
           {currentTab === 'ocr-labeler' && <OcrLabeler />}
           {currentTab === 'admins' && <AdminUsers />}
           {currentTab === 'activity' && <EvaluationActivity />}
+          {currentTab === 'minors' && <MinorAccounts />}
         </div>
       </div>
 

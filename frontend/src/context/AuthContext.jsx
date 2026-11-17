@@ -24,6 +24,9 @@ export const AuthProvider = ({ children }) => {
   // an authenticator code; nextLevel 'aal2' when the account has one set up.
   const [aal, setAal] = useState({ userId: null, currentLevel: null, nextLevel: null })
   const signOutRef = useRef(null)
+  // Bumped to ask the backend again (e.g. after the age question).
+  const [meVersion, setMeVersion] = useState(0)
+  const refreshMe = useCallback(() => setMeVersion((n) => n + 1), [])
 
   const refreshMfa = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -79,6 +82,11 @@ export const AuthProvider = ({ children }) => {
               mfaForRole: !!me?.mfa_required_for_role,
               // Every account must use an authenticator (MFA_POLICY=all), or only staff.
               mfaRequired: me?.mfa_required ?? !!me?.mfa_required_for_role,
+              // Students under 18 (RA 10173): asked once; a minor waits for a
+              // teacher or admin to confirm the guardian's consent.
+              needsAge: !!me?.needs_age,
+              ageGroup: me?.age_group || null,
+              minorPending: !!me?.minor_pending,
             })
           }
         })
@@ -105,7 +113,7 @@ export const AuthProvider = ({ children }) => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [userId, sessionLevel])
+  }, [userId, sessionLevel, meVersion])
 
   const checked = !!userId && adminCheck.userId === userId
   const isAdmin = checked && adminCheck.isAdmin
@@ -130,10 +138,18 @@ export const AuthProvider = ({ children }) => {
     // What a signed-in user sees before the website: 'checking' (sign-in
     // status loading), 'code' (enter the authenticator code), 'enroll' (set
     // one up), or null (nothing needed: the website opens).
-    gate: !userId ? null : !aalKnown || !checked ? 'checking' : needsCode ? 'code' : mustEnroll ? 'enroll' : null,
+    gate: !userId ? null : !aalKnown || !checked ? 'checking' : needsCode ? 'code' : mustEnroll ? 'enroll'
+      : adminCheck.needsAge ? 'age' : null,
     required: checked && adminCheck.mfaRequired,
     requiredForRole: checked && adminCheck.mfaForRole,
     refresh: refreshMfa,
+  }
+
+  // A student under 18: isMinor once they said so; pending until a teacher or
+  // admin confirms the guardian's consent.
+  const minor = {
+    isMinor: checked && adminCheck.ageGroup === 'minor',
+    pending: checked && !!adminCheck.minorPending,
   }
 
   const signInWithEmail = async (email, password) => {
@@ -180,7 +196,7 @@ export const AuthProvider = ({ children }) => {
 
   return (
     <AuthContext.Provider value={{
-      user, isAdmin, isTeacher, role, loading, roleLoading, mfa,
+      user, isAdmin, isTeacher, role, loading, roleLoading, mfa, minor, refreshMe,
       signInWithGoogle, signInWithYahoo, signInWithEmail, signInWithEmailLink, signOut,
     }}>
       {children}

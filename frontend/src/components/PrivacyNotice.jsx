@@ -55,6 +55,7 @@ export function PrivacyNoticeText() {
           confirms it before evaluating. For a minor’s essay the system:
         </p>
         <ul className="mt-1 list-disc pl-5 space-y-0.5">
+          <li>asks every student who signs in whether they are 18 or older (only the answer is kept, not the birth date); a student under 18 can’t evaluate, upload or answer surveys until a teacher or admin confirms the guardian’s consent, and all their essays get the protections below;</li>
           <li>removes the name, LRN, grade and section, school, email and phone number before any AI sees the essay;</li>
           <li>never keeps its photos;</li>
           <li>can keep it entirely on our server (local reader and Qwen, no cloud AI) when the teacher chooses;</li>
