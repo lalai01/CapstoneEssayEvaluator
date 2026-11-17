@@ -1,7 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { getMe } from '../api'
 import { clearDrafts } from '../lib/draft'
+import toast from 'react-hot-toast'
+import useSessionGuard, { rememberSignOutReason, takeSignOutReason } from '../lib/sessionGuard'
 
 const AuthContext = createContext({})
 
@@ -17,10 +19,11 @@ export const AuthProvider = ({ children }) => {
   // ADMIN_EMAILS and the admin_users table. The browser never decides this.
   // Stored with the user id it belongs to, so a previous user's answer never
   // leaks to the next one while /me is loading.
-  const [adminCheck, setAdminCheck] = useState({ userId: null, isAdmin: false, isTeacher: false, role: null, mfaForRole: false })
+  const [adminCheck, setAdminCheck] = useState({ userId: null, isAdmin: false, isTeacher: false, role: null, mfaForRole: false, mfaRequired: false })
   // Two-factor authentication: currentLevel 'aal2' once this session entered
   // an authenticator code; nextLevel 'aal2' when the account has one set up.
   const [aal, setAal] = useState({ userId: null, currentLevel: null, nextLevel: null })
+  const signOutRef = useRef(null)
 
   const refreshMfa = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -30,6 +33,12 @@ export const AuthProvider = ({ children }) => {
     }
     const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (!error && data) setAal({ userId: session.user.id, currentLevel: data.currentLevel, nextLevel: data.nextLevel })
+  }, [])
+
+  // After an automatic sign-out the page reloads: say why.
+  useEffect(() => {
+    const reason = takeSignOutReason()
+    if (reason) toast(reason, { icon: '🔒', duration: 8000 })
   }, [])
 
   useEffect(() => {
@@ -66,11 +75,18 @@ export const AuthProvider = ({ children }) => {
             setAdminCheck({
               userId, isAdmin: !!me?.is_admin, isTeacher: !!me?.is_teacher, role: me?.role || 'student',
               mfaForRole: !!me?.mfa_required_for_role,
+              // Every account must use an authenticator (MFA_POLICY=all), or only staff.
+              mfaRequired: me?.mfa_required ?? !!me?.mfa_required_for_role,
             })
           }
         })
         .catch((err) => {
           if (cancelled) return
+          // The sign-in is older than the maximum: sign in again.
+          if (err?.response?.data?.detail?.code === 'session_expired') {
+            signOutRef.current?.(err.response.data.detail.message)
+            return
+          }
           attempt += 1
           if (attempt < 4) {
             timer = setTimeout(check, 1500 * attempt)
@@ -79,7 +95,7 @@ export const AuthProvider = ({ children }) => {
           console.warn('[auth] role check failed; keeping the last known role', err)
           setAdminCheck((prev) => (prev.userId === userId
             ? prev
-            : { userId, isAdmin: false, isTeacher: false, role: null, mfaForRole: false }))
+            : { userId, isAdmin: false, isTeacher: false, role: null, mfaForRole: false, mfaRequired: false }))
         })
     }
     check()
@@ -97,7 +113,8 @@ export const AuthProvider = ({ children }) => {
 
   // What two-factor authentication still needs in this session:
   //   needsCode:  an authenticator is set up, but its code wasn't entered yet
-  //   mustEnroll: teachers and admins must set one up before continuing
+  //   mustEnroll: the account has none yet and must set one up (everyone by
+  //               default; only teachers and admins with MFA_POLICY=staff)
   const aalKnown = !!userId && aal.userId === userId
   const mfaEnrolled = aalKnown && aal.nextLevel === 'aal2'
   const mfa = {
@@ -105,7 +122,8 @@ export const AuthProvider = ({ children }) => {
     enrolled: mfaEnrolled,
     verified: aalKnown && aal.currentLevel === 'aal2',
     needsCode: mfaEnrolled && aal.currentLevel !== 'aal2',
-    mustEnroll: aalKnown && checked && adminCheck.mfaForRole && !mfaEnrolled,
+    mustEnroll: aalKnown && checked && adminCheck.mfaRequired && !mfaEnrolled,
+    required: checked && adminCheck.mfaRequired,
     requiredForRole: checked && adminCheck.mfaForRole,
     refresh: refreshMfa,
   }
@@ -137,11 +155,18 @@ export const AuthProvider = ({ children }) => {
   const signInWithYahoo = () => supabase.auth.signInWithOAuth({ provider: 'custom:yahoo' })
   // Drafts belong to whoever wrote them: clear them and reload, so the next
   // person on a shared computer starts with an empty page.
-  const signOut = async () => {
-    await supabase.auth.signOut()
+  // reason: shown after the reload when the sign-out was automatic.
+  const signOut = useCallback(async (reason) => {
+    if (typeof reason === 'string') rememberSignOutReason(reason)
+    // Signing out yourself ends the session everywhere; an automatic sign-out
+    // (inactivity, age) only ends it in this browser.
+    await supabase.auth.signOut({ scope: typeof reason === 'string' ? 'local' : 'global' }).catch(() => {})
     clearDrafts()
     window.location.assign('/')
-  }
+  }, [])
+  signOutRef.current = signOut
+  // Signs out after a day without activity, or a week after signing in.
+  useSessionGuard(user, signOut)
   // Signed in, but the role (admin / teacher) isn't known yet.
   const roleLoading = !!userId && !checked
 

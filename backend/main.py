@@ -15,7 +15,7 @@ import evaluator
 from supabase_client import supabase, supabase_admin
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
-from auth import MFA_REQUIRED, get_current_user, get_current_user_any_aal, get_optional_user, security
+from auth import MFA_POLICY, MFA_REQUIRED, get_current_user, get_current_user_any_aal, get_optional_user, security
 from supabase import create_client, Client
 from evaluation_graph import run_evaluation   # ✅ LangGraph
 from evaluator import resolve_rubric
@@ -414,7 +414,8 @@ def _has_teacher_role(user):
 # roles, surveys and rubrics) only apply in a session that entered the code
 # (aal2). Without it they are treated as students until they set it up.
 # REQUIRE_STAFF_MFA=false turns this off (e.g. for local testing).
-REQUIRE_STAFF_MFA = os.environ.get("REQUIRE_STAFF_MFA", "true").strip().lower() not in ("false", "0", "no")
+REQUIRE_STAFF_MFA = MFA_POLICY != "off" and \
+    os.environ.get("REQUIRE_STAFF_MFA", "true").strip().lower() not in ("false", "0", "no")
 
 def _mfa_ok(user):
     return not REQUIRE_STAFF_MFA or (user or {}).get("aal") == "aal2"
@@ -465,6 +466,8 @@ def who_am_i(user: dict = Depends(get_current_user_any_aal)):
         "is_teacher": is_teacher(user) and not code_pending,
         # Teachers and admins must set up / enter an authenticator code.
         "mfa_required_for_role": REQUIRE_STAFF_MFA and (_has_admin_role(user) or _has_teacher_role(user)),
+        # Must this account set up / use an authenticator? (MFA_POLICY: all, staff, off)
+        "mfa_required": MFA_POLICY == "all" or (REQUIRE_STAFF_MFA and (_has_admin_role(user) or _has_teacher_role(user))),
         "mfa_enrolled": bool(user.get("mfa_enrolled")),
         "aal": user.get("aal"),
     }

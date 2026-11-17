@@ -179,7 +179,7 @@ export function TwoFactorGate() {
       title={mfa.needsCode ? '🔐 Enter your verification code' : '🔐 Set up two-factor authentication'}
       subtitle={mfa.needsCode
         ? 'Your account is protected with two-factor authentication.'
-        : 'Teacher and admin accounts must use two-factor authentication, so a stolen password alone can’t be used to change grades or settings. It takes about a minute.'}
+        : 'Every account must use two-factor authentication, so a stolen password alone can’t open it. Set it up once (about a minute); after that, each sign-in asks for the 6-digit code from your phone.'}
     >
       {mfa.needsCode ? <ChallengeTotp onDone={done} /> : <EnrollTotp onDone={done} />}
       <p className="mt-4 border-t pt-3 text-xs text-gray-500">
@@ -239,9 +239,10 @@ export function TwoFactorSettings({ open, onClose }) {
               With two-factor authentication, signing in needs your password (or email link) <em>and</em> a 6-digit
               code from an authenticator app on your phone, so a stolen password alone can’t open your account.
             </p>
-            {mfa.requiredForRole && (
+            {mfa.required && (
               <p className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-900">
-                Required for teacher and admin accounts, so it can’t be turned off here.
+                Required for your account, so it can’t be turned off here.
+                Every sign-in asks for the code, and you are signed out automatically after a day without activity or a week after signing in.
               </p>
             )}
             <div className="flex justify-end gap-2 pt-2">
@@ -251,7 +252,7 @@ export function TwoFactorSettings({ open, onClose }) {
                   Turn on
                 </button>
               )}
-              {mfa.enrolled && !mfa.requiredForRole && (
+              {mfa.enrolled && !mfa.required && (
                 <button type="button" onClick={turnOff} disabled={busy} className="rounded-xl bg-red-600 px-4 py-2 font-semibold text-white hover:bg-red-700 disabled:opacity-50">
                   {busy ? 'Turning off…' : 'Turn off'}
                 </button>

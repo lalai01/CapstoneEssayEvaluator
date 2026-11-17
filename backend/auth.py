@@ -67,26 +67,60 @@ def _verify_with_supabase(token: str) -> dict:
         # authenticator set up (then every request needs aal2).
         "aal": _token_claims(token).get("aal") or "aal1",
         "mfa_enrolled": any(f.get("status") == "verified" for f in factors if isinstance(f, dict)),
+        # When the user last proved who they are (password, email link,
+        # Google, authenticator code). Refreshing the session doesn't change it.
+        "authenticated_at": max((a.get("timestamp") or 0 for a in (_token_claims(token).get("amr") or [])
+                                 if isinstance(a, dict)), default=0),
     }
 
 
+# Two-factor authentication policy (MFA_POLICY):
+#   "all"   every signed-in account must set up an authenticator and enter its
+#           code each time it signs in (default);
+#   "staff" only teachers and admins (checked in main.py);
+#   "off"   nobody is required (an account that set one up still needs it).
+MFA_POLICY = os.environ.get("MFA_POLICY", "all").strip().lower()
+if MFA_POLICY not in ("all", "staff", "off"):
+    MFA_POLICY = "all"
+
+# A sign-in lasts at most SESSION_MAX_DAYS (default 7): after that the user
+# must sign in again with their password (or link) and authenticator code,
+# however active they were.
+SESSION_MAX_DAYS = float(os.environ.get("SESSION_MAX_DAYS", "7"))
+
 MFA_REQUIRED = {"code": "mfa_required",
                 "message": "Enter the code from your authenticator app to continue (two-factor authentication)."}
+MFA_SETUP_REQUIRED = {"code": "mfa_setup_required",
+                      "message": "Set up two-factor authentication (an authenticator app) to continue."}
+SESSION_EXPIRED = {"code": "session_expired",
+                   "message": f"For your security, please sign in again (sign-ins last {SESSION_MAX_DAYS:g} days)."}
+
+
+def _check_session_age(user):
+    at = user.get("authenticated_at") or 0
+    if SESSION_MAX_DAYS > 0 and at and time.time() - at > SESSION_MAX_DAYS * 86400:
+        raise HTTPException(status_code=401, detail=SESSION_EXPIRED)
 
 
 async def get_current_user_any_aal(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """The verified user, even before their two-factor code is entered. Only
     for GET /me, which tells the website that a code is still needed."""
-    return _user_from_token(credentials.credentials)
+    user = _user_from_token(credentials.credentials)
+    _check_session_age(user)
+    return user
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """The verified user. An account with an authenticator set up must have
-    entered its code in this session (aal2); a stolen password alone is not
-    enough to use the API."""
+    """The verified user. With an authenticator set up (required for everyone
+    under the default MFA_POLICY=all) the session must have entered its code
+    (aal2): a stolen password alone is not enough to use the API."""
     user = _user_from_token(credentials.credentials)
-    if user.get("mfa_enrolled") and user.get("aal") != "aal2":
-        raise HTTPException(status_code=401, detail=MFA_REQUIRED)
+    _check_session_age(user)
+    if user.get("aal") != "aal2":
+        if user.get("mfa_enrolled"):
+            raise HTTPException(status_code=401, detail=MFA_REQUIRED)
+        if MFA_POLICY == "all":
+            raise HTTPException(status_code=401, detail=MFA_SETUP_REQUIRED)
     return user
 
 
