@@ -7,14 +7,17 @@ const seconds = (ms) => (ms ? `${Math.round(ms / 1000)} s` : '');
 // runs: { [aiId]: { status: 'running' | 'done' | 'failed', scores, feedback, ms, error } }
 export default function AiChoice({ runs, chosen, onChoose }) {
   if (!runs) return null;
-  const finished = EVALUATION_AIS.filter((a) => runs[a.id]?.status !== 'running').length;
+  const used = EVALUATION_AIS.filter((a) => runs[a.id]?.status !== 'skipped');
+  const finished = used.filter((a) => runs[a.id]?.status !== 'running').length;
+  const heading = used.length === EVALUATION_AIS.length ? 'Three AIs evaluated this essay'
+    : used.length === 1 ? `${used[0].name} evaluated this essay (kept on our server)` : `${used.length} AIs evaluated this essay`;
 
   return (
     <section className="glass-card rounded-2xl shadow-xl p-5 bg-white/95" aria-labelledby="ai-choice-title">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 id="ai-choice-title" className="block text-lg font-bold text-gray-800">🤖 Three AIs evaluated this essay</h2>
+        <h2 id="ai-choice-title" className="block text-lg font-bold text-gray-800">🤖 {heading}</h2>
         <span className="text-xs text-gray-500" aria-live="polite">
-          {finished < EVALUATION_AIS.length ? `${finished} of 3 finished…` : 'All finished'}
+          {finished < used.length ? `${finished} of ${used.length} finished…` : 'All finished'}
         </span>
       </div>
       <p className="text-sm text-gray-600 mt-1">
@@ -53,6 +56,9 @@ export default function AiChoice({ runs, chosen, onChoose }) {
                   <span className="h-3 w-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" aria-hidden="true" />
                   Evaluating…
                 </div>
+              )}
+              {run.status === 'skipped' && (
+                <p className="mt-3 text-sm text-gray-500">🛡️ {run.error || 'Not used for this essay.'}</p>
               )}
               {run.status === 'failed' && (
                 <p className="mt-3 text-sm text-red-600">⚠️ {run.error || `${ai.name} didn’t respond.`}</p>

@@ -4,7 +4,7 @@ import uuid
 import tempfile
 import threading
 import time
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -38,6 +38,8 @@ def _preload_local_ai():
     # after a restart doesn't wait for it (startup isn't delayed).
     from ai_models import warm_up_ollama
     threading.Thread(target=warm_up_ollama, args=(evaluator.LOCAL_SCORING_MODEL,), daemon=True).start()
+    # Daily deletion of minors' essays past their retention period.
+    threading.Thread(target=_retention_loop, daemon=True).start()
 
 # ---------- CORS Configuration ----------
 ALLOWED_ORIGINS = [
@@ -120,6 +122,14 @@ class EvaluationRequest(BaseModel):
     ai_model: Literal["auto", "deepseek", "local", "llama", "qwen", "gemma", "groq"] = "auto"
     strict_model: bool = False
     title: Optional[str] = Field(None, max_length=300)   # the essay's title, for the admin's evaluation activity
+    # A minor's essay (under 18, RA 10173): needs the teacher's confirmation
+    # that the parent/guardian consented; names, LRN, section, email and
+    # phone are removed before any AI sees it (redact_names: extra names to
+    # remove). local_only keeps it on our server (no cloud AI).
+    minor: bool = False
+    guardian_consent: bool = False
+    local_only: bool = False
+    redact_names: Optional[List[str]] = Field(None, max_length=10)
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -1471,7 +1481,7 @@ def _log_handwriting_sample(contents, suffix, content_type, reader_text, engine)
     image_url = None
     try:
         import uuid as _uuid
-        bucket = supabase.storage.from_("ocr-samples")
+        bucket = (supabase_admin or supabase).storage.from_("ocr-samples")
         filename = f"{_uuid.uuid4()}{suffix}"
         bucket.upload(filename, contents,
                       {"content-type": content_type or "application/octet-stream"})
@@ -1498,7 +1508,12 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024   # essay photos, scans, PDFs and Word files
 
 @app.post("/ocr")
 async def ocr_from_file(request: Request, file: UploadFile = File(...),
+                        minor: bool = Form(False), local_only: bool = Form(False),
                         user: Optional[dict] = Depends(get_optional_user)):
+    # Pages are kept as handwriting samples (OCR Labeler) only when a
+    # signed-in user uploads them and the essay isn't a minor's: guests and
+    # minors haven't consented to their handwriting being stored.
+    keep_sample = user is not None and not minor and not local_only
     _check_quota(request, "ocr", user)
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.docx']:
@@ -1511,7 +1526,7 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
     # ---------- PDF: hand off to background job ----------
     if suffix == '.pdf':
         from ocr_jobs import start_pdf_ocr_job
-        job_id = start_pdf_ocr_job(contents)
+        job_id = start_pdf_ocr_job(contents, use_cloud=not local_only)
         return {"job_id": job_id, "status": "processing", "message": "OCR job submitted"}
 
     # ---------- DOCX: read directly, no OCR ----------
@@ -1524,14 +1539,15 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
         if not looks_like_writing(text):
             _not_essay("The document doesn't contain written paragraphs.")
 
-        try:
-            supabase.table("ocr_training_data").insert({
-                "raw_ocr_text": text,
-                "accepted": False,
-                "engine": "python-docx",
-            }).execute()
-        except Exception as e:
-            print(f"Failed to log DOCX sample: {e}")
+        if keep_sample:
+            try:
+                supabase.table("ocr_training_data").insert({
+                    "raw_ocr_text": text,
+                    "accepted": False,
+                    "engine": "python-docx",
+                }).execute()
+            except Exception as e:
+                print(f"Failed to log DOCX sample: {e}")
 
         return OCRResponse(
             text=text,
@@ -1550,7 +1566,7 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
     try:
         # 1-2. Check it's a page of writing, then read it with whichever
         # reader (printed or handwriting) produces more real English.
-        result = ocr_utils.read_essay_image(contents)
+        result = ocr_utils.read_essay_image(contents, use_cloud=not local_only)
         if not result["is_text"]:
             _not_essay(result["reason"])
         text, confidence, engine = result["text"], result["confidence"], result["engine"]
@@ -1570,10 +1586,12 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
                     ai_correct_ocr_text,
                     ai_correct_handwriting_text,
                 )
+                # Kept on our server: the local AI corrects the reading.
+                provider = "ollama" if local_only else "deepseek"
                 if engine == "tesseract":
-                    corrected = ai_correct_ocr_text(text)
+                    corrected = ai_correct_ocr_text(text, provider=provider)
                 else:
-                    corrected = ai_correct_handwriting_text(text)
+                    corrected = ai_correct_handwriting_text(text, provider=provider)
                 if corrected and corrected.strip():
                     text = corrected
             except Exception as e:
@@ -1582,7 +1600,7 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
         # 4. Upload image to Supabase Storage + log a handwriting sample for the
         # OCR Labeler. Printed pages (Tesseract) aren't useful there. Done in
         # the background so the student gets their text without waiting for it.
-        if engine != "tesseract":
+        if engine != "tesseract" and keep_sample:
             threading.Thread(
                 target=_log_handwriting_sample,
                 args=(contents, suffix, file.content_type, reader_text, engine),
@@ -1604,6 +1622,24 @@ async def ocr_from_file(request: Request, file: UploadFile = File(...),
             pass
 
         
+def sign_sample_url(url, seconds=3600):
+    """A link that expires, for an image in the ocr-samples bucket. The bucket
+    can then be private: handwriting pages are students' personal data."""
+    marker = "/ocr-samples/"
+    if not url or marker not in url or not supabase_admin:
+        return url
+    name = url.split(marker, 1)[1].split("?", 1)[0]
+    try:
+        signed = supabase_admin.storage.from_("ocr-samples").create_signed_url(name, seconds)
+        link = signed.get("signedURL") or signed.get("signedUrl") or signed.get("signed_url")
+        if link and link.startswith("/"):
+            link = f"{SUPABASE_URL}/storage/v1{link}"
+        return link or url
+    except Exception as e:
+        print(f"Couldn't sign {name}: {e}")
+        return url
+
+
 @app.get("/ocr/pending")
 def list_pending_ocr(
     limit: int = 50,
@@ -1622,7 +1658,7 @@ def list_pending_ocr(
             .limit(limit)
             .execute()
         )
-        return result.data
+        return [{**row, "image_url": sign_sample_url(row.get("image_url"))} for row in result.data]
     except Exception as e:
         print(f"Failed to fetch pending OCR samples: {e}")
         raise HTTPException(500, SERVER_ERROR)
@@ -1788,7 +1824,35 @@ def _check_quota(request: Request, kind: str, user: Optional[dict]):
         _forget_old_hits(now)
 
 
+LOCAL_AI_CHOICES = ("local", "llama", "qwen", "gemma")
+
+
+def _protect_minor(req: EvaluationRequest):
+    """A minor's essay: refuse it without guardian consent, remove the
+    identifying details, and keep it off the cloud AIs if asked. Returns the
+    request to evaluate and what to record about it."""
+    if not req.minor and not req.local_only:
+        return req, None
+    if req.minor and not req.guardian_consent:
+        raise HTTPException(422, {"code": "guardian_consent_required", "message": (
+            "This essay is marked as written by a minor. Confirm that the school has the parent's "
+            "or guardian's consent before evaluating it (Data Privacy Act, RA 10173).")})
+    if req.local_only and req.ai_model not in LOCAL_AI_CHOICES:
+        raise HTTPException(422, {"code": "local_only", "message": (
+            "This essay is kept on our server, so only the local AI (Qwen) can evaluate it.")})
+    info = {"minor": bool(req.minor), "local_only": bool(req.local_only)}
+    if req.minor:
+        import privacy
+        text, found = privacy.redact_personal_info(req.text, [n for n in (req.redact_names or []) if n])
+        names = [n for n in (req.redact_names or []) if n]
+        title = privacy.redact_personal_info(req.title or "", names)[0] if req.title else req.title
+        req = req.model_copy(update={"text": text, "title": title})
+        info["redacted"] = len(found)
+    return req, info
+
+
 def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
+    req, privacy_info = _protect_minor(req)
     # Guests get the school-wide rubric (they have no rubrics of their own).
     criteria, rubric_info = resolve_rubric(user["id"] if user else None,
                                            req.rubric_id if user else None)
@@ -1803,6 +1867,10 @@ def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
             feedback=result.get("feedback") or "Invalid input",
         )
     scores = {**result["scores"], "rubric": rubric_info}
+    if privacy_info:
+        # Kept with every saved copy (reports, Knowledge Base, overrides), so
+        # a minor's essays can be found and deleted on schedule.
+        scores["privacy"] = privacy_info
     if user:
         # Admins see every evaluation (and whether it was later saved or
         # overridden); logged in the background so it never slows the result.
@@ -1967,6 +2035,80 @@ def _essay_detail(user_id, essay_hash):
     return {"essay": essay, "runs": runs, "kb": kb, "overrides": overrides}
 
 
+@app.delete("/my/reports/essay")
+def delete_my_essay(essay_hash: str, user: dict = Depends(get_current_user)):
+    """Right to erasure (RA 10173, Sec. 16): delete one of the user's own
+    essays everywhere it is kept: every AI run, Knowledge Base save and
+    override of it."""
+    counts = _delete_essay_records(user["id"], essay_hash)
+    return {"deleted": counts}
+
+
+def _delete_essay_records(user_id, essay_hash):
+    import evaluation_log
+    db = _survey_admin_db()
+    counts = {"evaluation_runs": 0, "knowledge_base": 0, "learning_feedback": 0}
+    try:
+        gone = db.table("evaluation_runs").delete().eq("user_id", user_id).eq("essay_hash", essay_hash).execute()
+        counts["evaluation_runs"] = len(gone.data or [])
+    except Exception as e:
+        print(f"evaluation_runs delete failed: {e}")
+    for table, column in (("knowledge_base", "essay"), ("learning_feedback", "original_essay")):
+        try:
+            rows = db.table(table).select(f"id,{column}").eq("user_id", user_id).execute().data or []
+            ids = [r["id"] for r in rows if evaluation_log.essay_hash(r.get(column)) == essay_hash]
+            if ids:
+                db.table(table).delete().in_("id", ids).execute()
+            counts[table] = len(ids)
+        except Exception as e:
+            print(f"{table} delete failed: {e}")
+    return counts
+
+
+# Minors' essays are deleted automatically after MINOR_RETENTION_DAYS (default
+# 365: about one school year), wherever they were kept. Checked once a day.
+MINOR_RETENTION_DAYS = int(os.environ.get("MINOR_RETENTION_DAYS", "365"))
+_MINOR_TABLES = (("evaluation_runs", "scores"), ("knowledge_base", "scores"),
+                 ("knowledge_base", "criterion_feedback->scores"), ("learning_feedback", "original_scores"))
+
+
+def purge_minor_records(days=None):
+    from datetime import datetime, timedelta, timezone
+    days = MINOR_RETENTION_DAYS if days is None else days
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    db = supabase_admin
+    counts = {}
+    if not db:
+        return counts
+    for table, column in _MINOR_TABLES:
+        try:
+            gone = db.table(table).delete().eq(f"{column}->privacy->>minor", "true") \
+                .lt("created_at", cutoff).execute()
+            counts[table] = counts.get(table, 0) + len(gone.data or [])
+        except Exception as e:
+            print(f"[retention] {table}.{column}: {e}")
+    if any(counts.values()):
+        print(f"[retention] deleted minors' records older than {days} days: {counts}")
+    return counts
+
+
+def _retention_loop():
+    while True:
+        try:
+            purge_minor_records()
+        except Exception as e:
+            print(f"[retention] failed: {e}")
+        time.sleep(24 * 3600)
+
+
+@app.post("/admin/purge-minors")
+def purge_minors_now(user: dict = Depends(get_current_user)):
+    """Run the minors' retention clean-up now (it also runs daily)."""
+    _require_admin(user)
+    _require_service_key()
+    return {"retention_days": MINOR_RETENTION_DAYS, "deleted": purge_minor_records()}
+
+
 class TranslateRequest(BaseModel):
     text: str = Field(..., max_length=MAX_ESSAY_CHARS)
 
@@ -1989,6 +2131,8 @@ def evaluate_essay(req: EvaluationRequest, request: Request,
     _check_quota(request, "evaluate", user)
     try:
         return _run_evaluate(req, user, use_rag=False)
+    except HTTPException:
+        raise   # e.g. guardian consent missing: shown to the user as is
     except Exception as e:
         print(f"❌ Evaluation error: {e}")
         raise HTTPException(500, SERVER_ERROR)
@@ -2000,6 +2144,8 @@ def evaluate_essay_with_rag(req: EvaluationRequest, request: Request,
     _check_quota(request, "evaluate", user)
     try:
         return _run_evaluate(req, user, use_rag=True)
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ RAG Evaluation error: {e}")
         raise HTTPException(500, SERVER_ERROR)

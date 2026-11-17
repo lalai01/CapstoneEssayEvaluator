@@ -26,7 +26,8 @@ function notEssayFrom(err) {
 // essay, or one photo per page). They are read one after another in file-name
 // order, which for phone photos is the order they were taken, and each one is
 // handed to onExtracted({ text, confidence, method, name }) as its own part.
-export default function FileUpload({ onExtracted }) {
+// uploadOptions: { minor, localOnly } for a minor's essay (see api.uploadFile).
+export default function FileUpload({ onExtracted, uploadOptions }) {
   const [uploading, setUploading] = useState(false);
   const [fileName, setFileName] = useState('');
   const [progress, setProgress] = useState('');
@@ -93,7 +94,7 @@ export default function FileUpload({ onExtracted }) {
     report('Uploading file...');
     let result;
     try {
-      result = await uploadFile(await shrinkImage(file));
+      result = await uploadFile(await shrinkImage(file), uploadOptions);
     } catch (err) {
       throw notEssayFrom(err) || err;
     }

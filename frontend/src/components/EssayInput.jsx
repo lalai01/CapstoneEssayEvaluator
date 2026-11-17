@@ -5,6 +5,8 @@ import FileUpload from './FileUpload';
 import ConfirmDialog from './ConfirmDialog';
 import { PrivacyConsent } from './PrivacyNotice';
 import { hasPrivacyConsent } from '../lib/privacy';
+import { NO_MINOR, redactPersonalInfo } from '../lib/redact';
+import MinorProtection from './MinorProtection';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
 import useDraft from '../lib/draft';
@@ -34,6 +36,11 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   // Data Privacy Act consent, given once per browser before evaluating.
   const [privacyOk, setPrivacyOk] = useState(hasPrivacyConsent);
   const [privacyNeeded, setPrivacyNeeded] = useState(false);
+  // A minor's essay (RA 10173): guardian consent, personal details removed,
+  // optionally kept on our server. Not a draft: the student's name is never stored.
+  const [minor, setMinor] = useState(NO_MINOR);
+  const [consentNeeded, setConsentNeeded] = useState(false);
+  const [redaction, setRedaction] = useState(null);   // { findings } of the last evaluation
 
   // There is always at least one part to type into.
   const [blankPart] = useState(typedPart);
@@ -58,6 +65,8 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     setParts(NO_PARTS);
     setTranslation(null);
     setTitleError(false);
+    setMinor(NO_MINOR);
+    setRedaction(null);
     onNewEssay?.();
     toast.success('Draft cleared. Start your new essay.');
   };
@@ -144,9 +153,25 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
       toast.error('Please read and agree to the Data Privacy Notice first.');
       return;
     }
-    const result = await toEnglish(written);
+    if (minor.minor && !minor.guardianConsent) {
+      setConsentNeeded(true);
+      document.getElementById('guardian-consent')?.focus();
+      toast.error('Confirm that the school has the parent’s or guardian’s consent first.');
+      return;
+    }
+    // A minor's essay loses its personal details here, in the browser, before
+    // it is sent anywhere (translation included).
+    let protectedText = written;
+    if (minor.minor) {
+      const r = redactPersonalInfo(written, [minor.studentName]);
+      protectedText = r.text;
+      setRedaction({ findings: r.findings });
+    } else {
+      setRedaction(null);
+    }
+    const result = minor.localOnly ? { translated: false } : await toEnglish(protectedText);
     if (result.error) toast.error(`${result.error} The essay is evaluated as written.`);
-    const essay = result.translated ? result.text : written;
+    const essay = result.translated ? result.text : protectedText;
     setTranslation(result.translated ? { original: written, text: result.text, languages: result.languages || [] } : null);
     if (result.translated) {
       const from = (result.languages || []).filter((l) => l.toLowerCase() !== 'english').join(', ');
@@ -165,7 +190,12 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     setLoading(true);
     setCurrentEssay(essay);
     setEvalType(evalTypeLocal);
-    setEssayTitle(title.trim());  // Pass title to parent
+    // A minor's name is removed from the title too.
+    const safeTitle = minor.minor ? redactPersonalInfo(title.trim(), [minor.studentName]).text : title.trim();
+    const privacy = minor.minor
+      ? { minor: true, guardianConsent: minor.guardianConsent, localOnly: minor.localOnly, redactNames: [minor.studentName] }
+      : null;
+    setEssayTitle(safeTitle);  // Pass title to parent
     const chosenRubric = rubricId ? Number(rubricId) : null;
     const evaluate = useRag ? evaluateEssayWithRag : evaluateEssay;
 
@@ -175,14 +205,18 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     setScores(null);
     setFeedback(null);
     onChooseAi(null);
-    setAiRuns(Object.fromEntries(EVALUATION_AIS.map((ai) => [ai.id, { status: 'running' }])));
+    // Kept on our server: only the local AI evaluates; the cloud AIs are skipped.
+    const usedAis = minor.localOnly ? EVALUATION_AIS.filter((a) => a.local) : EVALUATION_AIS;
+    setAiRuns(Object.fromEntries(EVALUATION_AIS.map((ai) => [ai.id, usedAis.includes(ai)
+      ? { status: 'running' }
+      : { status: 'skipped', error: 'Not used: this essay is kept on our server.' }])));
     let shown = false;
     let fallback = null;   // a rule-based result, shown only if no AI answers
 
     const runOne = async (ai) => {
       const started = performance.now();
       try {
-        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true, title.trim());
+        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true, safeTitle, privacy);
         if (typeof result.feedback === 'string' && result.feedback.startsWith('⚠️ Invalid Input')) {
           throw new Error(result.feedback.replace('⚠️ Invalid Input:', '').trim());
         }
@@ -204,7 +238,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     };
     // Cloud AIs (DeepSeek, GPT-OSS) run at once; local models share the server's
     // CPU, where one at a time is faster (no swapping models in and out of memory).
-    const [cloud, local] = [EVALUATION_AIS.filter((a) => !a.local), EVALUATION_AIS.filter((a) => a.local)];
+    const [cloud, local] = [usedAis.filter((a) => !a.local), usedAis.filter((a) => a.local)];
     const runLocalInTurn = async () => {
       const results = [];
       for (const ai of local) results.push(await runOne(ai));
@@ -220,9 +254,11 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     setLoading(false);
     const answered = outcomes.filter(Boolean).length;
     if (!shown) {
-      toast.error('Evaluation failed: none of the three AIs responded. Please try again.');
+      toast.error(`Evaluation failed: ${usedAis.length === 1 ? 'the AI didn’t respond' : 'none of the AIs responded'}. Please try again.`);
+    } else if (usedAis.length === 1) {
+      toast.success(`${usedAis[0].name} finished${useRag ? ' (with RAG)' : ''}. The essay stayed on our server.`);
     } else {
-      toast.success(`${answered} of 3 AIs finished${useRag ? ' (with RAG)' : ''}. Pick the result you prefer.`);
+      toast.success(`${answered} of ${usedAis.length} AIs finished${useRag ? ' (with RAG)' : ''}. Pick the result you prefer.`);
     }
   };
 
@@ -292,6 +328,12 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
             </p>
           )}
         </div>
+
+        <MinorProtection
+          value={minor}
+          highlight={consentNeeded && minor.minor && !minor.guardianConsent}
+          onChange={(v) => { setMinor(v); if (v.guardianConsent) setConsentNeeded(false); }}
+        />
 
         <div className="mb-5">
           <label className="block text-sm font-semibold text-gray-700 mb-2">Evaluation Type</label>
@@ -432,7 +474,28 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
           </button>
         </div>
 
-        <FileUpload onExtracted={handleExtracted} />
+        <FileUpload onExtracted={handleExtracted} uploadOptions={minor.minor ? { minor: true, localOnly: minor.localOnly } : undefined} />
+
+        {redaction && (
+          <div className="mt-5 rounded-xl border border-sky-200 bg-sky-50/70 p-4 text-sm" role="status">
+            <p className="font-semibold text-sky-900">
+              🛡️ {redaction.findings.length
+                ? `${redaction.findings.length} personal detail${redaction.findings.length === 1 ? ' was' : 's were'} removed before evaluating`
+                : 'No personal details were found to remove'}
+            </p>
+            {redaction.findings.length > 0 && (
+              <ul className="mt-1 list-disc pl-5 text-xs text-sky-900/80">
+                {redaction.findings.slice(0, 8).map((f, i) => (
+                  <li key={i}>{{ header: 'Heading', lrn: 'LRN', email: 'Email', phone: 'Phone number', name: 'Name' }[f.type] || f.type}: {f.text}</li>
+                ))}
+                {redaction.findings.length > 8 && <li>…and {redaction.findings.length - 8} more</li>}
+              </ul>
+            )}
+            <p className="mt-1 text-xs text-sky-900/80">
+              The AIs and the saved records only have the essay with [REDACTED] in their place. Your typed text here is unchanged.
+            </p>
+          </div>
+        )}
 
         {translation && translation.original === essayToEvaluate() && (
           <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4" role="status">

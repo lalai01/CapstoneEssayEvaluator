@@ -122,7 +122,7 @@ PRINTED_MIN_WORDS = 20
 HANDWRITING_PREFERENCE = 0.05
 
 
-def read_essay_image(image_bytes, check_page=True):
+def read_essay_image(image_bytes, check_page=True, use_cloud=True):
     """
     Read an English essay from an image (handwritten or printed).
 
@@ -153,7 +153,7 @@ def read_essay_image(image_bytes, check_page=True):
             return not_text(reason)
 
     import gemini_ocr
-    if gemini_ocr.enabled():
+    if use_cloud and gemini_ocr.enabled():   # use_cloud=False: local readers only (the page stays on our server)
         try:
             is_text, text, lines, model = gemini_ocr.read_page(image_bytes)
             print(f"[OCR] gemini ({model}): {len(text.split())} words, is_text={is_text}")
@@ -214,10 +214,10 @@ def read_essay_image(image_bytes, check_page=True):
             "quality": best["q"]["ratio"], "is_text": True, "reason": ""}
 
 
-def extract_text_from_image_bytes(image_bytes):
+def extract_text_from_image_bytes(image_bytes, use_cloud=True):
     """(text, confidence, engine) for one page; empty text if it isn't an essay page."""
     try:
-        r = read_essay_image(image_bytes)
+        r = read_essay_image(image_bytes, use_cloud=use_cloud)
         return r["text"], r["confidence"], r["engine"]
     except Exception as e:
         print(f"extract_text_from_image_bytes failed: {e}")

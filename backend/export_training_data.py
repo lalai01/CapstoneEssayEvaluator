@@ -92,6 +92,14 @@ def supabase_pages():
     import requests
     for row in fetch_rows():
         def load(url=row["image_url"]):
+            # The ocr-samples bucket is private: download through a signed link.
+            from supabase_client import supabase_admin
+            marker = "/ocr-samples/"
+            if supabase_admin and marker in url:
+                name = url.split(marker, 1)[1].split("?", 1)[0]
+                data = supabase_admin.storage.from_("ocr-samples").download(name)
+                if data:
+                    return data
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
             return resp.content

@@ -78,9 +78,13 @@ export const removeTeacher = async (email) => {
 };
 
 // ---------- OCR ----------
-export const uploadFile = async (file) => {
+// options.minor: a minor's page is not kept as a handwriting sample;
+// options.localOnly: read on our server only (no Gemini).
+export const uploadFile = async (file, options = {}) => {
   const formData = new FormData();
   formData.append('file', file);
+  if (options.minor) formData.append('minor', 'true');
+  if (options.localOnly) formData.append('local_only', 'true');
   const response = await apiClient.post('/ocr', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 300000,   // 5 minutes — handwriting OCR is slow on CPU
@@ -115,19 +119,28 @@ export const deleteSavedEssay = async (id) => {
 // strict: only that AI scores (no fallback to another model), used when the
 // three AIs evaluate side by side. The local models share the server's CPU,
 // so allow up to 5 minutes.
-export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null) => {
+// privacy: { minor, guardianConsent, localOnly, redactNames } for a minor's
+// essay (RA 10173); see EssayInput.
+const privacyFields = (privacy) => (privacy ? {
+  minor: !!privacy.minor,
+  guardian_consent: !!privacy.guardianConsent,
+  local_only: !!privacy.localOnly,
+  redact_names: (privacy.redactNames || []).filter(Boolean),
+} : {});
+
+export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null, privacy = null) => {
   const response = await apiClient.post(
     '/evaluate',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title, ...privacyFields(privacy) },
     { timeout: 300000 }
   );
   return response.data;
 };
 
-export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null) => {
+export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null, privacy = null) => {
   const response = await apiClient.post(
     '/evaluate-rag',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title, ...privacyFields(privacy) },
     { timeout: 300000 }
   );
   return response.data;
@@ -288,6 +301,12 @@ export const getEvaluationEssay = async (userId, essayHash) => {
 // language: { translated, text, languages, error? }. English comes back unchanged.
 export const translateEssay = async (text) => {
   const response = await apiClient.post('/translate', { text }, { timeout: 180000 });
+  return response.data;
+};
+
+// My Reports: delete one of the user's own essays everywhere (right to erasure).
+export const deleteMyEssay = async (essayHash) => {
+  const response = await apiClient.delete('/my/reports/essay', { params: { essay_hash: essayHash } });
   return response.data;
 };
 

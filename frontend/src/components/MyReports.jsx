@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { getMyReportEssay, getMyReports } from '../api';
+import { deleteMyEssay, getMyReportEssay, getMyReports } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage, matchesSearch } from '../lib/scoring';
 import ReportDialog from './ReportDialog';
@@ -53,10 +54,27 @@ function Section({ title, defaultOpen = true, tone = 'border-gray-200', children
   );
 }
 
-function ReportDetail({ essay }) {
+function ReportDetail({ essay, onDeleted }) {
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [report, setReport] = useState(null);   // the run whose PDF is being made
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  // Right to erasure (RA 10173): the essay, its AI results, saves and overrides.
+  const remove = async () => {
+    setDeleting(true);
+    try {
+      await deleteMyEssay(essay.essay_hash);
+      toast.success('The essay and all its results were deleted.');
+      setConfirmDelete(false);
+      onDeleted?.();
+    } catch (err) {
+      toast.error('Could not delete it: ' + errorMessage(err));
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -136,6 +154,32 @@ function ReportDetail({ essay }) {
       <Section title={`📝 Essay (${essay.essay_length} words)`} defaultOpen={false}>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800">{data.essay || '—'}</p>
       </Section>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-red-200 bg-white p-3">
+        <p className="text-xs text-gray-600">
+          Delete this essay everywhere it is kept: its AI results, Knowledge Base saves and overrides. This can’t be undone.
+        </p>
+        <button
+          type="button"
+          onClick={() => setConfirmDelete(true)}
+          className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50"
+        >
+          🗑️ Delete this essay
+        </button>
+      </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        tone="error"
+        icon="🗑️"
+        title="Delete this essay and all its results?"
+        confirmLabel={deleting ? 'Deleting…' : 'Delete permanently'}
+        cancelLabel="Keep it"
+        onConfirm={remove}
+        onCancel={() => setConfirmDelete(false)}
+      >
+        <p>“{essay.title || 'Untitled essay'}” will be removed from My Reports, the Knowledge Base and the Learning Hub. Downloaded PDFs are not affected.</p>
+      </ConfirmDialog>
 
       {report && (
         <ReportDialog
@@ -255,7 +299,7 @@ export default function MyReports() {
                     </div>
                   )}
                 </button>
-                {open && <ReportDetail essay={e} />}
+                {open && <ReportDetail essay={e} onDeleted={() => setReload((n) => n + 1)} />}
               </div>
             );
           })}

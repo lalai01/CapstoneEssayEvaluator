@@ -177,6 +177,7 @@ export default function HomePage({ setActiveTab }) {
               <li>• To be scored, the essay text is sent to <strong>DeepSeek</strong> and to <strong>Groq</strong> (GPT-OSS); if Groq is unavailable, <strong>Google Gemini</strong> scores it instead. The <strong>Qwen 2.5 (local)</strong> result is produced on our own server, so for that one the essay doesn’t leave it.</li>
               <li>• Photos of handwritten essays are read by <strong>Google Gemini</strong>.</li>
               <li>• Remove the student’s name, ID number and other personal details from the essay before evaluating.</li>
+              <li>• <strong>Students under 18:</strong> the teacher confirms the parent’s or guardian’s consent; the name, LRN and section are removed automatically before any AI sees the essay, its photos are not kept, and it can stay on our server only. Minors’ essays are deleted after about one school year.</li>
               <li>• AI scores support, and do not replace, the teacher’s judgement; the teacher decides the final grade.</li>
             </ul>
             <button

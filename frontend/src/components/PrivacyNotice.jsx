@@ -19,7 +19,7 @@ export function PrivacyNoticeText() {
         <h4 className="font-semibold text-gray-800">What we collect</h4>
         <ul className="mt-1 list-disc pl-5 space-y-0.5">
           <li>The essays you type or upload (text, photos, PDF or Word files) and their titles.</li>
-          <li>If you sign in: your name and email address from your Google account, and your role (student, teacher or admin).</li>
+          <li>If you sign in: your name and email address (from Google, Yahoo or your email sign-in), and your role (student, teacher or admin).</li>
           <li>The scores, feedback, overrides, remarks, ratings and survey answers you create in the system.</li>
         </ul>
       </div>
@@ -38,6 +38,34 @@ export function PrivacyNoticeText() {
           <li>Data is stored in <strong>Supabase</strong> (database and sign-in), with access controls so users see only their own records, and is sent over encrypted HTTPS connections.</li>
         </ul>
       </div>
+      <div>
+        <h4 className="font-semibold text-gray-800">Handwriting samples</h4>
+        <p className="mt-1">
+          To improve how handwriting is read, photos of pages uploaded by signed-in users may be kept in private
+          storage, viewed only by admins through links that expire, and used to train the handwriting reader. Pages
+          uploaded by guests, and pages of essays marked as written by a minor, are never kept.
+        </p>
+      </div>
+      <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sky-900">
+        <h4 className="font-semibold">Essays written by minors (under 18)</h4>
+        <p className="mt-1">
+          An essay with a student’s name, grade and section is information about the student’s education, which the
+          law treats as <strong>sensitive personal information</strong>. A minor cannot give consent alone: the school
+          obtains the <strong>parent’s or guardian’s consent</strong> (for example, at enrollment), and the teacher
+          confirms it before evaluating. For a minor’s essay the system:
+        </p>
+        <ul className="mt-1 list-disc pl-5 space-y-0.5">
+          <li>removes the name, LRN, grade and section, school, email and phone number before any AI sees the essay;</li>
+          <li>never keeps its photos;</li>
+          <li>can keep it entirely on our server (local reader and Qwen, no cloud AI) when the teacher chooses;</li>
+          <li>deletes it automatically after about one school year; it can also be deleted any time from My Reports.</li>
+        </ul>
+        <p className="mt-1">
+          The school is the personal information controller and this system processes the data on its behalf, under a
+          data processing agreement. A data breach is reported to the National Privacy Commission and the affected
+          families as the law requires.
+        </p>
+      </div>
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
         <strong>Before you evaluate:</strong> remove the student’s full name, ID number, section and any other
         personal details from the essay text. The <em>Student name</em> you type when downloading a report is put only
@@ -46,8 +74,9 @@ export function PrivacyNoticeText() {
       <div>
         <h4 className="font-semibold text-gray-800">How long we keep it</h4>
         <p className="mt-1">
-          While your account is active, or until you ask us to delete it. Data no longer needed for its purpose is
-          deleted.
+          While your account is active, or until you delete it: any essay and all its results can be deleted from
+          My Reports. Minors’ essays are deleted automatically after about one school year. Data no longer needed for
+          its purpose is deleted.
         </p>
       </div>
       <div>
@@ -111,8 +140,9 @@ export function PrivacyConsent({ agreed, onChange, highlight }) {
     <div className={`mt-5 rounded-xl border p-3 text-xs ${highlight ? 'border-red-400 bg-red-50' : 'border-gray-200 bg-gray-50'}`}>
       <p className="text-gray-700">
         🔒 <strong>Data Privacy (RA 10173):</strong> remove the student’s name and other personal details from the
-        essay. The text is sent to DeepSeek and Groq/Gemini (cloud) and to Qwen on our own server. AI scores support,
-        and do not replace, the teacher’s judgement.{' '}
+        essay. The text is sent to DeepSeek and Groq/Gemini (cloud) and to Qwen on our own server. If the student is
+        under 18, tick <em>“The student is a minor”</em> above. AI scores support, and do not replace, the teacher’s
+        judgement.{' '}
         <button type="button" onClick={() => setOpen(true)} className="font-semibold text-indigo-700 underline">
           Read the full privacy notice
         </button>
