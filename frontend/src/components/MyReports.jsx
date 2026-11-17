@@ -20,6 +20,19 @@ const FILTERS = [
 ];
 
 // The user's own corrected scores for this essay, if they overrode the AI.
+// The latest result of each AI for this essay (same evaluation type), in
+// the shape the report's comparison table expects.
+function runsByAi(runs, evalType) {
+  const out = {};
+  // Oldest first from the server: read newest first.
+  for (const r of [...(runs || [])].reverse()) {
+    const id = ['llama', 'qwen', 'gemma'].includes(r.ai_choice) ? 'local' : r.ai_choice;
+    if (!r.scores || r.eval_type !== evalType || out[id]) continue;
+    out[id] = { status: 'done', scores: r.scores };
+  }
+  return out;
+}
+
 function overrideScores(overrides) {
   const last = overrides[overrides.length - 1];
   if (!last) return null;
@@ -140,6 +153,7 @@ function ReportDetail({ essay }) {
             scores: report.scores,
             evalType: report.eval_type,
             teacherScores: overrideScores(data.overrides),
+            aiRuns: runsByAi(data.runs, report.eval_type),
           }}
         />
       )}

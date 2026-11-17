@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import useInstallPrompt from '../lib/installPrompt';
+import { useAuth } from '../context/AuthContext';
+import { TwoFactorSettings } from './TwoFactor';
 
 // Simple outline icons (24×24, stroke-based).
 const ICON_PATHS = {
@@ -131,6 +133,8 @@ function GroupMenu({ group, items, currentTab, onSelect }) {
 
 function AccountMenu({ user, roleBadges, onSignOut }) {
   const [open, setOpen] = useState(false);
+  const [securityOpen, setSecurityOpen] = useState(false);
+  const { mfa } = useAuth();
   const ref = useRef(null);
   useDismiss(open, setOpen, ref);
   const email = user?.email || '';
@@ -174,6 +178,17 @@ function AccountMenu({ user, roleBadges, onSignOut }) {
           <button
             type="button"
             role="menuitem"
+            onClick={() => { setOpen(false); setSecurityOpen(true); }}
+            className="w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 mt-1 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+          >
+            <span>🔐 Two-factor authentication</span>
+            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${mfa?.enrolled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>
+              {mfa?.enrolled ? 'On' : 'Off'}
+            </span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             onClick={() => { setOpen(false); onSignOut(); }}
             className="w-full flex items-center gap-2 rounded-lg px-3 py-2.5 mt-1 text-sm text-red-600 hover:bg-red-50 transition-colors"
           >
@@ -182,6 +197,7 @@ function AccountMenu({ user, roleBadges, onSignOut }) {
           </button>
         </div>
       )}
+      <TwoFactorSettings open={securityOpen} onClose={() => setSecurityOpen(false)} />
     </div>
   );
 }

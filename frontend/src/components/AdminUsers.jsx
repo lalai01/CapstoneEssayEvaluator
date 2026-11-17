@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import {
   listAdmins, addAdmin, removeAdmin,
   listTeachers, addTeacher, removeTeacher, setTeacherStatus,
-  listRoleLog,
+  listRoleLog, resetMfa,
 } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
@@ -281,6 +281,25 @@ export default function AdminUsers() {
             </table>
           </div>
         )}
+      </section>
+
+      {/* ---------------- Two-factor reset ---------------- */}
+      <section>
+        <h3 className="text-lg font-semibold text-gray-800 mb-1">🔐 Reset two-factor authentication</h3>
+        <p className="text-sm text-gray-600 mb-3">
+          Teachers and admins sign in with a password or email link <em>and</em> a code from an authenticator app.
+          If someone lost or replaced their phone, remove their authenticator here; at their next sign-in they set up
+          a new one. Check that the request really comes from that person first.
+        </p>
+        <EmailForm
+          inputId="reset-mfa-email"
+          label="Email of the account to reset"
+          buttonText="Reset two-factor"
+          onSubmit={(email) => {
+            if (!confirm(`Remove the authenticator of ${email}? They will set up a new one at their next sign-in.`)) return Promise.resolve();
+            return run(`mfa:${email}`, () => resetMfa(email), `Two-factor authentication was reset for ${email}`);
+          }}
+        />
       </section>
 
       {/* ---------------- Admins ---------------- */}

@@ -2,6 +2,7 @@ import React from 'react';
 import toast from 'react-hot-toast';
 import { saveKnowledge, saveOverride } from '../api';
 import { OVERRIDE_SAVED_EVENT } from './HumanVsAi';
+import { readDraft } from '../lib/draft';
 import { useAuth } from '../context/AuthContext';
 import ReportDialog from './ReportDialog';
 import AnnotatedEssay from './AnnotatedEssay';
@@ -18,6 +19,7 @@ import {
   satisfactionStyle,
   holisticDisplay,
   isNum,
+  essayKey,
 } from '../lib/scoring';
 
 // Override buttons (Override Scores / Reject & Override). Set to false to
@@ -249,6 +251,18 @@ function SatisfactionRating({ value, onChange }) {
 // ============================================================
 // Main Component
 // ============================================================
+// The human scores typed in the Human vs AI table for this essay, as numbers.
+function draftHumanScores(essayText) {
+  const draft = readDraft('myScores', null);
+  if (!draft || draft.essay !== essayKey(essayText)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(draft.values || {})) {
+    const n = Number(v);
+    if (v !== '' && Number.isInteger(n)) out[k] = n;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export default function Results({
   scores,
   feedback,
@@ -263,6 +277,7 @@ export default function Results({
   suggestedChanges,
   setSuggestedChanges,
   onCompare,   // opens Compare with My Scores (the AIs' statistics live there)
+  aiRuns,      // all three AIs' results, for the report's comparison table
 }) {
   const { user, isTeacher, isAdmin } = useAuth();
   const [teacherScores, setTeacherScores] = React.useState({});
@@ -788,6 +803,8 @@ export default function Results({
             scores,
             evalType,
             teacherScores: submittedOverride?.teacherScores || null,
+            aiRuns,
+            humanScores: draftHumanScores(essayText),
           }}
         />
       )}

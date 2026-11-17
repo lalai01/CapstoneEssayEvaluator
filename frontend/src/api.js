@@ -12,9 +12,6 @@ apiClient.interceptors.request.use(
 
       if (session?.access_token) {
         config.headers.Authorization = `Bearer ${session.access_token}`;
-        console.log('✅ Token attached to:', config.url);
-      } else {
-        console.warn('⚠️ No session for:', config.url);
       }
 
       return config;
@@ -61,6 +58,12 @@ export const setTeacherStatus = async (email, status) => {
 // Who added, removed, activated or deactivated teachers and admins.
 export const listRoleLog = async (limit = 100) => {
   const response = await apiClient.get('/admin/role-log', { params: { limit } });
+  return response.data;
+};
+
+// Admin: remove a user's authenticator (lost phone); they set up a new one.
+export const resetMfa = async (email) => {
+  const response = await apiClient.post('/admin/reset-mfa', { email });
   return response.data;
 };
 

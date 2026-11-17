@@ -18,6 +18,8 @@ import {
   holisticDisplay,
 } from './scoring';
 import { buildAnnotations, segmentText, ANNOTATION_TYPES } from './annotate';
+import { analyzeEssay, interpret, ANALYSIS_REFERENCES } from './essayAnalysis';
+import { EVALUATION_AIS } from './evaluationAis';
 
 // Footer line on every page of the PDF report (Data Privacy Act of 2012).
 const PRIVACY_FOOTER = 'Confidential: may contain personal data protected under RA 10173 (Data Privacy Act of 2012). '
@@ -368,11 +370,150 @@ function drawRevision(w, revision) {
  *   revision   // optional { revised_essay, changes, evaluated_by } from /revise-essay
  * }
  */
+// ---------- In-depth analysis ----------
+// Rule-based measures of the essay (readability, sentence structure,
+// vocabulary, cohesion, evidence), a paragraph-by-paragraph breakdown, the
+// three AIs' scores side by side with the human score, and the method.
+function drawDeepAnalysis(w, essayText, { scores, aiRuns, humanScores, evalType }) {
+  const a = analyzeEssay(essayText);
+  if (!a.words) return;
+  w.doc.addPage();
+  w.y = PAGE.top;
+  w.heading('In-Depth Analysis');
+  w.paragraph(
+    `This section measures the essay itself: ${a.words} words in ${a.sentences} sentences and ${a.paragraphs} `
+    + `paragraph${a.paragraphs === 1 ? '' : 's'} (${a.uniqueWords} different words). The figures are computed `
+    + 'with standard formulas, not by an AI, so the same essay always gets the same results. "Typical" is the '
+    + 'range usually expected in a secondary or college academic essay.',
+    { size: 9, color: COLORS.muted },
+  );
+
+  // Writing profile
+  w.paragraph('1. Writing profile', { style: 'bold' });
+  w.table([
+    { label: 'Measure', width: 140 },
+    { label: 'Value', width: 82 },
+    { label: 'Typical', width: 92 },
+    { label: 'What it means', width: w.contentWidth - 314 },
+  ], interpret(a).map((r) => ({ cells: [r.label, r.value, r.target, r.note], bold: [true] })));
+
+  // Cohesion: transitions by kind
+  w.paragraph('2. Cohesion: transitions used', { style: 'bold' });
+  const kinds = Object.entries(a.transitions);
+  if (kinds.length) {
+    for (const [kind, found] of kinds) {
+      w.paragraph(`${kind}: ${Object.entries(found).map(([t, n]) => (n > 1 ? `${t} (${n})` : t)).join(', ')}`, { indent: 10, size: 9 });
+    }
+    const missing = ['Contrast', 'Cause and effect', 'Example', 'Conclusion'].filter((k) => !a.transitions[k]);
+    if (missing.length) {
+      w.paragraph(`Not used: ${missing.join(', ')} transitions. Adding them would show how the ideas relate.`, { indent: 10, size: 9, color: COLORS.muted });
+    }
+  } else {
+    w.paragraph('No transition words were found. Link paragraphs and ideas with words such as "however", "therefore", "for example" and "in conclusion".', { indent: 10, size: 9 });
+  }
+
+  // Word choice
+  w.paragraph('3. Word choice and sentence openings', { style: 'bold' });
+  w.paragraph(a.repeated.length
+    ? `Most repeated content words: ${a.repeated.map(([word, n]) => `${word} (${n})`).join(', ')}. Repeating the topic word is normal; vary the others with synonyms.`
+    : 'No content word is overused.', { indent: 10, size: 9 });
+  if (a.repeatedOpeners.length) {
+    w.paragraph(`Many sentences begin with the same word: ${a.repeatedOpeners.map(([word, n]) => `"${word}" (${n} times)`).join(', ')}. Vary sentence openings.`, { indent: 10, size: 9 });
+  }
+  if (Object.keys(a.vague).length) {
+    w.paragraph(`Vague or informal words: ${Object.entries(a.vague).map(([word, n]) => `${word} (${n})`).join(', ')}.`, { indent: 10, size: 9 });
+  }
+
+  // Paragraph by paragraph
+  w.paragraph('4. Paragraph-by-paragraph analysis', { style: 'bold' });
+  w.table([
+    { label: '#', width: 22 },
+    { label: 'Role', width: 68 },
+    { label: 'Words', width: 42, align: 'right' },
+    { label: 'Sent.', width: 36, align: 'right' },
+    { label: 'Opening (topic) sentence', width: 170 },
+    { label: 'Observations', width: w.contentWidth - 338 },
+  ], a.paragraphsInfo.map((p) => ({
+    cells: [String(p.n), p.role, String(p.words), String(p.sentences),
+      p.opening.length > 140 ? `${p.opening.slice(0, 137)}...` : p.opening, p.notes.join('; ')],
+    colors: [null, null, null, null, null, p.notes[0] === 'well developed' ? COLORS.good : COLORS.bad],
+  })));
+
+  // The three AIs side by side, with the human score
+  const runs = EVALUATION_AIS
+    .map((ai) => ({ ai, s: aiRuns?.[ai.id]?.status === 'done' ? aiRuns[ai.id].scores : null }))
+    .filter((r) => r.s && r.s.evaluated_by?.provider !== 'heuristic');
+  if (runs.length >= 2 && evalType !== 'holistic') {
+    const criteria = getCriteria(scores);
+    const human = humanScores && Object.values(humanScores).some(isNum) ? humanScores : null;
+    w.paragraph('5. The three AI evaluators compared', { style: 'bold' });
+    const fixed = 130;
+    const cols = runs.length + (human ? 1 : 0) + 1;
+    const cw = Math.floor((w.contentWidth - fixed) / cols);
+    const spreadOf = (c) => {
+      const vals = runs.map(({ s }) => s[c.key]).filter(isNum);
+      return vals.length ? Math.max(...vals) - Math.min(...vals) : null;
+    };
+    w.table([
+      { label: 'Criterion', width: fixed },
+      ...(human ? [{ label: 'Human', width: cw, align: 'right' }] : []),
+      ...runs.map(({ ai }) => ({ label: ai.name, width: cw, align: 'right' })),
+      { label: 'Spread', width: w.contentWidth - fixed - cw * (cols - 1), align: 'right' },
+    ], [
+      ...criteria.map((c) => {
+        const spread = spreadOf(c);
+        return {
+          cells: [
+            `${c.label} (/${c.max_score})`,
+            ...(human ? [isNum(human[c.key]) ? String(human[c.key]) : '-'] : []),
+            ...runs.map(({ s }) => (isNum(s[c.key]) ? String(s[c.key]) : '-')),
+            spread === null ? '-' : spread === 0 ? 'agree' : `${spread} pt${spread === 1 ? '' : 's'}`,
+          ],
+          bold: [true],
+          colors: [...Array(cols).fill(null), spread >= 2 ? COLORS.bad : spread === 0 ? COLORS.good : null],
+        };
+      }),
+      {
+        cells: [
+          'Overall (weighted)',
+          ...(human ? [pct(weightedFraction(human, criteria))] : []),
+          ...runs.map(({ s }) => pct(weightedFraction(s, criteria))),
+          '',
+        ],
+        bold: Array(cols + 1).fill(true),
+      },
+    ]);
+    const agree = criteria.filter((c) => { const sp = spreadOf(c); return sp !== null && sp <= 1; }).length;
+    const samePrompt = runs.every(({ s }) => s.prompt?.system) && new Set(runs.map(({ s }) => s.prompt.system)).size === 1;
+    w.paragraph(
+      `The AIs agree within one point on ${agree} of ${criteria.length} criteria. `
+      + (samePrompt ? 'All of them received the same scoring prompt (same rubric, rules and essay, temperature 0); the local Qwen model gets a shortened version of it. ' : '')
+      + "Where the spread is two points or more, the teacher's judgement should decide."
+      + (human ? " The human column is the teacher's score, for comparison." : ''),
+      { size: 9, color: COLORS.muted },
+    );
+  }
+
+  // Method and references
+  w.paragraph('Method and references', { style: 'bold' });
+  w.paragraph(
+    'Flesch Reading Ease = 206.835 - 1.015 x (words / sentences) - 84.6 x (syllables / words); '
+    + 'Flesch-Kincaid Grade = 0.39 x (words / sentences) + 11.8 x (syllables / words) - 15.59. '
+    + 'Vocabulary variety is the moving-average type-token ratio over 50-word windows. Transitions follow the '
+    + 'categories of cohesive devices; evidence markers are citations, "according to", statistics, years and '
+    + 'quotations. Syllables, passive voice and paragraph roles are estimated automatically and may be '
+    + 'approximate, especially for text read from handwriting.',
+    { size: 8, color: COLORS.muted },
+  );
+  for (const ref of ANALYSIS_REFERENCES) w.paragraph(ref, { size: 8, color: COLORS.muted, indent: 10 });
+}
+
 export function generateEvaluationReport(options) {
   const {
     title, essayText, feedback, scores, evalType,
     studentName, section, teacherName, teacherComments,
     teacherScores, includeEssay = true, revision = null,
+    aiRuns = null, humanScores = null, includeAnalysis = true,
   } = options;
 
   const w = new ReportWriter();
@@ -555,6 +696,13 @@ export function generateEvaluationReport(options) {
     + 'They are a guide for revision, not a substitute for the teacher\'s judgment.',
     { size: 8, color: COLORS.muted }
   );
+
+  // ---------- In-depth analysis ----------
+  if (includeAnalysis && clean(essayText)) {
+    drawDeepAnalysis(w, essayText, {
+      scores, aiRuns, evalType, humanScores: hasTeacherScores ? teacherScores : humanScores,
+    });
+  }
 
   // ---------- Essay appendix (highlighted like the screen) ----------
   if (includeEssay && clean(essayText)) {

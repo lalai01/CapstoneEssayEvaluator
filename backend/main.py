@@ -8,20 +8,28 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Literal
 import ocr_utils
 import evaluator
 from supabase_client import supabase, supabase_admin
 from ai_models import test_prompt
 from ocr_jobs import get_job_status
-from auth import get_current_user, get_optional_user, security
+from auth import MFA_REQUIRED, get_current_user, get_current_user_any_aal, get_optional_user, security
 from supabase import create_client, Client
 from evaluation_graph import run_evaluation   # ✅ LangGraph
 from evaluator import resolve_rubric
 
 # ---------- FastAPI App ----------
-app = FastAPI(title="AI Essay Evaluator API")
+# The interactive API pages (/docs, /redoc, /openapi.json) list every
+# endpoint for anyone; they are off unless ENABLE_API_DOCS=true.
+_API_DOCS = os.environ.get("ENABLE_API_DOCS", "false").strip().lower() in ("true", "1", "yes")
+app = FastAPI(
+    title="AI Essay Evaluator API",
+    docs_url="/docs" if _API_DOCS else None,
+    redoc_url="/redoc" if _API_DOCS else None,
+    openapi_url="/openapi.json" if _API_DOCS else None,
+)
 
 
 @app.on_event("startup")
@@ -38,17 +46,31 @@ ALLOWED_ORIGINS = [
     "https://capstoneessayevaluator.web.app",
     "https://essay-evaluator.duckdns.org",
     "https://api.essay-evaluator.duckdns.org",
-    "https://essay-evaluator.duckdns.org",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# Security headers on every API response: no sniffing content types, never
+# shown inside another site's frame, HTTPS only, no referrer leaks, and
+# personal data (essays, scores) never kept in shared caches.
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 # Global exception handler – always adds CORS headers
 @app.exception_handler(Exception)
@@ -60,9 +82,10 @@ async def global_exception_handler(request: Request, exc: Exception):
         headers["Access-Control-Allow-Credentials"] = "true"
     import traceback
     traceback.print_exc()
+    # The details stay in the server log: they can reveal internals.
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={"detail": "Something went wrong on the server. Please try again."},
         headers=headers,
     )
 
@@ -78,8 +101,16 @@ def get_user_client(credentials: HTTPAuthorizationCredentials = Depends(security
     return c
 
 # ---------- Models ----------
+# Errors shown to users never include internal details (those go to the log).
+SERVER_ERROR = "Something went wrong on the server. Please try again."
+
+# Size limits on what a request may carry, so one request can't tie up the
+# server or run up the AI bill.
+MAX_ESSAY_CHARS = 100_000      # about 15,000 words
+MAX_SHORT_TEXT = 4_000         # comments, remarks, titles
+
 class EvaluationRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=MAX_ESSAY_CHARS)
     evaluation_type: str = "analytic"
     rubric_id: Optional[int] = None   # omit to use the teacher's default rubric
     # "auto" picks a model per essay; or force "deepseek" / "local" (= "llama")
@@ -88,7 +119,7 @@ class EvaluationRequest(BaseModel):
     # to another model.
     ai_model: Literal["auto", "deepseek", "local", "llama", "qwen", "gemma", "groq"] = "auto"
     strict_model: bool = False
-    title: Optional[str] = None   # the essay's title, for the admin's evaluation activity
+    title: Optional[str] = Field(None, max_length=300)   # the essay's title, for the admin's evaluation activity
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -111,8 +142,8 @@ def _not_essay(reason: str):
     raise HTTPException(422, {"code": "not_essay", "message": NOT_ESSAY_MESSAGE, "reason": reason})
 
 class KnowledgeEntry(BaseModel):
-    title: Optional[str] = None
-    essay: str
+    title: Optional[str] = Field(None, max_length=300)
+    essay: str = Field(..., max_length=MAX_ESSAY_CHARS)
 
     main_statement: Optional[int] = None
     organization: Optional[int] = None
@@ -161,24 +192,24 @@ class RubricUpdate(BaseModel):
 class OverrideRequest(BaseModel):
     title: Optional[str] = None
     ai_model: Optional[str] = None
-    original_essay: str
+    original_essay: str = Field(..., max_length=MAX_ESSAY_CHARS)
     original_scores: Dict[str, Any]
     teacher_scores: Optional[Dict[str, Any]] = None
-    teacher_feedback: str
+    teacher_feedback: str = Field(..., max_length=20_000)
     suggested_changes: Optional[str] = None
     accepted: bool = False
     satisfaction: Optional[int] = 5
 
 class RevisionRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=MAX_ESSAY_CHARS)
     grammar_issues: Optional[List[Dict[str, Any]]] = None
     recommendations: Optional[List[Dict[str, Any]]] = None
     ai_model: Literal["auto", "deepseek", "local"] = "auto"
 
 class PromptTestRequest(BaseModel):
-    ai_provider: str
-    system_prompt: str
-    user_prompt: str
+    ai_provider: str = Field(..., max_length=20)
+    system_prompt: str = Field(..., max_length=20_000)
+    user_prompt: str = Field(..., max_length=60_000)
     model: Optional[str] = None
     json_mode: bool = False   # ask the model for strict JSON output
     json_schema: Optional[Dict[str, Any]] = None   # exact structure (Ollama 0.5+)
@@ -187,21 +218,21 @@ class PromptTestResponse(BaseModel):
     result: Dict[str, Any]
 
 class SavedEssayEntry(BaseModel):
-    title: str
-    essay: str
+    title: str = Field(..., max_length=300)
+    essay: str = Field(..., max_length=MAX_ESSAY_CHARS)
 
 class RatingEntry(BaseModel):
-    rating: int
-    comment: Optional[str] = None
+    rating: int = Field(..., ge=1, le=5)
+    comment: Optional[str] = Field(None, max_length=MAX_SHORT_TEXT)
 
 class CommentEntry(BaseModel):
     rating_id: int
     parent_id: Optional[int] = None
-    body: str
+    body: str = Field(..., min_length=1, max_length=MAX_SHORT_TEXT)
 
 class ReactionEntry(BaseModel):
     comment_id: int
-    reaction_type: str
+    reaction_type: str = Field(..., max_length=40)
 
 class SurveyCreate(BaseModel):
     title: str
@@ -346,7 +377,7 @@ def _confirmed_email(user) -> str:
     email = (user.get("email") or "").lower()
     return email if email and user.get("email_confirmed", True) else ""
 
-def is_admin(user):
+def _has_admin_role(user):
     if not user:
         return False
     if user.get("role") == "admin":
@@ -360,7 +391,7 @@ def is_admin(user):
 # teachers unless they are also listed as one; one person can hold both
 # roles. Everyone else signed in is a student: they can evaluate essays and
 # save them privately, but their saves are not approved.
-def is_teacher(user):
+def _has_teacher_role(user):
     if not user:
         return False
     if user.get("role") == "teacher":
@@ -368,11 +399,32 @@ def is_teacher(user):
     email = _confirmed_email(user)
     return bool(email) and email in _table_role_emails("teachers")
 
+# Teachers and admins must use two-factor authentication (an authenticator
+# app code): their powers (approving into the shared Knowledge Base, managing
+# roles, surveys and rubrics) only apply in a session that entered the code
+# (aal2). Without it they are treated as students until they set it up.
+# REQUIRE_STAFF_MFA=false turns this off (e.g. for local testing).
+REQUIRE_STAFF_MFA = os.environ.get("REQUIRE_STAFF_MFA", "true").strip().lower() not in ("false", "0", "no")
+
+def _mfa_ok(user):
+    return not REQUIRE_STAFF_MFA or (user or {}).get("aal") == "aal2"
+
+def is_admin(user):
+    return _has_admin_role(user) and _mfa_ok(user)
+
+def is_teacher(user):
+    return _has_teacher_role(user) and _mfa_ok(user)
+
+def _staff_mfa_pending(user):
+    return (_has_admin_role(user) or _has_teacher_role(user)) and not _mfa_ok(user)
+
 def role_of(user) -> str:
-    return "admin" if is_admin(user) else "teacher" if is_teacher(user) else "student"
+    return "admin" if _has_admin_role(user) else "teacher" if _has_teacher_role(user) else "student"
 
 def _require_teacher(user, action="do this"):
     if not is_teacher(user):
+        if _staff_mfa_pending(user):
+            raise HTTPException(403, MFA_REQUIRED)
         raise HTTPException(403, f"Only teachers can {action}. Ask an admin to add you as a teacher.")
 
 class AdminEmail(BaseModel):
@@ -382,6 +434,8 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _require_admin(user):
     if not is_admin(user):
+        if _staff_mfa_pending(user):
+            raise HTTPException(403, MFA_REQUIRED)
         raise HTTPException(403, "Admin only")
 
 def _require_service_key():
@@ -389,15 +443,62 @@ def _require_service_key():
         raise HTTPException(500, "SUPABASE_SERVICE_KEY is not set on the server; admin management needs it.")
 
 @app.get("/me")
-def who_am_i(user: dict = Depends(get_current_user)):
-    """Who the caller is and their role (drives the tabs and role tag)."""
+def who_am_i(user: dict = Depends(get_current_user_any_aal)):
+    """Who the caller is and their role (drives the tabs and role tag), and
+    whether two-factor authentication is still needed in this session."""
+    code_pending = user.get("mfa_enrolled") and user.get("aal") != "aal2"
     return {
         "id": user["id"],
         "email": user.get("email"),
         "role": role_of(user),
-        "is_admin": is_admin(user),
-        "is_teacher": is_teacher(user),
+        "is_admin": is_admin(user) and not code_pending,
+        "is_teacher": is_teacher(user) and not code_pending,
+        # Teachers and admins must set up / enter an authenticator code.
+        "mfa_required_for_role": REQUIRE_STAFF_MFA and (_has_admin_role(user) or _has_teacher_role(user)),
+        "mfa_enrolled": bool(user.get("mfa_enrolled")),
+        "aal": user.get("aal"),
     }
+
+def _auth_admin_request(method, path, **kw):
+    """Supabase Auth admin API (service key), e.g. to reset two-factor auth."""
+    import requests
+    from supabase_client import SUPABASE_SERVICE_KEY
+    return requests.request(method, f"{SUPABASE_URL}/auth/v1/admin{path}", timeout=15, headers={
+        "apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}, **kw)
+
+
+@app.post("/admin/reset-mfa")
+def reset_mfa(entry: AdminEmail, user: dict = Depends(get_current_user)):
+    """Remove a user's authenticator (lost or replaced phone). They sign in
+    with their password again; teachers and admins are then asked to set up a
+    new authenticator before they can continue."""
+    _require_admin(user)
+    _require_service_key()
+    email = entry.email.strip().lower()
+    target = None
+    for page in range(1, 51):   # up to 50,000 accounts
+        r = _auth_admin_request("GET", "/users", params={"page": page, "per_page": 1000})
+        if r.status_code != 200:
+            raise HTTPException(502, "Couldn't read the user list from Supabase.")
+        users = r.json().get("users") or []
+        target = next((u for u in users if (u.get("email") or "").lower() == email), None)
+        if target or len(users) < 1000:
+            break
+    if not target:
+        raise HTTPException(404, f"No account uses {email}.")
+    if target["id"] == user["id"]:
+        raise HTTPException(400, "Ask another admin to reset your own two-factor authentication.")
+    removed = 0
+    for factor in target.get("factors") or []:
+        r = _auth_admin_request("DELETE", f"/users/{target['id']}/factors/{factor['id']}")
+        if r.status_code in (200, 204):
+            removed += 1
+    import auth as auth_module
+    with auth_module._cache_lock:
+        auth_module._cache.clear()   # cached sessions forget the old authenticator
+    _log_role_change("mfa", email, "reset two-factor authentication", user.get("email"), {"factors_removed": removed})
+    return {"email": email, "factors_removed": removed}
+
 
 @app.get("/admin/admins")
 def list_admins(user: dict = Depends(get_current_user)):
@@ -674,7 +775,7 @@ def admin_get_user_profiles(ids: str, user: dict = Depends(get_current_user)):
         result = supabase.rpc("get_user_profiles", {"user_ids": user_ids}).execute()
         return {"profiles": result.data}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 # ---------- Admin Surveys ----------
 @app.post("/surveys")
@@ -1340,7 +1441,7 @@ def save_essay(entry: SavedEssayEntry, user=Depends(get_current_user)):
         import traceback
         traceback.print_exc()
         print(f"[saved-essays] FAILED: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 @app.get("/saved-essays")
 def list_saved_essays(user=Depends(get_current_user)):
@@ -1352,7 +1453,7 @@ def list_saved_essays(user=Depends(get_current_user)):
             .execute()
         return result.data
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 @app.delete("/saved-essays/{id}")
 def delete_saved_essay(id: int, user=Depends(get_current_user)):
@@ -1360,7 +1461,7 @@ def delete_saved_essay(id: int, user=Depends(get_current_user)):
         _db().table("saved_essays").delete().eq("id", id).eq("user_id", user["id"]).execute()
         return {"status": "deleted"}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 #endregion
 
@@ -1392,16 +1493,20 @@ def _log_handwriting_sample(contents, suffix, content_type, reader_text, engine)
         print(f"Failed to log OCR sample: {e}")
 
 
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024   # essay photos, scans, PDFs and Word files
+
+
 @app.post("/ocr")
 async def ocr_from_file(request: Request, file: UploadFile = File(...),
                         user: Optional[dict] = Depends(get_optional_user)):
-    if user is None:
-        _check_guest_quota(request, "ocr")
+    _check_quota(request, "ocr", user)
     suffix = os.path.splitext(file.filename)[1].lower()
     if suffix not in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf', '.docx']:
         raise HTTPException(400, "Unsupported file type")
 
-    contents = await file.read()
+    contents = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"The file is too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
 
     # ---------- PDF: hand off to background job ----------
     if suffix == '.pdf':
@@ -1520,7 +1625,7 @@ def list_pending_ocr(
         return result.data
     except Exception as e:
         print(f"Failed to fetch pending OCR samples: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 @app.get("/ocr/accuracy")
 def ocr_accuracy(user: dict = Depends(get_current_user)):
@@ -1645,6 +1750,42 @@ def _check_guest_quota(request: Request, kind: str):
                 f"going, or try again in about {wait} min.")})
         recent.append(now)
         _guest_hits[key] = recent
+        _forget_old_hits(now)
+
+
+# Signed-in users get a generous allowance too, so a stolen or scripted
+# account can't run up the AI bill or flood the server.
+USER_LIMITS = {
+    "evaluate": int(os.environ.get("USER_EVALS_PER_HOUR", "150")),      # 50 essays × 3 AIs
+    "ocr": int(os.environ.get("USER_UPLOADS_PER_HOUR", "120")),
+    "translate": int(os.environ.get("USER_EVALS_PER_HOUR", "150")),
+    "test_prompt": int(os.environ.get("USER_PROMPT_TESTS_PER_HOUR", "30")),
+}
+
+
+def _forget_old_hits(now):
+    # Keep the counters from growing without end (called with _guest_lock held).
+    if len(_guest_hits) > 20000:
+        for k in [k for k, v in _guest_hits.items() if not v or now - v[-1] > 3600]:
+            del _guest_hits[k]
+
+
+def _check_quota(request: Request, kind: str, user: Optional[dict]):
+    """Hourly allowance: per IP address for guests, per account when signed in."""
+    if user is None:
+        _check_guest_quota(request, kind)
+        return
+    limit = USER_LIMITS[kind]
+    key, now = f"user:{kind}:{user['id']}", time.time()
+    with _guest_lock:
+        recent = [t for t in _guest_hits.get(key, []) if now - t < 3600]
+        if len(recent) >= limit:
+            wait = int((3600 - (now - recent[0])) // 60) + 1
+            raise HTTPException(429, {"code": "user_limit", "message": (
+                f"You've reached the hourly limit ({limit}) for this action. Please try again in about {wait} min.")})
+        recent.append(now)
+        _guest_hits[key] = recent
+        _forget_old_hits(now)
 
 
 def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
@@ -1827,7 +1968,7 @@ def _essay_detail(user_id, essay_hash):
 
 
 class TranslateRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=MAX_ESSAY_CHARS)
 
 
 @app.post("/translate")
@@ -1837,33 +1978,31 @@ def translate_essay(req: TranslateRequest, request: Request, user: Optional[dict
     import translate
     if not req.text.strip():
         raise HTTPException(422, "There is no essay text to translate.")
-    if user is None and translate.needs_translation(req.text):
-        _check_guest_quota(request, "translate")
+    if translate.needs_translation(req.text):
+        _check_quota(request, "translate", user)
     return translate.translate_to_english(req.text)
 
 
 @app.post("/evaluate", response_model=EvaluationResponse)
 def evaluate_essay(req: EvaluationRequest, request: Request,
                    user: Optional[dict] = Depends(get_optional_user)):
-    if user is None:
-        _check_guest_quota(request, "evaluate")
+    _check_quota(request, "evaluate", user)
     try:
         return _run_evaluate(req, user, use_rag=False)
     except Exception as e:
         print(f"❌ Evaluation error: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 
 @app.post("/evaluate-rag", response_model=EvaluationResponse)
 def evaluate_essay_with_rag(req: EvaluationRequest, request: Request,
                             user: Optional[dict] = Depends(get_optional_user)):
-    if user is None:
-        _check_guest_quota(request, "evaluate")
+    _check_quota(request, "evaluate", user)
     try:
         return _run_evaluate(req, user, use_rag=True)
     except Exception as e:
         print(f"❌ RAG Evaluation error: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 def _insert_tolerant(table: str, row: Dict[str, Any], optional: List[str],
                      nest: Optional[Dict[str, str]] = None):
@@ -1926,7 +2065,7 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
         return {"id": result.data[0]["id"]}
     except Exception as e:
         print(f"❌ Error saving knowledge: {e}")
-        raise HTTPException(500, f"Supabase error: {str(e)}")
+        raise HTTPException(500, SERVER_ERROR)
 
 @app.get("/knowledge")
 def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
@@ -1936,7 +2075,7 @@ def list_knowledge(limit: int = 50, user=Depends(get_current_user)):
         return result.data
     except Exception as e:
         print(f"❌ Error listing knowledge: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 @app.get("/knowledge/{id}")
 def get_knowledge(id: int, user=Depends(get_current_user)):
@@ -1947,7 +2086,7 @@ def get_knowledge(id: int, user=Depends(get_current_user)):
         raise HTTPException(404, "Not found")
     except Exception as e:
         print(f"❌ Error getting knowledge {id}: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
     
 
 #region Teacher Override
@@ -1984,7 +2123,7 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
         )
     except Exception as e:
         print(f"❌ Error saving override: {e}")
-        raise HTTPException(500, f"Supabase error: {str(e)}")
+        raise HTTPException(500, SERVER_ERROR)
 
     print(f"✅ Override saved for user: {user['id']}")
     return {"id": result.data[0]["id"]}
@@ -1997,13 +2136,20 @@ def list_learning_feedback(limit: int = 50, user=Depends(get_current_user)):
         return result.data
     except Exception as e:
         print(f"❌ Error listing learning feedback: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, SERVER_ERROR)
 
 #endregion
 
 #region AI Prompt Testing
 @app.post("/test-prompt", response_model=PromptTestResponse)
-def test_ai_prompt(req: PromptTestRequest):
+def test_ai_prompt(req: PromptTestRequest, request: Request, user: dict = Depends(get_current_user)):
+    """Send any prompt to an AI (used by the admin's survey conclusion).
+    Teachers and admins only: it spends the server's AI credits."""
+    if not (is_teacher(user) or is_admin(user)):
+        if _staff_mfa_pending(user):
+            raise HTTPException(403, MFA_REQUIRED)
+        raise HTTPException(403, "Only teachers and admins can send prompts to the AI directly.")
+    _check_quota(request, "test_prompt", user)
     try:
         result = test_prompt(
             ai_provider=req.ai_provider,
@@ -2016,7 +2162,7 @@ def test_ai_prompt(req: PromptTestRequest):
         return PromptTestResponse(result=result)
     except Exception as e:
         print(f"❌ Prompt test error: {e}")
-        return PromptTestResponse(result={"text": f"Error: {str(e)}", "model": "error"})
+        return PromptTestResponse(result={"text": "Error: the AI could not answer. Please try again.", "model": "error"})
 
 #endregion
 

@@ -20,6 +20,7 @@ import AiChoice from './components/AiChoice';
 import HumanVsAi from './components/HumanVsAi';
 import PromptViewer from './components/PromptViewer';
 import NavBar from './components/NavBar';
+import { TwoFactorGate } from './components/TwoFactor';
 import { useAuth } from './context/AuthContext';
 import useLeaveWarning from './lib/useLeaveWarning';
 import useDraft from './lib/draft';
@@ -163,6 +164,7 @@ function App() {
       essayText={currentEssay}
       essayTitle={essayTitle}
       evalType={evalType}
+      aiRuns={aiRuns}
       showOverrideModal={showOverrideModal}
       setShowOverrideModal={setShowOverrideModal}
       teacherFeedback={teacherFeedback}
@@ -281,6 +283,7 @@ function App() {
       </div>
 
       <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} />
+      <TwoFactorGate />
     </div>
   );
 }
