@@ -1,6 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import AiStatistics from './AiStatistics';
+import HumanVsAi from './HumanVsAi';
+import PromptViewer from './PromptViewer';
 import useDraft from '../lib/draft';
 import { EVALUATION_AIS } from '../lib/evaluationAis';
 import { evaluationRaters, overallResult, sharedScale } from '../lib/evaluationStats';
@@ -219,6 +221,8 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
         </section>
       )}
 
+      <HumanVsAi runs={aiRuns} evaluatedEssay={evaluatedEssay} values={values} onChange={setValue} editable={false} />
+
       {entered.length > 0 && (
         <section className="glass-card rounded-2xl shadow-xl p-6 bg-white/95" aria-labelledby="chart-title">
           <h2 id="chart-title" className="text-lg font-bold text-gray-800">Criterion scores compared with yours</h2>
@@ -248,6 +252,8 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
           </div>
         </section>
       )}
+
+      <PromptViewer runs={aiRuns} />
 
       <p className="text-xs text-gray-500">
         Agreement is based on this essay only; compare several essays for a broader picture. Read each AI’s feedback

@@ -19,6 +19,10 @@ import {
 } from './scoring';
 import { buildAnnotations, segmentText, ANNOTATION_TYPES } from './annotate';
 
+// Footer line on every page of the PDF report (Data Privacy Act of 2012).
+const PRIVACY_FOOTER = 'Confidential: may contain personal data protected under RA 10173 (Data Privacy Act of 2012). '
+  + "AI scores support, and do not replace, the teacher's judgement.";
+
 export const PAGE = { margin: 48, top: 56, bottom: 56 };
 export const COLORS = {
   brand: [67, 56, 202],      // indigo-700
@@ -190,6 +194,10 @@ export class ReportWriter {
       this.setFont('normal', 8, COLORS.muted);
       this.doc.text(footer, PAGE.margin, this.height - 28);
       this.doc.text(`Page ${i} of ${pages}`, this.width - PAGE.margin, this.height - 28, { align: 'right' });
+      // Data Privacy Act notice on every page, above the page footer.
+      this.setFont('normal', 7, COLORS.muted);
+      const lines = this.doc.splitTextToSize(PRIVACY_FOOTER, this.contentWidth);
+      this.doc.text(lines, PAGE.margin, this.height - 28 - 9 * lines.length);
     }
     this.doc.save(fileName);
   }

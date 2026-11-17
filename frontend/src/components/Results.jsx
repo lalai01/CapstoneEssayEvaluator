@@ -1,6 +1,7 @@
 import React from 'react';
 import toast from 'react-hot-toast';
 import { saveKnowledge, saveOverride } from '../api';
+import { OVERRIDE_SAVED_EVENT } from './HumanVsAi';
 import { useAuth } from '../context/AuthContext';
 import ReportDialog from './ReportDialog';
 import AnnotatedEssay from './AnnotatedEssay';
@@ -386,6 +387,10 @@ export default function Results({
         remarks: teacherFeedback.trim(),
         suggestions: suggestedChanges.trim(),
       });
+      // The Human vs AI table on this page picks up the saved human score.
+      window.dispatchEvent(new CustomEvent(OVERRIDE_SAVED_EVENT, {
+        detail: { essay: essayText, teacherScores: cleanedTeacherScores, teacher: isTeacher },
+      }));
       toast.success('Override saved to the Learning Hub');
       setShowOverrideModal(false);
     } catch (err) {

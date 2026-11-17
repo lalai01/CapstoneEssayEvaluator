@@ -17,6 +17,8 @@ import OcrLabeler from './components/OcrLabeler';
 import LoginModal from './components/LoginModal';
 import ThreeDBackground from './components/ThreeDBackground';
 import AiChoice from './components/AiChoice';
+import HumanVsAi from './components/HumanVsAi';
+import PromptViewer from './components/PromptViewer';
 import NavBar from './components/NavBar';
 import { useAuth } from './context/AuthContext';
 import useLeaveWarning from './lib/useLeaveWarning';
@@ -247,6 +249,8 @@ function App() {
               />
               <div className="space-y-6 min-w-0">
               <AiChoice runs={aiRuns} chosen={chosenAi} onChoose={chooseAi} />
+              <HumanVsAi runs={aiRuns} evaluatedEssay={currentEssay} />
+              <PromptViewer runs={aiRuns} />
               {resultsPanel(() => setActiveTab('compare'))}
               </div>
             </div>

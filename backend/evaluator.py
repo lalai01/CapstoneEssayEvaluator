@@ -540,6 +540,24 @@ def _is_default_rubric_shape(criteria):
     )
 
 
+def prompt_record(system_msg, user_msg, provider, model, essay_text, essay_limit, method, compact=False):
+    """What was sent to the AI, returned with its result (never stored in the
+    database: the essay is already kept there)."""
+    return {
+        "method": method,
+        "provider": provider,
+        "model": model,
+        "variant": "compact" if compact else "full",
+        "temperature": 0.0,
+        "essay_chars_read": min(len(essay_text), essay_limit),
+        "essay_chars_total": len(essay_text),
+        "system": system_msg,
+        "user": user_msg,
+        "built_by": "backend/evaluator.py → "
+                    + ("ai_score_all_criteria" if method == "analytic" else "ai_holistic_score"),
+    }
+
+
 def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, provider="ollama"):
     criteria = normalize_rubric(rubric)
     essay_limit = CLOUD_ESSAY_CHARS if provider in CLOUD_PROVIDERS else LOCAL_ESSAY_CHARS
@@ -740,6 +758,10 @@ RULES:
 
         result["criteria_meta"] = rubric_meta(criteria)
         result["evaluated_by"] = evaluated_by(model)
+        # The exact prompt this AI received, so the website can show that all
+        # three AIs follow the same prompt (only the local one is shortened).
+        result["prompt"] = prompt_record(system_msg, user_msg, provider, model, essay_text, essay_limit,
+                                         method="analytic", compact=compact)
         return result
 
     except json.JSONDecodeError:
@@ -1206,6 +1228,8 @@ At most 5 grammar_issues, only real errors ([] if none)."""
             "grammar_issues": [g for g in issues if isinstance(g, dict)][:5] if isinstance(issues, list) else [],
             "evaluated_by": {**evaluated_by(attempt["model"]), "selection": choice["preference"],
                              "reason": reason, "method": "holistic"},
+            "prompt": prompt_record(system_msg, user_msg, attempt["provider"], attempt["model"],
+                                    essay_text, limit, method="holistic"),
         }
     return None
 

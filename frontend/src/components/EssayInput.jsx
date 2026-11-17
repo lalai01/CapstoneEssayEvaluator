@@ -3,6 +3,8 @@ import toast from 'react-hot-toast';
 import { evaluateEssay, evaluateEssayWithRag, listRubrics, translateEssay } from '../api';
 import FileUpload from './FileUpload';
 import ConfirmDialog from './ConfirmDialog';
+import { PrivacyConsent } from './PrivacyNotice';
+import { hasPrivacyConsent } from '../lib/privacy';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage } from '../lib/scoring';
 import useDraft from '../lib/draft';
@@ -29,6 +31,9 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   const [evalTypeLocal, setEvalTypeLocal] = useDraft('evalType', 'analytic');
   const [useRag, setUseRag] = useDraft('useRag', true);
   const [confirmNew, setConfirmNew] = useState(false);
+  // Data Privacy Act consent, given once per browser before evaluating.
+  const [privacyOk, setPrivacyOk] = useState(hasPrivacyConsent);
+  const [privacyNeeded, setPrivacyNeeded] = useState(false);
 
   // There is always at least one part to type into.
   const [blankPart] = useState(typedPart);
@@ -131,6 +136,12 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
       titleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       titleRef.current?.focus({ preventScroll: true });
       toast.error('Please enter a title for your essay.');
+      return;
+    }
+    if (!privacyOk) {
+      setPrivacyNeeded(true);
+      document.getElementById('privacy-consent')?.focus();
+      toast.error('Please read and agree to the Data Privacy Notice first.');
       return;
     }
     const result = await toEnglish(written);
@@ -441,6 +452,12 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
             </details>
           </div>
         )}
+
+        <PrivacyConsent
+          agreed={privacyOk}
+          highlight={privacyNeeded && !privacyOk}
+          onChange={(v) => { setPrivacyOk(v); if (v) setPrivacyNeeded(false); }}
+        />
 
         <button
           onClick={handleEvaluate}

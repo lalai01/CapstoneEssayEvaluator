@@ -75,6 +75,7 @@ def score_node(state: EvaluationState) -> dict:
                 "holistic_max": total,
                 "level_description": HOLISTIC_RUBRIC[score],
                 "grammar_issues": analytic.get("grammar_issues") or [],
+                "prompt": analytic.get("prompt"),
                 "evaluated_by": {**by, "method": "derived", "reason": (
                     (by.get("reason") or "") + " The quick holistic check didn't respond, so the "
                     "score was derived from the analytic criteria instead.").strip()},

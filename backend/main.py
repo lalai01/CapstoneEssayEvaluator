@@ -1681,6 +1681,8 @@ def _log_evaluation_run(req, user, scores, use_rag, feedback=None):
     global _evaluation_log_warned
     import evaluation_log
     try:
+        # The prompt shown on the website repeats the essay: not stored again.
+        scores = {k: v for k, v in scores.items() if k != "prompt"}
         text, pct = evaluation_log.overall(scores)
         by = scores.get("evaluated_by") or {}
         _db().table("evaluation_runs").insert({
@@ -1908,6 +1910,8 @@ def save_knowledge(entry: KnowledgeEntry, user=Depends(get_current_user)):
     try:
         data = entry.dict()
         data["user_id"] = user["id"]
+        if isinstance(data.get("scores"), dict):
+            data["scores"] = {k: v for k, v in data["scores"].items() if k != "prompt"}
         # Approved entries feed RAG for everyone, so only a teacher's save is
         # approved; a student's save is kept privately as not approved.
         teacher = is_teacher(user)
@@ -1960,6 +1964,8 @@ def save_override(override: OverrideRequest, user=Depends(get_current_user)):
 
     data = override.dict()
     data["user_id"] = user["id"]
+    if isinstance(data.get("original_scores"), dict):
+        data["original_scores"] = {k: v for k, v in data["original_scores"].items() if k != "prompt"}
     data["approved_by"] = user.get("email") if is_teacher(user) else None
     if not data.get("teacher_scores"):
         data.pop("teacher_scores", None)

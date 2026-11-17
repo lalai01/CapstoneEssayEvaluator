@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import RobotAssistant from './RobotAssistant';
 import useInstallPrompt from '../lib/installPrompt';
+import { PrivacyDialog } from './PrivacyNotice';
 
 const HIGHLIGHTS = [
   { icon: '✍️', text: 'Reads handwriting in seconds' },
@@ -34,6 +35,7 @@ const FEATURES = [
 
 export default function HomePage({ setActiveTab }) {
   const { canInstall, install } = useInstallPrompt();
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   useEffect(() => {
     const sections = document.querySelectorAll('.scroll-section');
     const observer = new IntersectionObserver(
@@ -166,12 +168,25 @@ export default function HomePage({ setActiveTab }) {
         <div className="flex items-start gap-4">
           <div className="text-4xl" aria-hidden="true">🔒</div>
           <div>
-            <h2 className="text-2xl font-bold text-gray-800">Where your essay goes</h2>
+            <h2 className="text-2xl font-bold text-gray-800">Data privacy: where your essay goes</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              In compliance with the <strong>Data Privacy Act of 2012 (Republic Act No. 10173)</strong>.
+            </p>
             <ul className="mt-3 space-y-2 text-gray-700">
               <li>• Your essays and results are stored in the app’s database (Supabase).</li>
               <li>• To be scored, the essay text is sent to <strong>DeepSeek</strong> and to <strong>Groq</strong> (GPT-OSS); if Groq is unavailable, <strong>Google Gemini</strong> scores it instead. The <strong>Qwen 2.5 (local)</strong> result is produced on our own server, so for that one the essay doesn’t leave it.</li>
               <li>• Photos of handwritten essays are read by <strong>Google Gemini</strong>.</li>
+              <li>• Remove the student’s name, ID number and other personal details from the essay before evaluating.</li>
+              <li>• AI scores support, and do not replace, the teacher’s judgement; the teacher decides the final grade.</li>
             </ul>
+            <button
+              type="button"
+              onClick={() => setPrivacyOpen(true)}
+              className="mt-4 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              📄 Read the full Data Privacy Notice
+            </button>
+            <PrivacyDialog open={privacyOpen} onClose={() => setPrivacyOpen(false)} />
           </div>
         </div>
       </section>
