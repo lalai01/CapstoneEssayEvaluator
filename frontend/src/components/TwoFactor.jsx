@@ -155,39 +155,39 @@ export function ChallengeTotp({ onDone }) {
   );
 }
 
-function Modal({ title, subtitle, children, labelId }) {
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-      <div role="dialog" aria-modal="true" aria-labelledby={labelId} className="w-full max-w-md max-h-[92vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
-        <h3 id={labelId} className="text-lg font-bold text-gray-900">{title}</h3>
-        {subtitle && <p className="mt-1 mb-4 text-sm text-gray-600">{subtitle}</p>}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// Shown over the whole app while this session still needs a code, or while a
-// teacher or admin hasn't set up two-factor authentication yet.
-export function TwoFactorGate() {
+// The verification page (/verify): shown instead of the website while a
+// signed-in user still has to set up an authenticator or enter its code. The
+// app sends every page here first and returns to the page asked for once
+// it's done (App.jsx).
+export function TwoFactorPage() {
   const { user, mfa, signOut } = useAuth();
-  if (!user || !mfa?.known || (!mfa.needsCode && !mfa.mustEnroll)) return null;
-  const done = () => mfa.refresh();
+  if (!user || !mfa) return null;
+  if (mfa.gate === 'checking') {
+    return (
+      <div className="mx-auto max-w-md rounded-2xl bg-white/95 p-8 text-center shadow-2xl" role="status">
+        <div className="spinner mx-auto" />
+        <p className="mt-4 text-sm text-gray-600">Checking your sign-in…</p>
+      </div>
+    );
+  }
+  const code = mfa.gate === 'code';
   return (
-    <Modal
-      labelId="mfa-gate-title"
-      title={mfa.needsCode ? '🔐 Enter your verification code' : '🔐 Set up two-factor authentication'}
-      subtitle={mfa.needsCode
-        ? 'Your account is protected with two-factor authentication.'
-        : 'Every account must use two-factor authentication, so a stolen password alone can’t open it. Set it up once (about a minute); after that, each sign-in asks for the 6-digit code from your phone.'}
-    >
-      {mfa.needsCode ? <ChallengeTotp onDone={done} /> : <EnrollTotp onDone={done} />}
+    <div className="mx-auto w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl animate-fade-in">
+      <h1 className="text-xl font-bold text-gray-900">
+        {code ? '🔐 Enter your verification code' : '🔐 Set up two-factor authentication'}
+      </h1>
+      <p className="mt-1 mb-4 text-sm text-gray-600">
+        {code
+          ? 'Your account is protected with two-factor authentication. The website opens after this step.'
+          : 'Every account must use two-factor authentication, so a stolen password alone can’t open it. Set it up once (about a minute); after that, each sign-in asks for the 6-digit code from your phone. The website opens after this step.'}
+      </p>
+      {code ? <ChallengeTotp onDone={mfa.refresh} /> : <EnrollTotp onDone={mfa.refresh} />}
       <p className="mt-4 border-t pt-3 text-xs text-gray-500">
         Signed in as {user.email}.{' '}
-        <button type="button" onClick={signOut} className="font-semibold text-indigo-700 underline">Sign out</button>
-        {mfa.needsCode && ' · Lost your phone? Ask an admin to reset your two-factor authentication.'}
+        <button type="button" onClick={() => signOut()} className="font-semibold text-indigo-700 underline">Sign out</button>
+        {code && ' · Lost your phone? Ask an admin to reset your two-factor authentication.'}
       </p>
-    </Modal>
+    </div>
   );
 }
 

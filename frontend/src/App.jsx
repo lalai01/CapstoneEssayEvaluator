@@ -20,10 +20,23 @@ import AiChoice from './components/AiChoice';
 import HumanVsAi from './components/HumanVsAi';
 import PromptViewer from './components/PromptViewer';
 import NavBar from './components/NavBar';
-import { TwoFactorGate } from './components/TwoFactor';
+import { TwoFactorPage } from './components/TwoFactor';
 import { useAuth } from './context/AuthContext';
 import useLeaveWarning from './lib/useLeaveWarning';
 import useDraft from './lib/draft';
+
+// Two-factor verification page, and the page to open after it.
+const VERIFY_PATH = '/verify';
+const AFTER_VERIFY = 'essay-evaluator:after-verify';
+const readSession = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
+const writeSession = (key, value) => {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, value);
+  } catch {
+    // storage blocked: the website opens at Home after verifying
+  }
+};
 
 // Who may open each page. Admins and teachers are separate roles: admins run
 // the system, teachers do the grading. One person can hold both roles, and
@@ -132,7 +145,36 @@ function App() {
 
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  const { user, isAdmin, isTeacher, role, signOut, loading: authLoading, roleLoading } = useAuth();
+  const { user, isAdmin, isTeacher, role, signOut, loading: authLoading, roleLoading, mfa } = useAuth();
+
+  // Two-factor authentication comes before the website: while it's needed,
+  // every address shows the verification page at /verify, and the page that
+  // was asked for opens once it's done.
+  const gate = mfa?.gate || null;
+  const verifying = gate === 'code' || gate === 'enroll';
+  useEffect(() => {
+    const here = () => window.location.pathname + window.location.search + window.location.hash;
+    if (verifying) {
+      const toVerify = () => {
+        if (window.location.pathname !== VERIFY_PATH) {
+          if (!readSession(AFTER_VERIFY)) writeSession(AFTER_VERIFY, here());
+          window.history.replaceState(null, '', VERIFY_PATH);
+        }
+      };
+      toVerify();
+      // Back / Forward can't leave the verification page either.
+      window.addEventListener('popstate', toVerify);
+      return () => window.removeEventListener('popstate', toVerify);
+    }
+    if (!gate && window.location.pathname === VERIFY_PATH) {
+      const next = readSession(AFTER_VERIFY) || '/';
+      writeSession(AFTER_VERIFY, null);
+      window.history.replaceState(null, '', next);
+      // The app's Back/Forward handler opens the page for the new address.
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+    return undefined;
+  }, [verifying, gate]);
 
   const canOpen = (access) =>
     access === 'public' ||
@@ -181,6 +223,18 @@ function App() {
     ...(isTeacher ? [ROLE_BADGES.teacher] : []),
     ...(!isAdmin && !isTeacher ? [ROLE_BADGES.student] : []),
   ];
+
+  if (user && gate) {
+    return (
+      <div className="relative min-h-screen">
+        <ThreeDBackground />
+        <div className="relative z-10 flex min-h-screen items-center justify-center p-4">
+          <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
+          <TwoFactorPage />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen">
@@ -283,7 +337,6 @@ function App() {
       </div>
 
       <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} />
-      <TwoFactorGate />
     </div>
   );
 }

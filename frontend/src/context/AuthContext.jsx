@@ -32,7 +32,9 @@ export const AuthProvider = ({ children }) => {
       return
     }
     const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-    if (!error && data) setAal({ userId: session.user.id, currentLevel: data.currentLevel, nextLevel: data.nextLevel })
+    // On an error the levels stay unknown (null): the app isn't blocked, and
+    // the backend still refuses requests that need the code.
+    setAal({ userId: session.user.id, currentLevel: error ? null : data?.currentLevel ?? null, nextLevel: error ? null : data?.nextLevel ?? null })
   }, [])
 
   // After an automatic sign-out the page reloads: say why.
@@ -117,12 +119,18 @@ export const AuthProvider = ({ children }) => {
   //               default; only teachers and admins with MFA_POLICY=staff)
   const aalKnown = !!userId && aal.userId === userId
   const mfaEnrolled = aalKnown && aal.nextLevel === 'aal2'
+  const needsCode = mfaEnrolled && aal.currentLevel !== 'aal2'
+  const mustEnroll = aalKnown && checked && adminCheck.mfaRequired && aal.nextLevel === 'aal1'
   const mfa = {
     known: aalKnown,
     enrolled: mfaEnrolled,
     verified: aalKnown && aal.currentLevel === 'aal2',
-    needsCode: mfaEnrolled && aal.currentLevel !== 'aal2',
-    mustEnroll: aalKnown && checked && adminCheck.mfaRequired && !mfaEnrolled,
+    needsCode,
+    mustEnroll,
+    // What a signed-in user sees before the website: 'checking' (sign-in
+    // status loading), 'code' (enter the authenticator code), 'enroll' (set
+    // one up), or null (nothing needed: the website opens).
+    gate: !userId ? null : !aalKnown || !checked ? 'checking' : needsCode ? 'code' : mustEnroll ? 'enroll' : null,
     required: checked && adminCheck.mfaRequired,
     requiredForRole: checked && adminCheck.mfaForRole,
     refresh: refreshMfa,
@@ -164,7 +172,7 @@ export const AuthProvider = ({ children }) => {
     clearDrafts()
     window.location.assign('/')
   }, [])
-  signOutRef.current = signOut
+  useEffect(() => { signOutRef.current = signOut }, [signOut])
   // Signs out after a day without activity, or a week after signing in.
   useSessionGuard(user, signOut)
   // Signed in, but the role (admin / teacher) isn't known yet.
