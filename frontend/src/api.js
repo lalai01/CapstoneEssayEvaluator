@@ -61,6 +61,19 @@ export const listRoleLog = async (limit = 100) => {
   return response.data;
 };
 
+// ---------- Human (teacher) scores ----------
+// Saved beside the essay's AI results; shown in Evaluation Activity.
+export const saveHumanScore = async (payload) => {
+  const response = await apiClient.post('/human-scores', payload);
+  return response.data;
+};
+
+// The latest human score the user saved for this essay (or null).
+export const findHumanScore = async (text) => {
+  const response = await apiClient.post('/human-scores/find', { text });
+  return response.data;
+};
+
 // ---------- Students under 18 (RA 10173) ----------
 // The user says once whether they are under 18.
 export const declareAge = async (under18) => {

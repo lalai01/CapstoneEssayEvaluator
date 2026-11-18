@@ -85,6 +85,35 @@ def _title(row, *keys):
     return None
 
 
+HUMAN = "human"   # evaluation_runs.ai_choice of a human (teacher) score
+
+
+def is_human(row):
+    return (row or {}).get("ai_choice") == HUMAN
+
+
+def compare_human(human_scores, ai_runs):
+    """How far each AI is from the human score on one essay.
+    ai_runs: [{"ai", "scores"}]. Returns [{"ai", "overall", "exact", "compared",
+    "mae", "per": {key: ai score}}] (mae: average points apart per criterion)."""
+    meta = human_scores.get("criteria_meta") or []
+    keys = [c.get("key") for c in meta] or [k for k in ("holistic_points",) if k in human_scores]
+    out = []
+    for run in ai_runs:
+        s = run.get("scores") or {}
+        diffs, exact, per = [], 0, {}
+        for k in keys:
+            h, a = _num(human_scores.get(k)), _num(s.get(k))
+            per[k] = a
+            if h is None or a is None:
+                continue
+            diffs.append(abs(a - h))
+            exact += a == h
+        out.append({"ai": run.get("ai"), "overall": overall(s)[0], "exact": exact, "compared": len(diffs),
+                    "mae": round(sum(diffs) / len(diffs), 2) if diffs else None, "per": per})
+    return out
+
+
 def build_activity(runs, kb, overrides, people):
     """
     runs: evaluation_runs rows; kb: knowledge_base rows; overrides:
@@ -117,6 +146,14 @@ def build_activity(runs, kb, overrides, people):
         h = r.get("essay_hash") or essay_hash(r.get("essay"))
         g = group(r.get("user_id"), h, r.get("essay"))
         g["title"] = g["title"] or _title(r, "title")
+        if is_human(r):
+            # The teacher's own score: shown beside the AIs, not as one of them.
+            g.setdefault("human", None)
+            if not g["human"] or (r.get("created_at") or "") > (g["human"]["at"] or ""):
+                g["human"] = {"at": r.get("created_at"), "overall": r.get("overall"), "label": r.get("ai_label"),
+                              "by": r.get("user_email"), "role": r.get("user_role")}
+            touch(g, r.get("created_at"))
+            continue
         g["runs"].append({"id": r.get("id"), "at": r.get("created_at"), "ai": r.get("ai_label") or r.get("ai_choice"),
                           "eval_type": r.get("eval_type"), "overall": r.get("overall"),
                           "rubric": r.get("rubric_title"), "rag": r.get("used_rag")})
@@ -176,6 +213,7 @@ def build_activity(runs, kb, overrides, people):
                  "saved": bool(g["kb"])}
         status = next((s for s in STATUS_ORDER[:-1] if flags[s]), "draft")
         g["runs"].sort(key=lambda r: r["at"] or "")
+        g.setdefault("human", None)
         essays.append({**g, **person(g["user_id"]), "title": g["title"] or "Untitled essay",
                        "status": status, "status_label": STATUS_LABELS[status], "flags": flags,
                        "ais": sorted({r["ai"] for r in g["runs"] if r["ai"]})})

@@ -47,6 +47,59 @@ export function ScoreList({ scores }) {
   );
 }
 
+// One human score beside each AI's, criterion by criterion (h: an item of
+// `human` / `human_vs_ai` from the backend).
+export function HumanVsAiTable({ h }) {
+  const criteria = h.criteria?.length ? h.criteria : Object.keys(h.scores || {}).map((key) => ({ key, label: key }));
+  const badge = (a, hv) => {
+    if (typeof a !== 'number' || typeof hv !== 'number') return null;
+    const d = a - hv;
+    if (d === 0) return <span className="ml-1 rounded bg-emerald-100 px-1 text-[11px] font-semibold text-emerald-800">=</span>;
+    return <span className={`ml-1 rounded px-1 text-[11px] font-semibold ${Math.abs(d) >= 2 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>{d > 0 ? `+${d}` : d}</span>;
+  };
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[30rem] text-sm">
+        <thead>
+          <tr className="border-b text-left text-xs text-gray-500">
+            <th className="py-1.5 pr-2">Criterion</th>
+            <th className="bg-slate-50 px-2 py-1.5">👩‍🏫 Human</th>
+            {h.ais.map((a, i) => <th key={i} className="px-2 py-1.5">{a.ai}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {criteria.map((c) => (
+            <tr key={c.key} className="border-b border-gray-100">
+              <td className="py-1.5 pr-2 text-gray-800">{c.label}{c.max_score ? <span className="text-xs text-gray-500"> /{c.max_score}</span> : null}</td>
+              <td className="bg-slate-50 px-2 py-1.5 font-semibold">{h.scores?.[c.key] ?? '—'}</td>
+              {h.ais.map((a, i) => (
+                <td key={i} className="whitespace-nowrap px-2 py-1.5">
+                  <span className="font-semibold">{a.per?.[c.key] ?? '—'}</span>{badge(a.per?.[c.key], h.scores?.[c.key])}
+                </td>
+              ))}
+            </tr>
+          ))}
+          <tr className="font-semibold">
+            <td className="py-1.5 pr-2">Overall</td>
+            <td className="bg-slate-50 px-2 py-1.5">{h.overall || '—'}</td>
+            {h.ais.map((a, i) => <td key={i} className="px-2 py-1.5">{a.overall || '—'}</td>)}
+          </tr>
+          <tr className="text-xs text-gray-600">
+            <td className="py-1.5 pr-2">Agreement with human</td>
+            <td className="bg-slate-50 px-2 py-1.5" />
+            {h.ais.map((a, i) => (
+              <td key={i} className="whitespace-nowrap px-2 py-1.5">
+                {a.mae === null ? '—' : <>{a.exact}/{a.compared} exact · ±{a.mae.toFixed(2)}</>}
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+      {h.ais.length === 0 && <p className="mt-1 text-xs text-gray-500">No AI result recorded for this essay to compare with.</p>}
+    </div>
+  );
+}
+
 function EssayDetail({ essay, onClose }) {
   const [data, setData] = useState(null);
   useEffect(() => {
@@ -76,6 +129,20 @@ function EssayDetail({ essay, onClose }) {
             <section>
               <h4 className="font-semibold text-gray-800">Essay</h4>
               <p className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-gray-50 p-3 text-sm text-gray-800">{data.essay || '—'}</p>
+            </section>
+
+            <section>
+              <h4 className="font-semibold text-gray-800">👩‍🏫 Human score vs AI scores</h4>
+              {data.human_vs_ai?.length ? (
+                <div className="mt-2 rounded-lg border border-slate-200 p-3">
+                  <p className="mb-2 text-xs text-gray-500">
+                    {data.human_vs_ai[0].label || 'Human score'} by {data.human_vs_ai[0].email || 'unknown'} · {fmt(data.human_vs_ai[0].at)}
+                    {data.human?.length > 1 ? ` · latest of ${data.human.length}` : ''}
+                    {' '}· = same score, +1 the AI gave one point more, −1 one point less
+                  </p>
+                  <HumanVsAiTable h={data.human_vs_ai[0]} />
+                </div>
+              ) : <p className="mt-1 text-sm text-gray-500">No human score saved for this essay yet (Evaluate → Human score vs AI scores → Save human score).</p>}
             </section>
 
             <section>
@@ -170,6 +237,22 @@ export default function EvaluationActivity() {
   const essays = (data?.essays || []).filter((e) => (status === 'all' || e.status === status) && keep(e, [e.essay, ...(e.ais || [])]));
   const overrides = (data?.overrides || []).filter((o) => keep(o, [o.remarks, o.suggestions]));
   const saved = (data?.saved || []).filter((s) => keep(s));
+  const humans = (data?.human || []).filter((h) => keep(h, [h.label]));
+  // Across the human scores shown: how close each AI is to the human.
+  const agreement = useMemo(() => {
+    const by = new Map();
+    for (const h of humans) {
+      for (const a of h.ais) {
+        if (a.mae === null) continue;
+        const name = a.ai || 'AI';
+        const cur = by.get(name) || { ai: name, essays: 0, exact: 0, compared: 0, maeSum: 0 };
+        cur.essays += 1; cur.exact += a.exact; cur.compared += a.compared; cur.maeSum += a.mae;
+        by.set(name, cur);
+      }
+    }
+    return [...by.values()].map((x) => ({ ...x, mae: x.maeSum / x.essays, exactPct: x.compared ? (100 * x.exact) / x.compared : 0 }))
+      .sort((a, b) => a.mae - b.mae);
+  }, [humans]);
 
   const exportCsv = () => {
     const rows = tab === 'essays'
@@ -180,8 +263,11 @@ export default function EvaluationActivity() {
         ? [['Date', 'Person', 'Role', 'Title', 'Type', 'AI', 'AI overall', 'Corrected overall', 'Changes', 'Remarks', 'Suggestions'],
           ...overrides.map((o) => [o.at, o.email || o.name, o.role, o.title, o.kind === 'rejected' ? 'Rejected & overridden (teacher)' : 'Overridden',
             o.ai, o.ai_overall, o.new_overall, o.changes.map((c) => `${c.label} ${c.ai}→${c.new}`).join('; '), o.remarks, o.suggestions])]
-        : [['Date', 'Person', 'Role', 'Title', 'AI', 'Overall', 'Approved', 'Approved by', 'Satisfaction'],
-          ...saved.map((s) => [s.at, s.email || s.name, s.role, s.title, s.ai, s.overall, s.approved ? 'Yes' : 'No', s.approved_by, s.satisfaction])];
+        : tab === 'human'
+          ? [['Date', 'Scored by', 'Role', 'Title', 'Human overall', 'AI', 'AI overall', 'Exact', 'Compared', 'Avg difference'],
+            ...humans.flatMap((h) => (h.ais.length ? h.ais : [{}]).map((a) => [h.at, h.email, h.role, h.title, h.overall, a.ai, a.overall, a.exact, a.compared, a.mae]))]
+          : [['Date', 'Person', 'Role', 'Title', 'AI', 'Overall', 'Approved', 'Approved by', 'Satisfaction'],
+            ...saved.map((s) => [s.at, s.email || s.name, s.role, s.title, s.ai, s.overall, s.approved ? 'Yes' : 'No', s.approved_by, s.satisfaction])];
     downloadText(`evaluation-activity-${tab}.csv`, toCsv(rows));
   };
 
@@ -194,6 +280,7 @@ export default function EvaluationActivity() {
     ['essays', `Essays evaluated (${data?.essays?.length ?? 0})`],
     ['overrides', `Overrides & rejections (${data?.overrides?.length ?? 0})`],
     ['saved', `Saved to Knowledge Base (${data?.saved?.length ?? 0})`],
+    ['human', `Human vs AI (${data?.human?.length ?? 0})`],
   ];
 
   return (
@@ -285,8 +372,9 @@ export default function EvaluationActivity() {
                     </td>
                     <td className="py-2 pr-3"><Who row={e} /></td>
                     <td className="py-2 pr-3">
-                      {e.runs.length === 0 ? <span className="text-xs text-gray-400">not recorded</span> : (
+                      {e.runs.length === 0 && !e.human ? <span className="text-xs text-gray-400">not recorded</span> : (
                         <div className="flex flex-wrap gap-1">
+                          {e.human && <span className="rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-xs">👩‍🏫 Human: <strong>{e.human.overall || '—'}</strong></span>}
                           {e.runs.map((r, i) => <span key={i} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">{r.ai}: <strong>{r.overall || '—'}</strong></span>)}
                         </div>
                       )}
@@ -325,6 +413,42 @@ export default function EvaluationActivity() {
                 ))}
               </tbody>
             </table>
+          )}
+
+          {tab === 'human' && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Teachers’ (human) scores beside the three AIs’ scores on the same essays. “Exact” counts criteria where the
+                AI gave the same score as the human; “avg difference” is how many points apart they are per criterion
+                (lower is closer).
+              </p>
+              {agreement.length > 0 && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {agreement.map((a, i) => (
+                    <div key={a.ai} className={`rounded-xl border p-3 ${i === 0 ? 'border-emerald-300 bg-emerald-50' : 'bg-white'}`}>
+                      <div className="text-xs text-gray-500">{i === 0 ? '🏆 Closest to the human' : 'AI'}</div>
+                      <div className="font-semibold text-gray-900">{a.ai}</div>
+                      <div className="mt-1 text-sm text-gray-700">
+                        ±{a.mae.toFixed(2)} points · {a.exactPct.toFixed(0)}% exact · {a.essays} essay{a.essays === 1 ? '' : 's'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {humans.length === 0 && <p className="py-6 text-center text-gray-500">No human scores yet. Teachers save them on Evaluate → “Human score vs AI scores” → Save human score.</p>}
+              {humans.map((h) => (
+                <div key={h.id} className="rounded-xl border p-3">
+                  <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                    <div>
+                      <span className="font-medium text-gray-900">{h.title}</span>
+                      <span className="ml-2 text-xs text-gray-500">{h.label} · {h.email || 'unknown'}</span>
+                    </div>
+                    <span className="text-xs text-gray-500">{fmt(h.at)}</span>
+                  </div>
+                  <HumanVsAiTable h={h} />
+                </div>
+              ))}
+            </div>
           )}
 
           {tab === 'saved' && (

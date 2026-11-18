@@ -310,7 +310,7 @@ function App() {
               />
               <div className="space-y-6 min-w-0">
               <AiChoice runs={aiRuns} chosen={chosenAi} onChoose={chooseAi} />
-              <HumanVsAi runs={aiRuns} evaluatedEssay={currentEssay} />
+              <HumanVsAi runs={aiRuns} evaluatedEssay={currentEssay} essayTitle={essayTitle} />
               <PromptViewer runs={aiRuns} />
               {resultsPanel(() => setActiveTab('compare'))}
               </div>

@@ -2118,8 +2118,123 @@ def admin_activity(days: int = 180, user: dict = Depends(get_current_user)):
     people = _people({r.get("user_id") for r in kb + overrides} - {r.get("user_id") for r in runs})
     for r in runs:
         people.setdefault(r.get("user_id"), {"email": r.get("user_email"), "role": r.get("user_role")})
+    human_rows = []
+    if table_ready:
+        try:
+            human_rows = db.table("evaluation_runs").select("*").eq("ai_choice", evaluation_log.HUMAN) \
+                .gte("created_at", since).order("created_at", desc=True).limit(1000).execute().data or []
+        except Exception as e:
+            print(f"⚠️ human scores unavailable: {e}")
     return {**evaluation_log.build_activity(runs, kb, overrides, people),
+            "human": _human_comparisons(db, human_rows),
             "table_ready": table_ready, "setup_hint": None if table_ready else EVALUATION_RUNS_SQL_HINT, "days": days}
+
+
+def _human_comparisons(db, human_rows):
+    """For each human score: the essay's AI runs (latest per AI) and how far
+    each AI is from the human, criterion by criterion."""
+    import evaluation_log
+    if not human_rows:
+        return []
+    hashes = sorted({r.get("essay_hash") for r in human_rows if r.get("essay_hash")})
+    ai_rows = []
+    for i in range(0, len(hashes), 100):
+        try:
+            ai_rows += db.table("evaluation_runs").select("id,created_at,user_id,essay_hash,ai_choice,ai_label,scores") \
+                .in_("essay_hash", hashes[i:i + 100]).neq("ai_choice", evaluation_log.HUMAN).execute().data or []
+        except Exception as e:
+            print(f"⚠️ AI runs for human scores: {e}")
+    out = []
+    for h in human_rows:
+        latest = {}
+        for r in sorted((r for r in ai_rows if r.get("user_id") == h.get("user_id")
+                         and r.get("essay_hash") == h.get("essay_hash")), key=lambda r: r.get("created_at") or ""):
+            latest[r.get("ai_choice")] = {"ai": r.get("ai_label") or r.get("ai_choice"), "scores": r.get("scores") or {}}
+        scores = h.get("scores") or {}
+        out.append({
+            "id": h.get("id"), "at": h.get("created_at"), "user_id": h.get("user_id"),
+            "email": h.get("user_email"), "role": h.get("user_role"), "title": h.get("title") or "Untitled essay",
+            "essay_hash": h.get("essay_hash"), "label": h.get("ai_label"), "overall": h.get("overall"),
+            "criteria": scores.get("criteria_meta") or [], "scores": {k: v for k, v in scores.items() if isinstance(v, (int, float))},
+            "ais": evaluation_log.compare_human(scores, list(latest.values())),
+        })
+    return out
+
+
+class HumanScoreRequest(BaseModel):
+    text: str = Field(..., max_length=MAX_ESSAY_CHARS)
+    title: Optional[str] = Field(None, max_length=300)
+    eval_type: Literal["analytic", "holistic"] = "analytic"
+    scores: Dict[str, int]
+    criteria_meta: Optional[List[Dict[str, Any]]] = None
+    holistic_max: Optional[int] = None
+    rubric: Optional[Dict[str, Any]] = None
+    privacy: Optional[Dict[str, Any]] = None
+    remarks: Optional[str] = Field(None, max_length=MAX_SHORT_TEXT)
+
+
+@app.post("/human-scores")
+def save_human_score(req: HumanScoreRequest, user: dict = Depends(get_current_user)):
+    """Save the human (teacher's) score of an essay, so it is shown beside
+    the AIs' scores here and in the admin's Evaluation Activity. Kept in
+    evaluation_runs with ai_choice "human", grouped with the essay's AI runs."""
+    import evaluation_log
+    _require_minor_consent(user)
+    if not req.scores or len(req.scores) > 30:
+        raise HTTPException(422, "Enter a score for each criterion.")
+    meta = req.criteria_meta or []
+    tops = {c.get("key"): c.get("max_score") for c in meta if isinstance(c, dict)}
+    for key, value in req.scores.items():
+        top = tops.get(key) or (req.holistic_max if key == "holistic_points" else None) or 100
+        if not 1 <= value <= top:
+            raise HTTPException(422, f"'{key}' must be between 1 and {top}.")
+    role = role_of(user)
+    label = {"teacher": "Human score (teacher)", "admin": "Human score (admin)"}.get(role, "Human score (student)")
+    scores = {**req.scores, "criteria_meta": meta, "rubric": req.rubric,
+              "evaluated_by": {"provider": evaluation_log.HUMAN, "label": label},
+              "human": {"by": user.get("email"), "role": role, "remarks": (req.remarks or "").strip() or None}}
+    if req.eval_type == "holistic" and req.holistic_max:
+        scores["holistic_max"] = req.holistic_max
+    privacy = dict(req.privacy or {})
+    if is_minor_account(user):
+        privacy["minor"] = True
+    if privacy.get("minor"):
+        scores["privacy"] = {"minor": True}
+    text, pct = evaluation_log.overall(scores)
+    try:
+        row = _survey_admin_db().table("evaluation_runs").insert({
+            "user_id": user["id"], "user_email": (user.get("email") or "").lower() or None, "user_role": role,
+            "title": (req.title or "").strip()[:300] or None, "essay": req.text,
+            "essay_hash": evaluation_log.essay_hash(req.text), "eval_type": req.eval_type,
+            "ai_choice": evaluation_log.HUMAN, "ai_label": label, "provider": evaluation_log.HUMAN,
+            "overall": text, "overall_pct": pct, "rubric_title": (req.rubric or {}).get("title"),
+            "used_rag": False, "scores": scores,
+        }).execute()
+    except Exception as e:
+        print(f"❌ human score not saved: {e}")
+        raise HTTPException(500, f"The human score couldn't be saved. {EVALUATION_RUNS_SQL_HINT}")
+    return {"id": (row.data or [{}])[0].get("id"), "overall": text, "label": label}
+
+
+class HumanScoreLookup(BaseModel):
+    text: str = Field(..., max_length=MAX_ESSAY_CHARS)
+
+
+@app.post("/human-scores/find")
+def find_human_score(req: HumanScoreLookup, user: dict = Depends(get_current_user)):
+    """The latest human score the user saved for this essay, or null."""
+    import evaluation_log
+    try:
+        rows = _survey_admin_db().table("evaluation_runs").select("id,created_at,ai_label,overall,scores") \
+            .eq("user_id", user["id"]).eq("essay_hash", evaluation_log.essay_hash(req.text)) \
+            .eq("ai_choice", evaluation_log.HUMAN).order("created_at", desc=True).limit(1).execute().data or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    r = rows[0]
+    return {"at": r.get("created_at"), "label": r.get("ai_label"), "overall": r.get("overall"),
+            "scores": {k: v for k, v in (r.get("scores") or {}).items() if isinstance(v, (int, float))}}
 
 
 @app.get("/admin/activity/essay")
@@ -2185,7 +2300,10 @@ def _essay_detail(user_id, essay_hash):
         _survey_db_error(e)
     essay = (runs[0]["essay"] if runs else None) or (kb[0].get("essay") if kb else None) \
         or (overrides[0].get("original_essay") if overrides else "")
-    return {"essay": essay, "runs": runs, "kb": kb, "overrides": overrides}
+    human = [r for r in runs if evaluation_log.is_human(r)]
+    runs = [r for r in runs if not evaluation_log.is_human(r)]
+    return {"essay": essay, "runs": runs, "kb": kb, "overrides": overrides, "human": human,
+            "human_vs_ai": _human_comparisons(db, human[-1:]) if human else []}
 
 
 @app.delete("/my/reports/essay")

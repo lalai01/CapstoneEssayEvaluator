@@ -1,17 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { listLearningFeedback } from '../api';
+import toast from 'react-hot-toast';
+import { findHumanScore, listLearningFeedback, saveHumanScore } from '../api';
 import { useAuth } from '../context/AuthContext';
 import useDraft from '../lib/draft';
 import { EVALUATION_AIS } from '../lib/evaluationAis';
 import { evaluationRaters } from '../lib/evaluationStats';
-import { essayKey, isNum } from '../lib/scoring';
+import { errorMessage, essayKey, isNum } from '../lib/scoring';
 
 // Human score beside each AI's score, criterion by criterion, with how far
 // each AI is from the human. The human scores are the same draft as on the
 // Compare page ("myScores"), so they are entered once for both. A human score
 // already saved for this essay (an override's teacher scores, in the Learning
 // Hub) is retrieved and filled in, and so is one saved from the Override
-// dialog on this page.
+// dialog on this page. "Save human score" keeps it on the server beside the
+// AIs' results, where admins see it in Evaluation Activity.
 
 export const OVERRIDE_SAVED_EVENT = 'essay-evaluator:override-saved';
 
@@ -29,24 +31,29 @@ function savedHumanScore(rows, forEssay) {
 const asDraftValues = (scores) => Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, String(v)]));
 //   values / onChange: pass them to use scores kept by the parent (Compare
 //   page); without them the table keeps its own draft and is editable.
-export default function HumanVsAi({ runs, evaluatedEssay, values: givenValues, onChange, editable = true }) {
+export default function HumanVsAi({ runs, evaluatedEssay, essayTitle, values: givenValues, onChange, editable = true }) {
   const forEssay = essayKey(evaluatedEssay);
   const [draft, setDraft] = useDraft('myScores', null);
   const own = draft?.essay === forEssay ? draft.values : {};
   const values = givenValues || own;
   const setValue = onChange || ((key, value) => setDraft({ essay: forEssay, values: { ...own, [key]: value } }));
   const { user } = useAuth();
-  const [saved, setSaved] = useState(null);   // { scores, at, teacher } retrieved for this essay
+  const [saved, setSaved] = useState(null);   // { scores, at, teacher, source } retrieved for this essay
+  const [saving, setSaving] = useState(false);
   const retrieving = !givenValues && !!user && !!forEssay;
 
   // Retrieve the human score saved for this essay; fill it in if none is typed yet.
   useEffect(() => {
     if (!retrieving) return undefined;
     let cancelled = false;
-    listLearningFeedback()
-      .then((rows) => {
+    // A saved human score first; otherwise the teacher scores of an override.
+    findHumanScore(evaluatedEssay)
+      .then((h) => (h?.scores && Object.keys(h.scores).length
+        ? { scores: h.scores, at: h.at, source: 'saved', label: h.label }
+        : listLearningFeedback().then((rows) => savedHumanScore(rows, forEssay))))
+      .catch(() => listLearningFeedback().then((rows) => savedHumanScore(rows, forEssay)))
+      .then((found) => {
         if (cancelled) return;
-        const found = savedHumanScore(rows, forEssay);
         setSaved(found);
         if (found) {
           setDraft((d) => (d?.essay === forEssay && Object.values(d.values || {}).some((v) => v !== '')
@@ -56,7 +63,7 @@ export default function HumanVsAi({ runs, evaluatedEssay, values: givenValues, o
       })
       .catch(() => {});   // signed out or offline: the human score is typed instead
     return () => { cancelled = true; };
-  }, [retrieving, forEssay, setDraft]);
+  }, [retrieving, forEssay, evaluatedEssay, setDraft]);
 
   // An override saved on this page becomes the human score right away.
   useEffect(() => {
@@ -91,6 +98,31 @@ export default function HumanVsAi({ runs, evaluatedEssay, values: givenValues, o
   const maxTotal = criteria.reduce((s, c) => s + c.max_score, 0);
   const humanTotal = sum((k) => human[k]);
   const anyHuman = Object.keys(human).length > 0;
+  const complete = criteria.every((c) => isNum(human[c.key]));
+
+  const save = async () => {
+    const first = EVALUATION_AIS.map((ai) => runs?.[ai.id]).find((r) => r?.status === 'done' && r.scores)?.scores || {};
+    const holistic = criteria.length === 1 && criteria[0].key === 'holistic_points';
+    setSaving(true);
+    try {
+      await saveHumanScore({
+        text: evaluatedEssay,
+        title: essayTitle || null,
+        eval_type: holistic ? 'holistic' : 'analytic',
+        scores: human,
+        criteria_meta: criteria.map(({ key, label, max_score, weight }) => ({ key, label, max_score, weight })),
+        holistic_max: holistic ? criteria[0].max_score : null,
+        rubric: first.rubric || null,
+        privacy: first.privacy || null,
+      });
+      setSaved({ scores: human, at: new Date().toISOString(), source: 'saved' });
+      toast.success('Human score saved. Admins see it beside the AI scores in Evaluation Activity.');
+    } catch (err) {
+      toast.error('Could not save the human score: ' + errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Average distance from the human, in points, over the criteria both scored.
   const avgDiff = (ai) => {
@@ -130,7 +162,7 @@ export default function HumanVsAi({ runs, evaluatedEssay, values: givenValues, o
       {saved && (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
           <span>
-            📥 Human score retrieved from {saved.teacher ? 'the teacher’s' : 'your'} saved override
+            📥 Human score {saved.source === 'saved' ? 'saved' : `retrieved from ${saved.teacher ? 'the teacher’s' : 'your'} saved override`}
             {saved.at ? ` (${new Date(saved.at).toLocaleString()})` : ''}.
           </span>
           {!matchesSaved && (
@@ -231,11 +263,25 @@ export default function HumanVsAi({ runs, evaluatedEssay, values: givenValues, o
           ? <>Closest to the human score: <strong>{closest.ai.icon} {closest.ai.name}</strong> (off by {closest.d.toFixed(1)} point{closest.d === 1 ? '' : 's'} per criterion on average).</>
           : editable ? 'Enter the human scores to see which AI agrees most with the teacher.' : ''}
       </p>
-      {editable && (
-        <p className="mt-1 text-xs text-gray-500">
-          Human scores are kept as a draft in this browser and are not sent to the AIs. To save them with remarks, use
-          Override Scores below.
-        </p>
+      {editable && user && (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={save}
+            disabled={!complete || saving || (saved?.source === 'saved' && matchesSaved)}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : saved?.source === 'saved' && matchesSaved ? '✓ Human score saved' : '💾 Save human score'}
+          </button>
+          <span className="text-xs text-gray-500">
+            {complete
+              ? 'Saved beside the AI scores; admins see the comparison in Evaluation Activity. It isn’t sent to the AIs.'
+              : 'Score every criterion to save it.'}
+          </span>
+        </div>
+      )}
+      {editable && !user && (
+        <p className="mt-1 text-xs text-gray-500">Sign in to save the human score. Until then it is a draft in this browser.</p>
       )}
     </section>
   );

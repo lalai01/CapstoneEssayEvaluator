@@ -5,7 +5,7 @@ import ConfirmDialog from './ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage, matchesSearch } from '../lib/scoring';
 import ReportDialog from './ReportDialog';
-import { ScoreList, StatusBadge } from './EvaluationActivity';
+import { HumanVsAiTable, ScoreList, StatusBadge } from './EvaluationActivity';
 
 // Every essay the signed-in user evaluated (teachers and students alike), with
 // what happened to it, and the report of each AI result to view or download again.
@@ -151,6 +151,12 @@ function ReportDetail({ essay, onDeleted }) {
         </Section>
       )}
 
+      {data.human_vs_ai?.length > 0 && (
+        <Section title="👩‍🏫 Human score vs AI scores" tone="border-slate-300">
+          <HumanVsAiTable h={data.human_vs_ai[0]} />
+        </Section>
+      )}
+
       <Section title={`📝 Essay (${essay.essay_length} words)`} defaultOpen={false}>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800">{data.essay || '—'}</p>
       </Section>
@@ -198,6 +204,7 @@ function ReportDetail({ essay, onDeleted }) {
             evalType: report.eval_type,
             teacherScores: overrideScores(data.overrides),
             aiRuns: runsByAi(data.runs, report.eval_type),
+            humanScores: data.human_vs_ai?.[0]?.scores || null,
           }}
         />
       )}
