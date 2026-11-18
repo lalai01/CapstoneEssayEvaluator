@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { deleteMyEssay, getMyReportEssay, getMyReports } from '../api';
 import ConfirmDialog from './ConfirmDialog';
+import HumanScoreEditor from './HumanScoreEditor';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage, matchesSearch } from '../lib/scoring';
 import ReportDialog from './ReportDialog';
@@ -60,6 +61,8 @@ function ReportDetail({ essay, onDeleted }) {
   const [report, setReport] = useState(null);   // the run whose PDF is being made
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editing, setEditing] = useState(false);   // the human score editor is open
+  const [version, setVersion] = useState(0);       // bumped to load the essay again
 
   // Right to erasure (RA 10173): the essay, its AI results, saves and overrides.
   const remove = async () => {
@@ -82,7 +85,7 @@ function ReportDetail({ essay, onDeleted }) {
       .then((d) => { if (alive) setData(d); })
       .catch((err) => { if (alive) setData({ error: errorMessage(err) }); });
     return () => { alive = false; };
-  }, [essay]);
+  }, [essay, version]);
 
   if (!data) return <p className="px-4 py-6 text-gray-500">Loading…</p>;
   if (data.error) return <p className="px-4 py-6 text-red-600">{data.error}</p>;
@@ -151,11 +154,32 @@ function ReportDetail({ essay, onDeleted }) {
         </Section>
       )}
 
-      {data.human_vs_ai?.length > 0 && (
-        <Section title="👩‍🏫 Human score vs AI scores" tone="border-slate-300">
-          <HumanVsAiTable h={data.human_vs_ai[0]} />
-        </Section>
-      )}
+      <Section title="👩‍🏫 Human score vs AI scores" tone="border-slate-300">
+        {data.human_vs_ai?.length > 0
+          ? <HumanVsAiTable h={data.human_vs_ai[0]} />
+          : <p className="text-sm text-gray-500">No human score yet. Add your own score to compare it with the AIs.</p>}
+        {data.runs.some((r) => r.scores) && (
+          <div className="mt-3">
+            {!editing ? (
+              <button type="button" onClick={() => setEditing(true)}
+                className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50">
+                {data.human_vs_ai?.length ? '✏️ Overwrite with my score' : '✏️ Add my score'}
+              </button>
+            ) : (
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+                <HumanScoreEditor
+                  essayText={data.essay}
+                  title={essay.title}
+                  aiScores={[...data.runs].reverse().find((r) => r.scores)?.scores}
+                  existing={data.human_vs_ai?.[0]?.scores || null}
+                  onSaved={() => { setEditing(false); setVersion((n) => n + 1); }}
+                />
+                <button type="button" onClick={() => setEditing(false)} className="mt-2 text-xs text-gray-500 underline">Cancel</button>
+              </div>
+            )}
+          </div>
+        )}
+      </Section>
 
       <Section title={`📝 Essay (${essay.essay_length} words)`} defaultOpen={false}>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800">{data.essay || '—'}</p>

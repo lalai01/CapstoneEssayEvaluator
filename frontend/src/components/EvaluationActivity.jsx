@@ -4,6 +4,7 @@ import { getEvaluationActivity, getEvaluationEssay } from '../api';
 import { useAuth } from '../context/AuthContext';
 import { errorMessage, getCriteria, matchesSearch } from '../lib/scoring';
 import { downloadText, toCsv } from '../lib/surveyKit';
+import HumanScoreEditor from './HumanScoreEditor';
 
 // Status of an evaluated essay: icon + label + colour (never colour alone).
 const STATUS = {
@@ -100,15 +101,17 @@ export function HumanVsAiTable({ h }) {
   );
 }
 
-function EssayDetail({ essay, onClose }) {
+function EssayDetail({ essay, onClose, onChanged }) {
   const [data, setData] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [version, setVersion] = useState(0);   // bumped to load the essay again
   useEffect(() => {
     let alive = true;
     getEvaluationEssay(essay.user_id, essay.essay_hash)
       .then((d) => { if (alive) setData(d); })
       .catch((err) => { if (alive) setData({ error: errorMessage(err) }); });
     return () => { alive = false; };
-  }, [essay]);
+  }, [essay, version]);
 
   return (
     <div className="fixed inset-0 z-[60] flex justify-end bg-black/40" onMouseDown={onClose}>
@@ -136,13 +139,36 @@ function EssayDetail({ essay, onClose }) {
               {data.human_vs_ai?.length ? (
                 <div className="mt-2 rounded-lg border border-slate-200 p-3">
                   <p className="mb-2 text-xs text-gray-500">
-                    {data.human_vs_ai[0].label || 'Human score'} by {data.human_vs_ai[0].email || 'unknown'} · {fmt(data.human_vs_ai[0].at)}
+                    {data.human_vs_ai[0].label || 'Human score'} by {data.human_vs_ai[0].scored_by || data.human_vs_ai[0].email || 'unknown'} · {fmt(data.human_vs_ai[0].at)}
+                    {data.human_vs_ai[0].remarks ? ` · “${data.human_vs_ai[0].remarks}”` : ''}
                     {data.human?.length > 1 ? ` · latest of ${data.human.length}` : ''}
                     {' '}· = same score, +1 the AI gave one point more, −1 one point less
                   </p>
                   <HumanVsAiTable h={data.human_vs_ai[0]} />
                 </div>
-              ) : <p className="mt-1 text-sm text-gray-500">No human score saved for this essay yet (Evaluate → Human score vs AI scores → Save human score).</p>}
+              ) : <p className="mt-1 text-sm text-gray-500">No human score saved for this essay yet.</p>}
+              {data.runs.some((r) => r.scores) && (
+                <div className="mt-2">
+                  {!editing ? (
+                    <button type="button" onClick={() => setEditing(true)}
+                      className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50">
+                      {data.human_vs_ai?.length ? '✏️ Overwrite the human score' : '✏️ Add a human score'}
+                    </button>
+                  ) : (
+                    <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+                      <HumanScoreEditor
+                        essayText={data.essay}
+                        title={essay.title}
+                        aiScores={[...data.runs].reverse().find((r) => r.scores)?.scores}
+                        existing={data.human_vs_ai?.[0]?.scores || null}
+                        ownerUserId={essay.user_id}
+                        onSaved={() => { setEditing(false); setVersion((n) => n + 1); onChanged?.(); }}
+                      />
+                      <button type="button" onClick={() => setEditing(false)} className="mt-2 text-xs text-gray-500 underline">Cancel</button>
+                    </div>
+                  )}
+                </div>
+              )}
             </section>
 
             <section>
@@ -441,7 +467,7 @@ export default function EvaluationActivity() {
                   <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
                     <div>
                       <span className="font-medium text-gray-900">{h.title}</span>
-                      <span className="ml-2 text-xs text-gray-500">{h.label} · {h.email || 'unknown'}</span>
+                      <span className="ml-2 text-xs text-gray-500">{h.label} · {h.scored_by || h.email || 'unknown'}{h.scored_by && h.email && h.scored_by !== h.email ? ` (essay of ${h.email})` : ''}</span>
                     </div>
                     <span className="text-xs text-gray-500">{fmt(h.at)}</span>
                   </div>
@@ -476,7 +502,7 @@ export default function EvaluationActivity() {
         </div>
       )}
 
-      {open && <EssayDetail essay={open} onClose={() => setOpen(null)} />}
+      {open && <EssayDetail essay={open} onClose={() => setOpen(null)} onChanged={() => setReload((n) => n + 1)} />}
     </div>
   );
 }

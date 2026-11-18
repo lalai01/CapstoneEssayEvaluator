@@ -2154,6 +2154,8 @@ def _human_comparisons(db, human_rows):
         out.append({
             "id": h.get("id"), "at": h.get("created_at"), "user_id": h.get("user_id"),
             "email": h.get("user_email"), "role": h.get("user_role"), "title": h.get("title") or "Untitled essay",
+            "scored_by": (scores.get("human") or {}).get("by") or h.get("user_email"),
+            "remarks": (scores.get("human") or {}).get("remarks"),
             "essay_hash": h.get("essay_hash"), "label": h.get("ai_label"), "overall": h.get("overall"),
             "criteria": scores.get("criteria_meta") or [], "scores": {k: v for k, v in scores.items() if isinstance(v, (int, float))},
             "ais": evaluation_log.compare_human(scores, list(latest.values())),
@@ -2171,15 +2173,33 @@ class HumanScoreRequest(BaseModel):
     rubric: Optional[Dict[str, Any]] = None
     privacy: Optional[Dict[str, Any]] = None
     remarks: Optional[str] = Field(None, max_length=MAX_SHORT_TEXT)
+    # Admins can score an essay someone else evaluated (Evaluation Activity):
+    # the score is kept with that person's essay.
+    owner_user_id: Optional[str] = Field(None, max_length=64)
 
 
 @app.post("/human-scores")
 def save_human_score(req: HumanScoreRequest, user: dict = Depends(get_current_user)):
     """Save the human (teacher's) score of an essay, so it is shown beside
     the AIs' scores here and in the admin's Evaluation Activity. Kept in
-    evaluation_runs with ai_choice "human", grouped with the essay's AI runs."""
+    evaluation_runs with ai_choice "human", grouped with the essay's AI runs.
+    A new score overwrites the earlier human score of the same essay."""
     import evaluation_log
     _require_minor_consent(user)
+    db = _survey_admin_db()
+    essay_h = evaluation_log.essay_hash(req.text)
+    owner = {"id": user["id"], "email": (user.get("email") or "").lower() or None, "role": role_of(user)}
+    if req.owner_user_id and req.owner_user_id != user["id"]:
+        if not is_admin(user):
+            raise HTTPException(403, "Only admins can score an essay someone else evaluated.")
+        try:
+            prev = db.table("evaluation_runs").select("user_email,user_role").eq("user_id", req.owner_user_id) \
+                .eq("essay_hash", essay_h).limit(1).execute().data or []
+        except Exception:
+            prev = []
+        if not prev:
+            raise HTTPException(404, "That essay wasn't found for this user.")
+        owner = {"id": req.owner_user_id, "email": prev[0].get("user_email"), "role": prev[0].get("user_role")}
     if not req.scores or len(req.scores) > 30:
         raise HTTPException(422, "Enter a score for each criterion.")
     meta = req.criteria_meta or []
@@ -2200,12 +2220,16 @@ def save_human_score(req: HumanScoreRequest, user: dict = Depends(get_current_us
         privacy["minor"] = True
     if privacy.get("minor"):
         scores["privacy"] = {"minor": True}
+    scores["human"]["at"] = _now_iso()
     text, pct = evaluation_log.overall(scores)
     try:
-        row = _survey_admin_db().table("evaluation_runs").insert({
-            "user_id": user["id"], "user_email": (user.get("email") or "").lower() or None, "user_role": role,
+        # Overwrite: the essay keeps one human score, the latest.
+        db.table("evaluation_runs").delete().eq("user_id", owner["id"]).eq("essay_hash", essay_h) \
+            .eq("ai_choice", evaluation_log.HUMAN).execute()
+        row = db.table("evaluation_runs").insert({
+            "user_id": owner["id"], "user_email": owner["email"], "user_role": owner["role"],
             "title": (req.title or "").strip()[:300] or None, "essay": req.text,
-            "essay_hash": evaluation_log.essay_hash(req.text), "eval_type": req.eval_type,
+            "essay_hash": essay_h, "eval_type": req.eval_type,
             "ai_choice": evaluation_log.HUMAN, "ai_label": label, "provider": evaluation_log.HUMAN,
             "overall": text, "overall_pct": pct, "rubric_title": (req.rubric or {}).get("title"),
             "used_rag": False, "scores": scores,
