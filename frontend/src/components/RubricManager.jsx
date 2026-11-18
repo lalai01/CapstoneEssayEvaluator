@@ -101,6 +101,9 @@ function RubricCard({ rubric, onActivate, onEdit, onDelete, onCopy, readOnly = f
           )}
         </div>
         {rubric.description && <p className="text-sm text-gray-500">{rubric.description}</p>}
+        {(rubric.instructions || rubric.rationale) && (
+          <p className="text-xs text-amber-800 mt-1">📋 With assignment instructions{rubric.instructions ? `: ${rubric.instructions.split('\n')[0].slice(0, 90)}…` : ''}</p>
+        )}
         <div className="flex flex-wrap gap-1.5 mt-2">
           {summary.map((c) => (
             <span key={c.id} className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-full">
@@ -139,6 +142,10 @@ export default function RubricManager({ scope = 'teacher' }) {
   const [isSystem, setIsSystem] = useState(false);     // scope of the rubric being edited
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  // The assignment this rubric grades: why it's given and what the students
+  // must do. The AI reads both before scoring each essay.
+  const [rationale, setRationale] = useState('');
+  const [instructions, setInstructions] = useState('');
   const [rows, setRows] = useState([]);
   const [openLevels, setOpenLevels] = useState({});
   const [loading, setLoading] = useState(false);
@@ -216,12 +223,14 @@ export default function RubricManager({ scope = 'teacher' }) {
     importFile(e.dataTransfer?.files?.[0]);
   };
 
-  const openEditor = ({ id, system, rubricTitle, rubricDescription, editorRows }) => {
+  const openEditor = ({ id, system, rubricTitle, rubricDescription, editorRows, rubricRationale = '', rubricInstructions = '' }) => {
     setImportNote(null);
     setEditing(id);
     setIsSystem(system);
     setTitle(rubricTitle);
     setDescription(rubricDescription);
+    setRationale(rubricRationale);
+    setInstructions(rubricInstructions);
     setRows(editorRows);
     setOpenLevels({});
   };
@@ -244,6 +253,8 @@ export default function RubricManager({ scope = 'teacher' }) {
       system: r.is_system,
       rubricTitle: r.title,
       rubricDescription: r.description || '',
+      rubricRationale: r.rationale || '',
+      rubricInstructions: r.instructions || '',
       editorRows: toRows(r.criteria),
     });
   };
@@ -254,6 +265,8 @@ export default function RubricManager({ scope = 'teacher' }) {
       system: false,
       rubricTitle: `${r.title} (my copy)`,
       rubricDescription: r.description || '',
+      rubricRationale: r.rationale || '',
+      rubricInstructions: r.instructions || '',
       editorRows: toRows(r.criteria),
     });
   };
@@ -327,7 +340,7 @@ export default function RubricManager({ scope = 'teacher' }) {
     }
     setLoading(true);
     try {
-      const payload = { title, description, criteria: toCriteria(rows) };
+      const payload = { title, description, rationale: rationale.trim(), instructions: instructions.trim(), criteria: toCriteria(rows) };
       if (editing === 'new') {
         // A new rubric becomes the default for its scope.
         await apiClient.post('/rubrics', { ...payload, is_active: true, is_system: isSystem });
@@ -531,6 +544,40 @@ export default function RubricManager({ scope = 'teacher' }) {
               rows="2"
               placeholder="Brief description of the rubric purpose"
             />
+          </div>
+
+          <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+            <div>
+              <h4 className="font-semibold text-amber-900">📋 Assignment given to the students</h4>
+              <p className="text-xs text-amber-900/80">
+                What the students were asked to do. The AI reads this <strong>before</strong> scoring each essay, checks
+                the essay against every instruction, and lowers the matching criterion when one is missed (for example,
+                missing sources → Evidence). Leave empty if the rubric is used for different tasks; teachers can also
+                type the instructions on the Evaluate page.
+              </p>
+            </div>
+            <div>
+              <label className="block font-medium mb-1">Rationale (why the task is given)</label>
+              <textarea
+                value={rationale}
+                onChange={(e) => setRationale(e.target.value)}
+                className="w-full border rounded-lg p-2 bg-white"
+                rows="2"
+                maxLength={5000}
+                placeholder="e.g., To practise building an argument supported by evidence."
+              />
+            </div>
+            <div>
+              <label className="block font-medium mb-1">Instructions to the students (item by item)</label>
+              <textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                className="w-full border rounded-lg p-2 bg-white font-mono text-sm"
+                rows="6"
+                maxLength={20000}
+                placeholder={'e.g.,\n1. Write 300–500 words on whether schools should ban phones.\n2. State your position in the first paragraph.\n3. Give at least three reasons, one paragraph each.\n4. Cite at least two sources.\n5. End with a recommendation.'}
+              />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-2 text-sm text-indigo-900">

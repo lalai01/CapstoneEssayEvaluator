@@ -34,6 +34,7 @@ A web app that scores essays against a configurable rubric, gives written feedba
 | **My Reports** (everyone signed in) | Every essay the user evaluated, newest first, with its status (not saved, saved, approved, overridden, rejected) and each AI's overall result. Opening one shows the essay, each AI's scores and feedback, and any override, and **Download report** creates that result's PDF again (with the override's scores and remarks). Built from `evaluation_runs`, so evaluations made before that table existed appear only if they were saved or overridden. |
 | **Automatic translation** | Essays that mix English with Tagalog/Filipino, Cebuano/Bisaya or any other language are translated to English before they are evaluated (`POST /translate`; Gemini, then DeepSeek, then Groq). Only the non-English parts are translated; English parts are kept exactly as written, mistakes included, since grammar is graded. A plain English essay is recognised locally and never sent to an AI. The Evaluate page says which languages were found and shows the English version that was evaluated. Uploads written in other languages are no longer rejected as "not an essay". |
 | **Human score vs AI scores** | On the Evaluate and Compare pages, a table puts the teacher's (human) score beside DeepSeek's, GPT-OSS's and Qwen's for every criterion, with the difference (=, +1, −1), totals, exact matches and the average difference, and names the AI closest to the human. A human score saved earlier for the same essay (an override's teacher scores in the Learning Hub) is retrieved and filled in, and so is one saved from the Override dialog. **Save human score** stores it on the server (`POST /human-scores`, an `evaluation_runs` row with `ai_choice = 'human'`, grouped with the essay's AI runs; no migration needed), and it is retrieved again for the same essay (`POST /human-scores/find`). Admins see it in **Evaluation Activity**: a Human chip beside each essay's AI results, a **Human vs AI** tab (every human score against each AI, with each AI's exact matches and average difference, the AI closest to the human, and CSV export), and a Human vs AI table in each essay's details. My Reports shows it too, and its PDF uses it in the comparison. **Scoring earlier essays:** My Reports (your own essays) and, for admins, Evaluation Activity's essay details have *Add my score* / *Overwrite the human score*: the rubric's criteria with optional remarks; a new score replaces the essay's earlier human score (admins' scores are kept with the essay owner's, with who scored it). |
+| **Rubric instructions** | Rubrics can carry the assignment they grade: a **rationale** (why the task is given) and **instructions** (what the students must do, item by item). The AI reads them before scoring and checks the essay against each instruction; they can also be typed or changed per essay on the Evaluate page. See [Rubric instructions](#rubric-instructions-the-assignment). |
 | **One prompt for all three AIs** | The Evaluate and Compare pages show the exact prompt each AI received (returned with its result as `scores.prompt`; never stored in the database). A table checks each part (system message, rubric, observed facts, scoring rules, hard rules, calibration, essay, answer format) as the same or shortened, and the prompt of GPT-OSS or Qwen can be compared line by line with DeepSeek's, with the differences highlighted. DeepSeek and GPT-OSS get the same prompt word for word; Qwen's is the compact version (first sentence of each descriptor, first 4,000 characters of the essay, shorter comments). |
 | **Data privacy (RA 10173)** | A Data Privacy Notice under the Data Privacy Act of 2012 (what is collected, why, who processes it, retention, the data subject's rights, and that AI scores support the teacher's judgement). The user agrees to it once per browser before the first evaluation; the full notice is on the Home page and the Evaluate page, and every page of the PDF report carries a confidentiality line. |
 | **Minors' essays (under 18)** | Under RA 10173 an essay with a student's name, grade and section is sensitive personal information (education), and a minor's consent is given by the parent or guardian. On Evaluate, ticking *The student is a minor* requires the teacher to confirm the guardian's consent (the server refuses the essay otherwise); removes the heading (Name, LRN, Grade & Section, School, Teacher…), 12-digit LRNs, emails, phone numbers and a given student name, in the browser before anything is sent and again on the server (`lib/redact.js`, `backend/privacy.py`); never keeps its photos as handwriting samples; and can *keep the essay on our server only* (local readers instead of Gemini, Qwen only, no translation). Results carry `scores.privacy`, and minors' records are deleted automatically after `MINOR_RETENTION_DAYS` (default 365; daily, or `POST /admin/purge-minors`). |
@@ -264,6 +265,10 @@ alter table rubrics add column if not exists is_system boolean not null default 
 -- Existing rubrics were created by admins, so they become school-wide.
 update rubrics set is_system = true;
 
+-- Rubric instructions (required to save them): the assignment a rubric grades.
+alter table rubrics add column if not exists rationale text,
+                    add column if not exists instructions text;
+
 -- Organizing the Knowledge Base and Learning Hub (recommended).
 alter table knowledge_base    add column if not exists scores jsonb;
 alter table knowledge_base    add column if not exists ai_model text;
@@ -387,6 +392,21 @@ Rubrics are stored in `rubrics.criteria` in this shape:
 - Normalized score of one criterion: `(score − 1) / (max − 1)`, from 0 to 1.
 - Weighted score: weight-averaged normalized scores, shown as a percentage.
 - Grade bands on the weighted score: Excellent ≥ 83%, Good ≥ 50%, Developing ≥ 17%, otherwise Beginning.
+
+### Rubric instructions (the assignment)
+
+A rubric alone says *how* an essay is graded, not *what the students were asked to do*. A teacher's assignment (for example a final project) has three parts, and the AI now reads all three before it scores a submission:
+
+| Part | What it is | Where it's set |
+|---|---|---|
+| **Rationale** | Why the task is given (its purpose) | Rubric editor (📐 Rubrics) or the Evaluate page |
+| **Instructions** | What the students must do, item by item: topic, required parts, length, number of reasons or sources, format | Rubric editor or the Evaluate page |
+| **Rubric** | The criteria and score levels used to grade it | Rubric editor |
+
+- **Saved with a rubric** (`rubrics.rationale`, `rubrics.instructions`; run the migration above), so every essay graded with that rubric uses them.
+- **Per essay:** the Evaluate page's *📋 Assignment instructions* box is filled in from the chosen rubric and can be changed for one essay (`rationale` and `instructions` in `POST /evaluate`); what is typed there is used instead of the rubric's.
+- **In the prompt:** an *ASSIGNMENT GIVEN BY THE TEACHER* block comes before the rubric, for all three AIs (shortened for the local model). It tells the AI to check the essay against every instruction, to lower the criterion an unmet instruction belongs to (missing sources → Evidence; missing parts or wrong structure → Organization; off-topic → Main Statement), to award points only for what the instructions and the rubric ask for, and to name unmet instructions in its feedback. The *One prompt for all three AIs* panel shows the block and checks it is the same for all three.
+- A minor's assignment text gets the same personal-detail removal as the essay.
 
 **Limitation:** `knowledge_base` only has columns for the five built-in criteria, so scores for admin-added criteria aren't stored when an evaluation is saved to the Knowledge Base.
 

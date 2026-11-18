@@ -39,6 +39,7 @@ function diffLines(a, b) {
 
 // The prompt's sections (headings in the prompt text), to say which are shared.
 const SECTIONS = [
+  ['ASSIGNMENT GIVEN BY THE TEACHER', 'Teacher’s assignment (rationale and instructions)'],
   ['RUBRIC', 'Rubric and level descriptors'],
   ['OBSERVED FACTS', 'Observed facts (paragraphs, words, citations, transitions)'],
   ['SCORING RULES', 'Scoring rules'],

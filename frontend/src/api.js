@@ -160,19 +160,25 @@ const privacyFields = (privacy) => (privacy ? {
   redact_names: (privacy.redactNames || []).filter(Boolean),
 } : {});
 
-export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null, privacy = null) => {
+// assignment: { rationale, instructions } given with this essay (else the rubric's own).
+const assignmentFields = (a) => (a ? {
+  rationale: (a.rationale || '').trim() || null,
+  instructions: (a.instructions || '').trim() || null,
+} : {});
+
+export const evaluateEssay = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null, privacy = null, assignment = null) => {
   const response = await apiClient.post(
     '/evaluate',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title, ...privacyFields(privacy) },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title, ...privacyFields(privacy), ...assignmentFields(assignment) },
     { timeout: 300000 }
   );
   return response.data;
 };
 
-export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null, privacy = null) => {
+export const evaluateEssayWithRag = async (text, evaluationType = 'analytic', rubricId = null, aiModel = 'auto', strict = false, title = null, privacy = null, assignment = null) => {
   const response = await apiClient.post(
     '/evaluate-rag',
-    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title, ...privacyFields(privacy) },
+    { text, evaluation_type: evaluationType, rubric_id: rubricId, ai_model: aiModel, strict_model: strict, title, ...privacyFields(privacy), ...assignmentFields(assignment) },
     { timeout: 300000 }
   );
   return response.data;

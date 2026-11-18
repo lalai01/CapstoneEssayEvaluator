@@ -130,6 +130,10 @@ class EvaluationRequest(BaseModel):
     guardian_consent: bool = False
     local_only: bool = False
     redact_names: Optional[List[str]] = Field(None, max_length=10)
+    # This assignment's rationale and instructions; when left out, the ones
+    # saved with the rubric are used.
+    rationale: Optional[str] = Field(None, max_length=5000)
+    instructions: Optional[str] = Field(None, max_length=20000)
 
 class EvaluationResponse(BaseModel):
     scores: dict
@@ -186,6 +190,10 @@ class KnowledgeEntry(BaseModel):
 class RubricCreate(BaseModel):
     title: str
     description: Optional[str] = None
+    # The assignment the rubric grades: why it's given and what the students
+    # must do. The AI reads them before scoring (see README, "Rubric instructions").
+    rationale: Optional[str] = Field(None, max_length=5000)
+    instructions: Optional[str] = Field(None, max_length=20000)
     criteria: Dict[str, Dict[str, Any]]
     is_active: bool = True
     is_system: bool = False   # school-wide (admins only) vs the teacher's own
@@ -193,6 +201,8 @@ class RubricCreate(BaseModel):
 class RubricUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    rationale: Optional[str] = Field(None, max_length=5000)
+    instructions: Optional[str] = Field(None, max_length=20000)
     criteria: Optional[Dict[str, Dict[str, Any]]] = None
     is_active: Optional[bool] = None
 
@@ -1499,6 +1509,16 @@ def import_rubric_file(file: UploadFile = File(...), user: dict = Depends(get_cu
         print(f"❌ Rubric import failed: {e}")
         raise HTTPException(500, "The file couldn't be read. Is it a valid PDF or Excel file?")
 
+RUBRIC_COLUMNS_SQL = ("alter table rubrics add column if not exists rationale text, "
+                      "add column if not exists instructions text;")
+
+
+def _rubric_column_error(e):
+    if "rationale" in str(e) or "instructions" in str(e):
+        raise HTTPException(500, "Database migration needed for rubric instructions. In Supabase → SQL editor run: "
+                                 + RUBRIC_COLUMNS_SQL)
+
+
 @app.post("/rubrics")
 def create_rubric(rubric: RubricCreate,
                   user: dict = Depends(get_current_user),
@@ -1509,7 +1529,11 @@ def create_rubric(rubric: RubricCreate,
     data["criteria"] = _validate_criteria(rubric.criteria)
     data["user_id"] = user["id"]
     client = _rubric_client(user_client)
-    result = client.table("rubrics").insert(data).execute()
+    try:
+        result = client.table("rubrics").insert(data).execute()
+    except Exception as e:
+        _rubric_column_error(e)
+        raise
     # Merge what was saved with what the database returned (id, timestamps).
     row = {**data, **result.data[0]}
     if rubric.is_active:
@@ -1551,7 +1575,11 @@ def update_rubric(rubric_id: int,
     if "criteria" in data:
         data["criteria"] = _validate_criteria(rubric.criteria)
     if data:
-        client.table("rubrics").update(data).eq("id", rubric_id).execute()
+        try:
+            client.table("rubrics").update(data).eq("id", rubric_id).execute()
+        except Exception as e:
+            _rubric_column_error(e)
+            raise
     if rubric.is_active:
         _deactivate_others(client, row)
     return {"status": "updated"}
@@ -2009,8 +2037,19 @@ def _run_evaluate(req: EvaluationRequest, user: Optional[dict], use_rag: bool):
     # Guests get the school-wide rubric (they have no rubrics of their own).
     criteria, rubric_info = resolve_rubric(user["id"] if user else None,
                                            req.rubric_id if user else None)
+    # The teacher's assignment: what came with this essay, else what's saved with the rubric.
+    saved = evaluator.assignment_for(rubric_info)
+    assignment = {
+        "rationale": (req.rationale or "").strip() or saved.get("rationale", ""),
+        "instructions": (req.instructions or "").strip() or saved.get("instructions", ""),
+    }
+    if req.minor:
+        import privacy
+        names = [n for n in (req.redact_names or []) if n]
+        assignment = {k: privacy.redact_personal_info(v, names)[0] for k, v in assignment.items()}
+    rubric_info = {**rubric_info, "has_instructions": bool(assignment["instructions"] or assignment["rationale"])}
     result = run_evaluation(req.text, req.evaluation_type, use_rag=use_rag, rubric=criteria,
-                            ai_model=req.ai_model, strict_model=req.strict_model)
+                            ai_model=req.ai_model, strict_model=req.strict_model, assignment=assignment)
     if result.get("error"):
         return EvaluationResponse(
             scores={"main_statement": 0, "organization": 0,

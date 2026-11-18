@@ -36,6 +36,7 @@ class EvaluationState(TypedDict, total=False):
     rubric: Optional[Dict[str, Any]]
     ai_model: Optional[str]   # "auto" | "deepseek" | "local"/"llama" | "qwen" (older: "gemma")
     strict_model: Optional[bool]   # only the chosen AI (side-by-side comparison)
+    assignment: Optional[Dict[str, Any]]   # the teacher's rationale and instructions
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,8 @@ def score_node(state: EvaluationState) -> dict:
         # One quick overall judgement; only if every model fails do we fall
         # back to deriving the score from the slower analytic scoring.
         scores = ai_holistic_score(state["essay_text"], state.get("ai_model") or "auto",
-                                   strict=bool(state.get("strict_model")), rubric=state.get("rubric"))
+                                   strict=bool(state.get("strict_model")), rubric=state.get("rubric"),
+                                   assignment=state.get("assignment"))
         if scores is None:
             analytic = calculate_analytic_scores(
                 state["essay_text"],
@@ -87,6 +89,7 @@ def score_node(state: EvaluationState) -> dict:
             rubric=state.get("rubric"),
             preference=state.get("ai_model") or "auto",
             strict=bool(state.get("strict_model")),
+            assignment=state.get("assignment"),
         )
     return {"scores": scores, "_analysis": analysis}
 
@@ -175,7 +178,7 @@ evaluation_graph = build_graph()
 # Public entry point
 # ---------------------------------------------------------------------------
 def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool, rubric=None,
-                   ai_model: str = "auto", strict_model: bool = False) -> dict:
+                   ai_model: str = "auto", strict_model: bool = False, assignment=None) -> dict:
     initial: EvaluationState = {
         "essay_text": essay_text,
         "evaluation_type": evaluation_type,
@@ -183,6 +186,7 @@ def run_evaluation(essay_text: str, evaluation_type: str, use_rag: bool, rubric=
         "rubric": rubric,
         "ai_model": ai_model,
         "strict_model": strict_model,
+        "assignment": assignment,
         "scores": None,
         "feedback": None,
         "rag_context": None,

@@ -71,6 +71,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     setTitleError(false);
     setMinor(NO_MINOR);
     setRedaction(null);
+    setAssignmentDraft(null);
     onNewEssay?.();
     toast.success('Draft cleared. Start your new essay.');
   };
@@ -90,6 +91,15 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
   const myRubrics = rubrics.filter((r) => !r.is_system);
   const schoolRubrics = rubrics.filter((r) => r.is_system && r.is_active);
   const defaultRubric = myRubrics.find((r) => r.is_active) || schoolRubrics[0];
+  // The assignment's rationale and instructions: those saved with the chosen
+  // rubric, unless the teacher typed this essay's own (edited).
+  const selectedRubric = rubricId ? rubrics.find((r) => String(r.id) === String(rubricId)) : defaultRubric;
+  const [assignmentDraft, setAssignmentDraft] = useDraft('assignment', null);   // { rationale, instructions } once edited
+  const assignment = assignmentDraft || {
+    rationale: selectedRubric?.rationale || '',
+    instructions: selectedRubric?.instructions || '',
+  };
+  const editAssignment = (patch) => setAssignmentDraft({ ...assignment, ...patch });
 
   // Each uploaded file (or page) is added as a new part, after the others; an
   // empty typing box is replaced. Several files arrive one after another, so
@@ -224,7 +234,7 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
     const runOne = async (ai) => {
       const started = performance.now();
       try {
-        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true, safeTitle, privacy);
+        const result = await evaluate(essay, evalTypeLocal, chosenRubric, ai.id, true, safeTitle, privacy, assignment);
         if (typeof result.feedback === 'string' && result.feedback.startsWith('⚠️ Invalid Input')) {
           throw new Error(result.feedback.replace('⚠️ Invalid Input:', '').trim());
         }
@@ -426,6 +436,48 @@ export default function EssayInput({ onNewEssay, hasResults, setAiRuns, onChoose
             </p>
           </div>
         )}
+
+        <details className="mb-5 rounded-xl border border-amber-200 bg-amber-50/60" open={!!(assignment.instructions || assignment.rationale)}>
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-amber-900">
+            📋 Assignment instructions {assignment.instructions || assignment.rationale ? '(the AI reads these first)' : '(optional)'}
+          </summary>
+          <div className="space-y-3 px-4 pb-4 text-sm">
+            <p className="text-xs text-amber-900/80">
+              What the students were asked to do. The AI reads the rationale and each instruction before scoring, checks
+              the essay against them, and lowers the matching criterion when an instruction is missed.
+              {selectedRubric && (selectedRubric.instructions || selectedRubric.rationale)
+                ? ` Filled in from the rubric “${selectedRubric.title}”; changes here apply to this essay only.`
+                : ' Save them with a rubric in the 📐 Rubrics tab to reuse them.'}
+            </p>
+            <label className="block">
+              <span className="text-gray-700">Rationale (why the task is given)</span>
+              <textarea
+                value={assignment.rationale}
+                onChange={(e) => editAssignment({ rationale: e.target.value })}
+                rows={2}
+                maxLength={5000}
+                className="mt-1 w-full rounded-lg border border-gray-300 bg-white p-2"
+                placeholder="e.g., To practise building an argument supported by evidence."
+              />
+            </label>
+            <label className="block">
+              <span className="text-gray-700">Instructions to the students (item by item)</span>
+              <textarea
+                value={assignment.instructions}
+                onChange={(e) => editAssignment({ instructions: e.target.value })}
+                rows={5}
+                maxLength={20000}
+                className="mt-1 w-full rounded-lg border border-gray-300 bg-white p-2 font-mono text-xs"
+                placeholder={'e.g.,\n1. Write 300–500 words.\n2. State your position in the first paragraph.\n3. Give at least three reasons.\n4. Cite at least two sources.'}
+              />
+            </label>
+            {assignmentDraft && (
+              <button type="button" onClick={() => setAssignmentDraft(null)} className="text-xs text-amber-900 underline">
+                ↺ Use the rubric’s instructions again
+              </button>
+            )}
+          </div>
+        </details>
 
         <div className="mb-5">
           <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">

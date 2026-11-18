@@ -279,6 +279,46 @@ def resolve_rubric(user_id=None, rubric_id=None):
     return ANALYTIC_RUBRIC, BUILTIN_RUBRIC_INFO
 
 
+def assignment_for(rubric_info):
+    """The rationale and instructions saved with a rubric ({} if none, or if
+    the rubrics table doesn't have those columns yet)."""
+    rid = (rubric_info or {}).get("id")
+    if not rid:
+        return {}
+    try:
+        rows = _rubric_client().table("rubrics").select("rationale,instructions").eq("id", rid).limit(1).execute().data
+    except Exception as e:
+        print(f"Rubric instructions unavailable ({e}); run the README migration")
+        return {}
+    row = rows[0] if rows else {}
+    return {k: (row.get(k) or "").strip() for k in ("rationale", "instructions") if (row.get(k) or "").strip()}
+
+
+def assignment_block(assignment, compact=False):
+    """The teacher's assignment (rationale and instructions) for the scoring
+    prompt: the AI reads what the students were asked to do before it scores
+    what one of them wrote. Empty when there are none."""
+    a = assignment or {}
+    rationale, instructions = (a.get("rationale") or "").strip(), (a.get("instructions") or "").strip()
+    if not rationale and not instructions:
+        return ""
+    limit = 1500 if compact else 6000
+    parts = ["ASSIGNMENT GIVEN BY THE TEACHER (read this first: the essay is a student's answer to it):"]
+    if rationale:
+        parts.append(f"Rationale (why the task was given): {rationale[:limit // 3]}")
+    if instructions:
+        parts.append(f"Instructions to the students, item by item:\n{instructions[:limit]}")
+    parts.append(
+        "How to use the assignment:\n"
+        "- Check the essay against every instruction (topic, required parts, length, number of points or sources, format).\n"
+        "- A missing or ignored instruction lowers the criterion it belongs to (e.g. missing sources -> evidence; "
+        "missing parts or wrong structure -> organization; off-topic -> main statement).\n"
+        "- Award points only for what the instructions and the rubric ask for, not for extra content.\n"
+        "- Name any unmet instruction in criterion_feedback and in a recommendation."
+    )
+    return "\n".join(parts) + "\n\n"
+
+
 def get_active_rubric(user_id=None):
     """Criteria of the rubric that applies to this user by default."""
     return resolve_rubric(user_id)[0]
@@ -558,7 +598,7 @@ def prompt_record(system_msg, user_msg, provider, model, essay_text, essay_limit
     }
 
 
-def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, provider="ollama"):
+def ai_score_all_criteria(essay_text, rubric=None, model=LOCAL_SCORING_MODEL, provider="ollama", assignment=None):
     criteria = normalize_rubric(rubric)
     essay_limit = CLOUD_ESSAY_CHARS if provider in CLOUD_PROVIDERS else LOCAL_ESSAY_CHARS
 
@@ -642,9 +682,10 @@ Example D - Disorganized essay with no thesis and no evidence:
         "- Every criterion_feedback value must be a plain string of 2-3 sentences."
     )
 
-    user_msg = f"""Carefully evaluate the essay below against the rubric.
+    task_block = assignment_block(assignment, compact=compact)
+    user_msg = f"""Carefully evaluate the essay below against the rubric{" and the teacher's assignment" if task_block else ""}.
 
-RUBRIC (use these exact descriptors to justify scores; each criterion has its own range):
+{task_block}RUBRIC (use these exact descriptors to justify scores; each criterion has its own range):
 
 {rubric_block}
 
@@ -1041,7 +1082,7 @@ def _scoring_attempts(choice, strict):
     return attempts
 
 
-def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="auto", strict=False):
+def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="auto", strict=False, assignment=None):
     criteria = normalize_rubric(rubric)
     choice = choose_scoring_model(essay_text, criteria, preference)
     attempts = _scoring_attempts(choice, strict)
@@ -1050,7 +1091,7 @@ def calculate_analytic_scores(essay_text, analysis, rubric=None, preference="aut
     first_failure = None
     for i, attempt in enumerate(attempts):
         ai = ai_score_all_criteria(
-            essay_text, rubric=criteria, model=attempt["model"], provider=attempt["provider"]
+            essay_text, rubric=criteria, model=attempt["model"], provider=attempt["provider"], assignment=assignment
         )
         if ai is not None:
             reason = choice["reason"]
@@ -1139,7 +1180,7 @@ def holistic_points(level, total, points=None):
         return high
 
 
-def ai_holistic_score(essay_text, preference="auto", strict=False, rubric=None):
+def ai_holistic_score(essay_text, preference="auto", strict=False, rubric=None, assignment=None):
     """
     Genuine holistic scoring: ONE short model call that reads the essay as a
     whole and returns a single overall level (1-5) for coherence, organization,
@@ -1170,7 +1211,7 @@ def ai_holistic_score(essay_text, preference="auto", strict=False, rubric=None):
 its overall coherence, organization, style and content together. Do not score
 criteria separately.
 
-The rubric used for this class is worth {total} points in total ({rubric_names}).
+{assignment_block(assignment, compact=attempt["provider"] not in CLOUD_PROVIDERS)}The rubric used for this class is worth {total} points in total ({rubric_names}).
 Also give your overall judgement as "points" out of {total}, inside the range of
 the level you chose.
 
