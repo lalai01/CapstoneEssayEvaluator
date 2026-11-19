@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import AiStatistics from './AiStatistics';
 import HumanVsAi from './HumanVsAi';
@@ -24,6 +24,11 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
   const [draft, setDraft] = useDraft('myScores', null);
   const values = draft?.essay === forEssay ? draft.values : {};
   const setValue = (key, value) => setDraft({ essay: forEssay, values: { ...values, [key]: value } });
+  // A whole set at once (a saved human score); onlyIfEmpty keeps what's typed.
+  const replaceValues = useCallback((vals, onlyIfEmpty) => setDraft((d) => (
+    onlyIfEmpty && d?.essay === forEssay && Object.values(d.values || {}).some((v) => v !== '')
+      ? d
+      : { essay: forEssay, values: vals })), [setDraft, forEssay]);
   const [picked, setPicked] = useState('');
 
   const doneRuns = EVALUATION_AIS.filter((ai) => aiRuns?.[ai.id]?.status === 'done' && aiRuns[ai.id].scores);
@@ -36,8 +41,6 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
     if (values[c.key] !== '' && values[c.key] !== undefined && Number.isInteger(n) && n >= 1 && n <= c.max_score) mine[c.key] = n;
   }
   const entered = criteria.filter((c) => isNum(mine[c.key]));
-  const total = entered.reduce((s, c) => s + mine[c.key], 0);
-  const maxTotal = criteria.reduce((s, c) => s + c.max_score, 0);
 
   // Average difference per criterion: in points when every criterion has the
   // same range, otherwise as a percentage of each criterion's range.
@@ -107,47 +110,22 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
 
       <AiStatistics aiRuns={aiRuns} title="📈 How the three AIs compare with each other" />
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section className="glass-card rounded-2xl shadow-xl p-6 bg-white/95" aria-labelledby="your-scores-title">
-          <h2 id="your-scores-title" className="text-lg font-bold text-gray-800">Your scores</h2>
-          <p className="text-xs text-gray-500 mt-0.5">Whole numbers from 1 to each criterion’s maximum. Saved as a draft in this browser.</p>
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {criteria.map((c) => {
-              const raw = values[c.key] ?? '';
-              const invalid = raw !== '' && !isNum(mine[c.key]);
-              return (
-                <label key={c.key} className="block">
-                  <span className="text-sm text-gray-700">{c.label} / {c.max_score}</span>
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={c.max_score}
-                    step={1}
-                    value={raw}
-                    onChange={(e) => setValue(c.key, e.target.value)}
-                    aria-invalid={invalid}
-                    className={`mt-1 w-full rounded-lg border p-2.5 ${invalid ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-gray-50'}`}
-                  />
-                  {invalid && <span className="text-xs text-red-600">Enter 1–{c.max_score}</span>}
-                </label>
-              );
-            })}
-          </div>
-          <p className="mt-4 text-sm font-semibold text-gray-800">
-            Your total: {total} / {maxTotal}
-            {entered.length < criteria.length && (
-              <span className="font-normal text-gray-500"> ({entered.length} of {criteria.length} scored)</span>
-            )}
-          </p>
-        </section>
+      <HumanVsAi
+        runs={aiRuns}
+        evaluatedEssay={evaluatedEssay}
+        essayTitle={essayTitle}
+        values={values}
+        onChange={setValue}
+        onReplace={replaceValues}
+      />
 
+      <div className="grid grid-cols-1 gap-6">
         <section className="glass-card rounded-2xl shadow-xl p-6 bg-white/95" aria-labelledby="choose-title">
           <h2 id="choose-title" className="text-lg font-bold text-gray-800">Choose an evaluator</h2>
           <p className="mt-3 border-l-4 border-indigo-400 bg-indigo-50/60 px-3 py-2 text-sm text-gray-800">
             {closest
               ? <>Closest to your scores: <strong>{closest.name}</strong>. Average difference: {fmt(closest.mae)} {unit} per criterion.</>
-              : 'Enter your scores to see which AI is closest to you.'}
+              : 'Enter the human scores in the table above to see which AI is closest.'}
           </p>
 
           <label htmlFor="pick-ai" className="block mt-4 text-sm text-gray-700">AI result to use</label>
@@ -221,7 +199,6 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
         </section>
       )}
 
-      <HumanVsAi runs={aiRuns} evaluatedEssay={evaluatedEssay} values={values} onChange={setValue} editable={false} />
 
       {entered.length > 0 && (
         <section className="glass-card rounded-2xl shadow-xl p-6 bg-white/95" aria-labelledby="chart-title">
@@ -253,13 +230,14 @@ export default function CompareScores({ aiRuns, chosenAi, onChooseAi, essayTitle
         </section>
       )}
 
-      <PromptViewer runs={aiRuns} />
 
       <p className="text-xs text-gray-500">
         Agreement is based on this essay only; compare several essays for a broader picture. Read each AI’s feedback
         as well as its scores before choosing.
         {raters.length < doneRuns.length && ' AIs that used rule-based scoring are left out of the comparison.'}
       </p>
+
+      <PromptViewer runs={aiRuns} />
     </div>
   );
 }

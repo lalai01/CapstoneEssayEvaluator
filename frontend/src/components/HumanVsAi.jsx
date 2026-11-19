@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { findHumanScore, listLearningFeedback, saveHumanScore } from '../api';
 import { useAuth } from '../context/AuthContext';
@@ -29,9 +29,10 @@ function savedHumanScore(rows, forEssay) {
 }
 
 const asDraftValues = (scores) => Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, String(v)]));
-//   values / onChange: pass them to use scores kept by the parent (Compare
-//   page); without them the table keeps its own draft and is editable.
-export default function HumanVsAi({ runs, evaluatedEssay, essayTitle, values: givenValues, onChange, editable = true }) {
+//   values / onChange / onReplace(values, onlyIfEmpty): pass them to use
+//   scores kept by the parent (Compare page); without them the table keeps
+//   its own draft.
+export default function HumanVsAi({ runs, evaluatedEssay, essayTitle, values: givenValues, onChange, onReplace, editable = true }) {
   const forEssay = essayKey(evaluatedEssay);
   const [draft, setDraft] = useDraft('myScores', null);
   const own = draft?.essay === forEssay ? draft.values : {};
@@ -40,7 +41,15 @@ export default function HumanVsAi({ runs, evaluatedEssay, essayTitle, values: gi
   const { user } = useAuth();
   const [saved, setSaved] = useState(null);   // { scores, at, teacher, source } retrieved for this essay
   const [saving, setSaving] = useState(false);
-  const retrieving = !givenValues && !!user && !!forEssay;
+  const retrieving = !!user && !!forEssay;
+  // Fills in a whole set of scores (a retrieved or just-saved human score).
+  const replaceRef = useRef(null);
+  useEffect(() => {
+    replaceRef.current = onReplace || ((vals, onlyIfEmpty) => setDraft((d) => (
+      onlyIfEmpty && d?.essay === forEssay && Object.values(d.values || {}).some((v) => v !== '')
+        ? d
+        : { essay: forEssay, values: vals })));
+  }, [onReplace, setDraft, forEssay]);
 
   // Retrieve the human score saved for this essay; fill it in if none is typed yet.
   useEffect(() => {
@@ -55,29 +64,24 @@ export default function HumanVsAi({ runs, evaluatedEssay, essayTitle, values: gi
       .then((found) => {
         if (cancelled) return;
         setSaved(found);
-        if (found) {
-          setDraft((d) => (d?.essay === forEssay && Object.values(d.values || {}).some((v) => v !== '')
-            ? d
-            : { essay: forEssay, values: asDraftValues(found.scores) }));
-        }
+        if (found) replaceRef.current?.(asDraftValues(found.scores), true);
       })
       .catch(() => {});   // signed out or offline: the human score is typed instead
     return () => { cancelled = true; };
-  }, [retrieving, forEssay, evaluatedEssay, setDraft]);
+  }, [retrieving, forEssay, evaluatedEssay]);
 
   // An override saved on this page becomes the human score right away.
   useEffect(() => {
-    if (givenValues) return undefined;
     const onSaved = (e) => {
       const { essay, teacherScores, teacher } = e.detail || {};
       if (essayKey(essay) !== forEssay || !teacherScores) return;
       const found = { scores: teacherScores, at: new Date().toISOString(), teacher };
       setSaved(found);
-      setDraft({ essay: forEssay, values: asDraftValues(teacherScores) });
+      replaceRef.current?.(asDraftValues(teacherScores), false);
     };
     window.addEventListener(OVERRIDE_SAVED_EVENT, onSaved);
     return () => window.removeEventListener(OVERRIDE_SAVED_EVENT, onSaved);
-  }, [givenValues, forEssay, setDraft]);
+  }, [forEssay]);
 
   const matchesSaved = saved && Object.entries(saved.scores).every(([k, v]) => String(values[k] ?? '') === String(v));
 
@@ -168,7 +172,7 @@ export default function HumanVsAi({ runs, evaluatedEssay, essayTitle, values: gi
           {!matchesSaved && (
             <button
               type="button"
-              onClick={() => setDraft({ essay: forEssay, values: asDraftValues(saved.scores) })}
+              onClick={() => replaceRef.current?.(asDraftValues(saved.scores), false)}
               className="font-semibold text-indigo-700 underline"
             >
               Use the saved score
